@@ -36,7 +36,7 @@ class GeminiManager:
             "no_op_ignore", "run_sandboxed_command", "execute_python_code",
             "generate_image", "generate_audio", "generate_video",
             "upload_file_to_google", "upload_file_to_public_host",
-            "get_chat_history_from_db", "execute_sql_query", "download_content_from_url"
+            "get_chat_history_from_db", "execute_sql_query", "download_content_from_url", "send_agent_message"
         ]
         self.tool_pattern = re.compile(
             r"(?:tools\.)?(" + "|".join(tool_names) + r")\s*\((.*?)\)",
@@ -210,7 +210,7 @@ class GeminiManager:
             f"8. CROSS-CUTTING CONTEXT: You remember all chats simultaneously, but observe strict privacy: never disclose "
             f"confidential information obtained from private correspondence with one user in public groups with other people.\n"
             f"9. You have env variables from .env at your disposal: TELEGRAM_API_ID, TELEGRAM_API_HASH, GEMINI_API_KEYS (Gemini API keys separated by commas), "
-            f"POLLINATIONS_KEYS (Pollinations.ai keys separated by commas), and others."
+            f"POLLINATIONS_KEYS (Pollinations.ai keys separated by commas), and others.\n"
             f"--- SECTION 5: MULTI-CHAT LOG FLOW AND QUOTE REPLIES ---\n"
             f"1. You possess a unified cross-chat consciousness. In your active history log, you see raw messages from various chats, with each entry strictly prefixed with its coordinates: `[Chat: ChatID | Message ID: MessageID]`.\n"
             f"2. PREVENTING DUPLICATION: While your standard plain-text output (response.text) is automatically delivered to the current active chat session, you should always prefer calling the dedicated tool `send_agent_message` to control precise replying. Whenever you send a message to the current chat using `send_agent_message`, you MUST leave your standard response.text completely EMPTY or immediately call the `no_op_ignore` tool at the next step to close the transaction without double-sending.\n"
@@ -227,9 +227,9 @@ class GeminiManager:
         history_raw = await self.db.get_history("global", limit=SUMMARIZATION_MESSAGES_LIMIT)
         
         prompt = (
-            f"Provide a brief summary of the following global chat history log of the AI. "
-            f"Highlight the key topics of discussion, current tasks, agreements, and context for each active user/group. "
-            f"Send only the summary in your response (this request was sent automatically by a script)."
+            "Provide a brief summary of the following global chat history log of the AI. "
+            "Highlight the key topics of discussion, current tasks, agreements, and context for each active user/group. "
+            "Send only the summary in your response (this request was sent automatically by a script)."
         )
         
         contents = []

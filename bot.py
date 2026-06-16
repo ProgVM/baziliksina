@@ -270,8 +270,7 @@ async def on_new_message(event):
     chat_id = int(event.chat_id)
     msg_id = event.message.id
     
-    # 1. Protection against duplicate network packets from Telegram servers
-    # 1. Protection against duplicate network packets from Telegram servers
+    # 1. Protection against duplicate network packets across chats
     cache_key = (chat_id, msg_id)
     if cache_key in processed_msg_ids:
         logger.debug(f"Received duplicate message {msg_id} from chat {chat_id}. Skipping.")

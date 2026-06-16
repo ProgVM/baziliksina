@@ -13,7 +13,7 @@ logger = logging.getLogger("Database")
 DB_PATH = SAFE_DB_DIR / "bot_context.db"
 
 def clean_for_json(obj):
-    """Recursively cleans data and converts non-serializable types (bytes, datetime) into a JSON-compatible format."""
+    """Recursively cleans data and converts non-serializable types into a JSON-compatible format."""
     if isinstance(obj, dict):
         if "inline_data" in obj:
             if isinstance(obj["inline_data"], dict):
@@ -268,8 +268,9 @@ class DBManager:
 
     async def get_history(self, chat_id: str, limit: int = MESSAGES_LIMIT) -> list:
         """
-        Extracts end-to-end message history.
-        Ensures the active chat context is preserved while blending global cross-chat memory.
+        Extracts end-to-end message history with split local and global contexts.
+        Ensures the active chat is positioned at the end of the prompt for perfect response targeting,
+        while keeping other chats visible for global awareness.
         """
         async with self.db.execute("SELECT summary FROM summaries WHERE chat_id = 'global'") as cursor:
             row = await cursor.fetchone()
@@ -288,11 +289,11 @@ class DBManager:
             )
             history.append((ack_content, None))
 
-        # Dynamically allocate limits: active chat gets a configurable ratio of the total limit (guaranteed minimum)
+        # Determine limits based on config ratio
         local_limit = max(CONTEXT_LOCAL_MIN_LIMIT, int(limit * CONTEXT_LOCAL_RATIO))
         global_limit = limit - local_limit
 
-        # 1. Fetch recent messages specifically from the active chat
+        # 1. Fetch recent messages specifically from the active chat (ordered DESC for DB slice)
         async with self.db.execute("""
             SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, m.id, m.chat_id
             FROM messages m
@@ -302,50 +303,80 @@ class DBManager:
         """, (str(chat_id), local_limit)) as cursor:
             local_rows = await cursor.fetchall()
 
-        # 2. Fetch recent messages globally to maintain cross-chat memory
+        # 2. Fetch recent messages globally from OTHER chats (ordered DESC for DB slice)
         async with self.db.execute("""
             SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, m.id, m.chat_id
             FROM messages m
             LEFT JOIN msgs_meta meta ON m.chat_id = meta.chat_id AND m.msg_id = meta.msg_id
+            WHERE m.chat_id != ?
             ORDER BY m.id DESC LIMIT ?
-        """, (global_limit,)) as cursor:
-            global_rows = await cursor.fetchall()
+        """, (str(chat_id), global_limit)) as cursor:
+            other_rows = await cursor.fetchall()
 
-        # Merge results to eliminate duplicates and preserve chronological database order
-        merged_rows_dict = {}
-        for row in (local_rows + global_rows):
-            m_db_id = row[5]  # m.id index
-            merged_rows_dict[m_db_id] = row
+        # Restore chronological order (ASC)
+        other_rows.reverse()
+        local_rows.reverse()
 
-        sorted_keys = sorted(merged_rows_dict.keys())
-        sorted_rows = [merged_rows_dict[k] for k in sorted_keys]
-
-        for role, text, raw_json, media_info, meta_text, msg_db_id, m_chat_id in sorted_rows:
-            prefix = f"[Chat: {m_chat_id} | Message ID: {msg_db_id or 'unknown'}]\n"
-            if meta_text:
-                prefix += f"{meta_text}\n"
-
-            full_text = f"{prefix}{text or ''}".strip()
-
-            if raw_json:
-                try:
-                    content_obj = dict_to_content(json.loads(raw_json))
-                    if content_obj.parts:
-                        for part in content_obj.parts:
-                            if part.text:
-                                part.text = f"{prefix}{part.text}".strip()
-                                break
-                    history.append((content_obj, media_info))
-                    continue
-                except Exception as e:
-                    logger.error(f"Failed to deserialize raw_content_json: {str(e)}")
+        # Append other chats first under a clear header
+        if other_rows:
+            header_content = types.Content(
+                role="user",
+                parts=[types.Part.from_text(text="[System notification: Recent activity in other chats for your awareness]")]
+            )
+            history.append((header_content, None))
             
-            parts = []
-            if full_text:
-                parts.append(types.Part.from_text(text=full_text))
-            fallback_content = types.Content(role=role, parts=parts)
-            history.append((fallback_content, media_info))
+            for role, text, raw_json, media_info, meta_text, msg_db_id, m_chat_id in other_rows:
+                prefix = f"[Chat: {m_chat_id} | Message ID: {msg_db_id or 'unknown'}]\n"
+                if meta_text:
+                    prefix += f"{meta_text}\n"
+                full_text = f"{prefix}{text or ''}".strip()
+                
+                if raw_json:
+                    try:
+                        content_obj = dict_to_content(json.loads(raw_json))
+                        if content_obj.parts:
+                            for part in content_obj.parts:
+                                if part.text:
+                                    part.text = f"{prefix}{part.text}".strip()
+                                    break
+                        history.append((content_obj, media_info))
+                        continue
+                    except Exception as e:
+                        logger.error(f"Failed to deserialize other raw_json: {str(e)}")
+                
+                parts = [types.Part.from_text(text=full_text)]
+                history.append((types.Content(role=role, parts=parts), media_info))
+
+        # Append active chat last under a clear header to focus response targeting
+        if local_rows:
+            header_content = types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=f"[System notification: Active conversation thread for the current chat: '{chat_id}']")]
+            )
+            history.append((header_content, None))
             
+            for role, text, raw_json, media_info, meta_text, msg_db_id, m_chat_id in local_rows:
+                prefix = f"[Chat: {m_chat_id} | Message ID: {msg_db_id or 'unknown'}]\n"
+                if meta_text:
+                    prefix += f"{meta_text}\n"
+                full_text = f"{prefix}{text or ''}".strip()
+                
+                if raw_json:
+                    try:
+                        content_obj = dict_to_content(json.loads(raw_json))
+                        if content_obj.parts:
+                            for part in content_obj.parts:
+                                if part.text:
+                                    part.text = f"{prefix}{part.text}".strip()
+                                    break
+                        history.append((content_obj, media_info))
+                        continue
+                    except Exception as e:
+                        logger.error(f"Failed to deserialize local raw_json: {str(e)}")
+                
+                parts = [types.Part.from_text(text=full_text)]
+                history.append((types.Content(role=role, parts=parts), media_info))
+
         return history
 
     async def clear_history_for_summarization(self, chat_id: str, keep_last_n: int = SUMMARIZATION_KEEP_LIMIT):
