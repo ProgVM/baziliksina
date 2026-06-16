@@ -484,45 +484,122 @@ class GeminiManager:
                     import ast
                     import time
                     
-                    tool_matches = self.tool_pattern.findall(response.text)
-                    if tool_matches:
+                    healed_calls = []
+                    
+                    # 1. Look for and parse JSON structures in the text
+                    json_blocks = re.findall(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response.text)
+                    if not json_blocks:
+                        # Fallback to balanced braces heuristic to find any JSON dictionary in the plain text
+                        bracket_count = 0
+                        start_idx = -1
+                        for idx, char in enumerate(response.text):
+                            if char == '{':
+                                if bracket_count == 0:
+                                    start_idx = idx
+                                bracket_count += 1
+                            elif char == '}':
+                                bracket_count -= 1
+                                if bracket_count == 0 and start_idx != -1:
+                                    candidate = response.text[start_idx:idx+1]
+                                    try:
+                                        parsed = json.loads(candidate)
+                                        if isinstance(parsed, dict):
+                                            json_blocks.append(candidate)
+                                    except Exception:
+                                        pass
+                                    start_idx = -1
+
+                    for block_str in json_blocks:
+                        try:
+                            data = json.loads(block_str)
+                            if not isinstance(data, dict):
+                                continue
+                                
+                            # Case A: {"action": "execute_telegram_action", "method_name": "...", "parameters": {...}}
+                            if "action" in data and data["action"] == "execute_telegram_action":
+                                method_name = data.get("method_name")
+                                params = data.get("parameters") or data.get("args") or {}
+                                healed_calls.append({
+                                    "name": "execute_telegram_action",
+                                    "args": {
+                                        "method_name": method_name,
+                                        "args_json": json.dumps(params, ensure_ascii=False)
+                                    }
+                                })
+                            # Case B: {"name": "...", "args": {...}} or {"name": "...", "parameters": {...}}
+                            elif "name" in data and ("args" in data or "parameters" in data or "arguments" in data):
+                                fn_name = data["name"]
+                                args = data.get("args") or data.get("parameters") or data.get("arguments") or {}
+                                healed_calls.append({
+                                    "name": fn_name,
+                                    "args": args
+                                })
+                            # Case C: {"function": "...", "parameters": {...}}
+                            elif "function" in data and ("parameters" in data or "args" in data or "arguments" in data):
+                                fn_name = data["function"]
+                                args = data.get("parameters") or data.get("args") or data.get("arguments") or {}
+                                healed_calls.append({
+                                    "name": fn_name,
+                                    "args": args
+                                })
+                            # Case D: Direct tool call JSON like {"generate_image": {"prompt": "..."}} (Uses FunctionRegistry dynamically)
+                            else:
+                                active_tools = [t.name for t in registry.get_all_tools()]
+                                for key, val in data.items():
+                                    if key in active_tools and isinstance(val, dict):
+                                        healed_calls.append({
+                                            "name": key,
+                                            "args": val
+                                        })
+                        except Exception as json_err:
+                            logger.debug(f"Auto-Heal failed to parse JSON block: {str(json_err)}")
+
+                    # 2. Fallback to regular expression for Python-style calls like `tool_name(args)` if no JSON calls were found
+                    if not healed_calls:
+                        tool_matches = self.tool_pattern.findall(response.text)
+                        for fn_name, args_str in tool_matches:
+                            # Safely parse arguments via Abstract Syntax Tree (AST)
+                            kwargs = {}
+                            try:
+                                tree = ast.parse(f"f({args_str})")
+                                for kw in tree.body[0].value.keywords:
+                                    kwargs[kw.arg] = ast.literal_eval(kw.value)
+                            except Exception as ast_err:
+                                logger.warning(f"Parsing via AST failed: {str(ast_err)}. Starting regular parser...")
+                                pairs = re.findall(r"([a-zA-Z0-9_-]+)\s*=\s*(['\"].*?['\"]|\d+(?:\.\d+)?)", args_str)
+                                for k, v in pairs:
+                                    kwargs[k] = v.strip("'\"")
+                                    if kwargs[k].isdigit():
+                                        kwargs[k] = int(kwargs[k])
+                                    else:
+                                        try:
+                                            kwargs[k] = float(kwargs[k])
+                                        except ValueError:
+                                            pass
+                            healed_calls.append({
+                                "name": fn_name,
+                                "args": kwargs
+                            })
+
+                    # 3. Append healed calls to response parts dynamically
+                    if healed_calls:
                         if response.candidates and response.candidates[0].content:
                             content_obj = response.candidates[0].content
                             if content_obj.parts is None:
                                 content_obj.parts = []
                             
-                            # Filter out text parts so the plain-text tool-call is not sent to the chat
+                            # Filter out text parts so raw JSON/code is not sent to the chat
                             content_obj.parts = [p for p in content_obj.parts if not p.text]
                             
-                            for fn_name, args_str in tool_matches:
-                                logger.warning(f"AI mistakenly issued command '{fn_name}' as plain text: '{fn_name}({args_str})'. Starting auto-heal...")
+                            for call in healed_calls:
+                                fn_name = call["name"]
+                                args = call["args"]
                                 
-                                # Safely parse arguments via Abstract Syntax Tree (AST)
-                                kwargs = {}
-                                try:
-                                    tree = ast.parse(f"f({args_str})")
-                                    for kw in tree.body[0].value.keywords:
-                                        kwargs[kw.arg] = ast.literal_eval(kw.value)
-                                except Exception as ast_err:
-                                    logger.warning(f"Parsing via AST failed: {str(ast_err)}. Starting regular parser...")
-                                    # Fallback key-value pair parser
-                                    pairs = re.findall(r"([a-zA-Z0-9_-]+)\s*=\s*(['\"].*?['\"]|\d+(?:\.\d+)?)", args_str)
-                                    for k, v in pairs:
-                                        kwargs[k] = v.strip("'\"")
-                                        if kwargs[k].isdigit():
-                                            kwargs[k] = int(kwargs[k])
-                                        else:
-                                            try:
-                                                kwargs[k] = float(kwargs[k])
-                                            except ValueError:
-                                                pass
-                                
-                                # Construct the native Part containing the FunctionCall and append it to parts
                                 healed_part = types.Part(
                                     function_call=types.FunctionCall(
                                         id=f"heal_{fn_name[:4]}_{int(time.time())}",
                                         name=fn_name,
-                                        args=kwargs
+                                        args=args
                                     )
                                 )
                                 content_obj.parts.append(healed_part)
