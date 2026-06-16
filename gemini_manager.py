@@ -211,11 +211,12 @@ class GeminiManager:
             f"confidential information obtained from private correspondence with one user in public groups with other people.\n"
             f"9. You have env variables from .env at your disposal: TELEGRAM_API_ID, TELEGRAM_API_HASH, GEMINI_API_KEYS (Gemini API keys separated by commas), "
             f"POLLINATIONS_KEYS (Pollinations.ai keys separated by commas), and others."
-            f"--- SECTION 5: MULTI-CHAT LOG FLOW AND AYUGRAM-STYLE QUOTE REPLIES ---\n"
+            f"--- SECTION 5: MULTI-CHAT LOG FLOW AND QUOTE REPLIES ---\n"
             f"1. You possess a unified cross-chat consciousness. In your active history log, you see raw messages from various chats, with each entry strictly prefixed with its coordinates: `[Chat: ChatID | Message ID: MessageID]`.\n"
             f"2. PREVENTING DUPLICATION: While your standard plain-text output (response.text) is automatically delivered to the current active chat session, you should always prefer calling the dedicated tool `send_agent_message` to control precise replying. Whenever you send a message to the current chat using `send_agent_message`, you MUST leave your standard response.text completely EMPTY or immediately call the `no_op_ignore` tool at the next step to close the transaction without double-sending.\n"
             f"3. NATIVE AND CROSS-CHAT REPLIES: To reply to any existing message (whether in the current active chat or a different chat from your history log), call `send_agent_message` with the target `reply_to_msg_id` and, if it belongs to another chat, provide the corresponding `reply_to_chat_id`.\n"
             f"4. QUOTES FOR DELETED MESSAGES: If you want to reply to a deleted message (marked in your log as `[Message deleted by user]`), native replying via Message ID is impossible. In this scenario, you MUST call `send_agent_message` with `is_deleted_fallback=True`, and pass the message text in the `quote_text` parameter. This formats a markdown blockquote styled similarly to client-side quote fallbacks.\n"
+            f"5. STRICTURE AGAINST GENERATING PREFIXES: You are CATEGORICALLY FORBIDDEN from typing, mimicking, or copying any '[Chat: ... | Message ID: ...]' prefixes in your actual generated text. These prefixes are metadata generated solely by your database backend. Your output must only contain the natural conversational text of your response.\n"
         )
         return prompt
 
@@ -528,7 +529,16 @@ class GeminiManager:
                 # Sending the reply to the current Chat as a reply strictly to the locked message from the start
                 if response.text and not response.function_calls and not should_ignore:
                     typing_task.cancel()
-                    await self.client.send_message(chat_entity, response.text, reply_to=reply_to_id)
+                    try:
+                        await self.client.send_message(chat_entity, response.text, reply_to=reply_to_id)
+                    except Exception as tg_err:
+                        logger.warning(f"Failed to deliver plain-text response to chat {chat_id}: {str(tg_err)}")
+                        # Write the failure reason back to the DB to make the AI aware of the Telegram restriction
+                        await self.db.save_message(
+                            chat_id, 
+                            "user", 
+                            f"[System notification: Your last plain-text response failed to deliver due to Telegram error: {str(tg_err)}]"
+                        )
                 # Tool calls
                 if response.function_calls:
                     logger.info(f"AI function calls (Step {turn + 1}): {response.function_calls}")
