@@ -483,6 +483,7 @@ class GeminiManager:
                 if response.text:
                     import ast
                     import time
+                    import inspect
                     
                     healed_calls = []
                     
@@ -526,7 +527,46 @@ class GeminiManager:
                                         "args_json": json.dumps(params, ensure_ascii=False)
                                     }
                                 })
-                            # Case B: {"name": "...", "args": {...}} or {"name": "...", "parameters": {...}}
+                            # Case B: ReAct / LangChain style {"action": "tool_name", "action_input": ...}
+                            elif "action" in data and data["action"] != "execute_telegram_action":
+                                fn_name = data["action"]
+                                active_tools = [t.name for t in registry.get_all_tools()]
+                                if fn_name in active_tools:
+                                    action_input = data.get("action_input") or data.get("args") or data.get("parameters") or {}
+                                    args = {}
+                                    if isinstance(action_input, dict):
+                                        args = action_input
+                                    elif isinstance(action_input, str):
+                                        # Try loading as valid JSON
+                                        try:
+                                            args = json.loads(action_input)
+                                        except Exception:
+                                            # Fallback to ast.literal_eval for single-quoted Python dict strings
+                                            try:
+                                                args = ast.literal_eval(action_input)
+                                            except Exception:
+                                                # Dynamically inspect tool signature to map the raw string input
+                                                tool_meta = registry.get(fn_name)
+                                                if tool_meta:
+                                                    sig = inspect.signature(tool_meta.callable)
+                                                    # Exclude self and generic varargs from parameter matching
+                                                    param_names = [
+                                                        p.name for p in sig.parameters.values() 
+                                                        if p.name not in ['self', 'kwargs', 'args']
+                                                    ]
+                                                    if param_names:
+                                                        first_param = param_names[0]
+                                                        args = {first_param: action_input}
+                                                    else:
+                                                        args = {"text": action_input}
+                                                else:
+                                                    args = {"text": action_input}
+                                                    
+                                    healed_calls.append({
+                                        "name": fn_name,
+                                        "args": args
+                                    })
+                            # Case C: {"name": "...", "args": {...}} or {"name": "...", "parameters": {...}}
                             elif "name" in data and ("args" in data or "parameters" in data or "arguments" in data):
                                 fn_name = data["name"]
                                 args = data.get("args") or data.get("parameters") or data.get("arguments") or {}
@@ -534,7 +574,7 @@ class GeminiManager:
                                     "name": fn_name,
                                     "args": args
                                 })
-                            # Case C: {"function": "...", "parameters": {...}}
+                            # Case D: {"function": "...", "parameters": {...}}
                             elif "function" in data and ("parameters" in data or "args" in data or "arguments" in data):
                                 fn_name = data["function"]
                                 args = data.get("parameters") or data.get("args") or data.get("arguments") or {}
@@ -542,7 +582,7 @@ class GeminiManager:
                                     "name": fn_name,
                                     "args": args
                                 })
-                            # Case D: Direct tool call JSON like {"generate_image": {"prompt": "..."}} (Uses FunctionRegistry dynamically)
+                            # Case E: Direct tool call JSON like {"generate_image": {"prompt": "..."}} (Uses FunctionRegistry dynamically)
                             else:
                                 active_tools = [t.name for t in registry.get_all_tools()]
                                 for key, val in data.items():
