@@ -23,6 +23,9 @@ bot_workspace/
 # Log files
 *.log
 
+# Prompts
+*.txt
+
 # OS specifics
 .DS_Store
 Thumbs.db
