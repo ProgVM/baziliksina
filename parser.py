@@ -11,6 +11,89 @@ from utils import safe_serialize, safe_deserialize
 logger = logging.getLogger("Parser")
 
 
+def get_media_type_description(message) -> str:
+    """
+    Analyzes the message media and returns a clean, plain English string 
+    representing the media type, matching native Telegram reply-header style.
+    Supports collaborative checklists / to-do lists.
+    """
+    if not message.media:
+        return None
+        
+    media_name = type(message.media).__name__
+    
+    if media_name == "MessageMediaPhoto":
+        # Check if the photo belongs to a grouped media album
+        if getattr(message, "grouped_id", None) is not None:
+            return "Album"
+        return "Photo"
+        
+    elif "ToDo" in media_name or "Todo" in media_name:
+        return "List"
+        
+    elif media_name == "MessageMediaPoll":
+        return "Poll"
+        
+    elif media_name == "MessageMediaGift":
+        return "Gift"
+        
+    elif media_name == "MessageMediaContact":
+        return "Contact"
+        
+    elif media_name in ["MessageMediaGeo", "MessageMediaGeoLive"]:
+        return "Location"
+        
+    elif media_name == "MessageMediaVenue":
+        return "Venue"
+        
+    elif media_name == "MessageMediaDocument":
+        doc = message.media.document
+        
+        is_sticker = False
+        is_voice = False
+        is_video_note = False
+        is_gif = False
+        is_video = False
+        is_audio = False
+        
+        # Scan attributes to distinguish various document subtypes
+        for attr in getattr(doc, 'attributes', []):
+            attr_name = type(attr).__name__
+            if attr_name == "DocumentAttributeSticker":
+                is_sticker = True
+            elif attr_name == "DocumentAttributeAudio":
+                if getattr(attr, 'voice', False):
+                    is_voice = True
+                else:
+                    is_audio = True
+            elif attr_name == "DocumentAttributeVideo":
+                if getattr(attr, 'round_message', False):
+                    is_video_note = True
+                elif getattr(attr, 'nosound', False):
+                    is_gif = True
+                else:
+                    is_video = True
+            elif attr_name == "DocumentAttributeAnimated":
+                is_gif = True
+                
+        if is_sticker:
+            return "Sticker"
+        elif is_voice:
+            return "Voice Message"
+        elif is_video_note:
+            return "Video Note"
+        elif is_gif:
+            return "GIF"
+        elif is_video:
+            return "Video"
+        elif is_audio:
+            return "Audio"
+        else:
+            return "File"
+            
+    return "Media"
+
+
 async def parse_and_cache_user_metadata(client, db, user) -> dict:
     """
     Asynchronously requests full user information from Telegram, downloads the avatar
@@ -272,59 +355,18 @@ async def parse_message_payload(client, db, message) -> str:
         act_name = type(act).__name__
         meta_parts.append(f"[Service event ({act_name})]")
 
-    # 4. DEEP ANALYSIS OF ATTACHMENTS (Specific stickers, video notes, GIFs and audio)
-    if message.media:
-        media_name = type(message.media).__name__
-        
-        if media_name == "MessageMediaPhoto":
-            meta_parts.append("[Image attached]")
-            
-        elif media_name == "MessageMediaDocument":
-            doc = message.media.document
-            is_sticker = False
-            is_voice = False
-            is_video_note = False
-            is_gif = False
-            is_video = False
-            is_audio = False
-            sticker_emoji = "hidden"
+    # 4. Deep analysis of attachments using our clean media helper
+    media_desc = get_media_type_description(message)
+    if media_desc:
+        if media_desc == "File":
             file_name = "unnamed"
-            
-            for attr in getattr(doc, 'attributes', []):
-                if isinstance(attr, tl_types.DocumentAttributeSticker):
-                    is_sticker = True
-                    sticker_emoji = attr.alt or "hidden"
-                elif isinstance(attr, tl_types.DocumentAttributeAudio):
-                    if getattr(attr, 'voice', False):
-                        is_voice = True
-                    else:
-                        is_audio = True
-                elif isinstance(attr, tl_types.DocumentAttributeVideo):
-                    if getattr(attr, 'round_message', False):
-                        is_video_note = True
-                    elif getattr(attr, 'nosound', False):
-                        is_gif = True
-                    else:
-                        is_video = True
-                elif isinstance(attr, tl_types.DocumentAttributeAnimated):
-                    is_gif = True
-                elif isinstance(attr, tl_types.DocumentAttributeFilename):
-                    file_name = attr.file_name
-
-            if is_sticker:
-                meta_parts.append(f"[Sticker attached: {sticker_emoji}]")
-            elif is_voice:
-                meta_parts.append("[Voice message attached]")
-            elif is_video_note:
-                meta_parts.append("[Round video note / video circle attached]")
-            elif is_gif:
-                meta_parts.append("[GIF animation attached]")
-            elif is_video:
-                meta_parts.append("[Video clip attached]")
-            elif is_audio:
-                meta_parts.append("[Audio file attached]")
-            else:
-                meta_parts.append(f"[File attached: '{file_name}']")
+            if hasattr(message.media, "document"):
+                for attr in getattr(message.media.document, "attributes", []):
+                    if type(attr).__name__ == "DocumentAttributeFilename":
+                        file_name = attr.file_name
+            meta_parts.append(f"[File attached: '{file_name}']")
+        else:
+            meta_parts.append(f"[{media_desc} attached]")
 
     # 5. Primary extraction and saving of reactions on incoming/outgoing message
     if getattr(message, 'reactions', None) and getattr(message.reactions, 'results', None):
@@ -341,6 +383,10 @@ async def parse_message_payload(client, db, message) -> str:
     meta_text_block = "\n".join(meta_parts).strip()
     if meta_text_block:
         await db.save_msg_meta(chat_id, msg_id, meta_text=meta_text_block, raw_meta_dict=raw_meta_dict)
+
+    # If the message has no text but has media, return the media descriptor as fallback
+    if not text and media_desc:
+        return f"[{media_desc}]"
 
     return text
 
@@ -385,7 +431,7 @@ async def parse_reply_metadata(message, current_chat_id: str, client_instance, d
             if row:
                 orig_role, orig_text = row
                 orig_sender = "AI" if orig_role == "model" else "User"
-                original_text = f"'{orig_text[:120]}...'" if orig_text else "[Media attachment]"
+                original_text = orig_text
     except Exception:
         pass
 

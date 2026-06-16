@@ -271,7 +271,6 @@ class DBManager:
         Extracts end-to-end message history.
         By default, returns the last {MESSAGES_LIMIT} messages in chronological order.
         """
-        # For end-to-end history, we always use the 'global' key to store the end-to-end summary
         async with self.db.execute("SELECT summary FROM summaries WHERE chat_id = 'global'") as cursor:
             row = await cursor.fetchone()
         
@@ -289,10 +288,9 @@ class DBManager:
             )
             history.append((ack_content, None))
 
-        # [FIXED]: Chronology based on auto-incrementing id
         async with self.db.execute("""
             SELECT * FROM (
-                SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, m.id
+                SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, m.id, m.chat_id
                 FROM messages m
                 LEFT JOIN msgs_meta meta ON m.chat_id = meta.chat_id AND m.msg_id = meta.msg_id
                 ORDER BY m.id DESC LIMIT ?
@@ -300,18 +298,20 @@ class DBManager:
             ORDER BY sub.id ASC
         """, (limit,)) as cursor:
             rows = await cursor.fetchall()
-            for role, text, raw_json, media_info, meta_text, msg_db_id in rows:
-                full_text = text
+            for role, text, raw_json, media_info, meta_text, msg_db_id, m_chat_id in rows:
+                prefix = f"[Chat: {m_chat_id} | Message ID: {msg_db_id or 'unknown'}]\n"
                 if meta_text:
-                    full_text = f"{meta_text}\n{text or ''}".strip()
+                    prefix += f"{meta_text}\n"
+
+                full_text = f"{prefix}{text or ''}".strip()
 
                 if raw_json:
                     try:
                         content_obj = dict_to_content(json.loads(raw_json))
-                        if meta_text and content_obj.parts:
+                        if content_obj.parts:
                             for part in content_obj.parts:
                                 if part.text:
-                                    part.text = f"{meta_text}\n{part.text}".strip()
+                                    part.text = f"{prefix}{part.text}".strip()
                                     break
                         history.append((content_obj, media_info))
                         continue

@@ -487,6 +487,105 @@ class AIToolKit:
     # CATEGORY 3: Telegram Automation (Telegram Automation Actions)
     # =====================================================================
 
+    async def send_agent_message(self, text: str, chat_id: Any = None, reply_to_msg_id: int = None, reply_to_chat_id: Any = None, quote_text: str = None, is_deleted_fallback: bool = False, fallback_sender_name: str = "User", fallback_sender_id: int = None, **kwargs) -> str:
+        """
+        Sends a message, a standard reply, a cross-chat reply, or an quote reply.
+        Use this tool as your primary way of sending any messages to avoid duplication.
+
+        Args:
+            text: Your actual reply or message content.
+            chat_id: The target chat ID. Defaults to the current active chat.
+            reply_to_msg_id: Optional message ID to reply to (works for same-chat and cross-chat).
+            reply_to_chat_id: Required only if reply_to_msg_id is in another chat.
+            quote_text: Optional snippet of the text you are quoting.
+            is_deleted_fallback: Set to True if you are replying to a DELETED message. 
+                                This will format the message as an AyuGram-style blockquote.
+            fallback_sender_name: Name of the sender for the deleted fallback quote.
+            fallback_sender_id: Numerical ID of the sender for tg://user?id link.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+
+        # Resolve target chat ID from contextual variables if not specified
+        if chat_id is None:
+            try:
+                chat_id = current_chat_id.get()
+            except LookupError:
+                return "Error: Failed to determine target chat."
+
+        try:
+            if isinstance(chat_id, str):
+                try: 
+                    chat_id = int(chat_id)
+                except ValueError: 
+                    pass
+
+            # Scenario 1: Quoting of a deleted or unavailable message
+            if is_deleted_fallback and quote_text:
+                # Strip square brackets around media descriptors if any (e.g. "[Album]" -> "Album")
+                clean_quote = quote_text.strip("[]")
+                
+                # Format sender name in bold with numerical profile link if available
+                sender_link = f"[**{fallback_sender_name}**](tg://user?id={fallback_sender_id})" if fallback_sender_id else f"**{fallback_sender_name}**"
+                
+                # Start formatting the unified quote block with the author's name inside the blockquote
+                formatted_quote = f"> {sender_link}\n"
+                
+                # Wrap each quote line with blockquote syntax '>'
+                for line in clean_quote.split("\n"):
+                    formatted_quote += f"> {line}\n"
+                
+                # Combine the formatted fallback quote block and the actual reply text
+                final_text = f"{formatted_quote}\n{text}"
+                result = await client.send_message(chat_id, final_text, parse_mode="markdown")
+                return f"Message sent successfully with AyuGram-style fallback quote. Message ID: {result.id}"
+
+            # Scenario 2: Standard reply or cross-chat reply via Telegram API
+            reply_to_param = None
+            if reply_to_msg_id:
+                from telethon.tl.types import InputReplyToMessage
+                
+                # Identify peer entity for cross-chat replies
+                reply_peer = None
+                if reply_to_chat_id and str(reply_to_chat_id) != str(chat_id):
+                    try:
+                        if isinstance(reply_to_chat_id, str):
+                            try: 
+                                reply_to_chat_id = int(reply_to_chat_id)
+                            except ValueError: 
+                                pass
+                        reply_peer = await client.get_input_entity(reply_to_chat_id)
+                    except Exception as peer_err:
+                        logger.warning(f"Failed to get reply peer entity: {str(peer_err)}")
+
+                reply_to_param = InputReplyToMessage(
+                    reply_to_msg_id=int(reply_to_msg_id),
+                    peer=reply_peer,
+                    quote_text=quote_text
+                )
+
+            # Send message via Telegram MTProto API
+            result = await client.send_message(
+                chat_id, 
+                text, 
+                reply_to=reply_to_param,
+                **kwargs
+            )
+
+            # Warn the model if writing to the current chat to avoid duplicates
+            cid = current_chat_id.get()
+            if str(chat_id) == str(cid):
+                return (
+                    f"Success. Message delivered to current chat. Message ID: {result.id}.\n"
+                    f"[STRICT WARNING TO AI]: This message has been sent to the chat. "
+                    f"Please leave your standard response.text completely EMPTY or call the 'no_op_ignore' tool "
+                    f"to finish the transaction without sending a duplicate message."
+                )
+
+            return f"Success. Message sent to chat {chat_id}. Message ID: {result.id}"
+        except Exception as e:
+            return f"Error sending message: {str(e)}"
+
     async def execute_telegram_action(self, method_name: str, args_json: str, timeout: float = 60.0, wait_response_seconds: float = BOT_RESPONSE_TIMEOUT, **kwargs) -> str:
         """Calls helper asynchronous Telethon client methods or sends raw Telegram API requests."""
         if not client:
@@ -1321,6 +1420,7 @@ ROOT_TOOL_CATEGORIES = {
     "internet_media_search": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
     "scrape_url": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
     
+    "send_agent_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "execute_telegram_action": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "click_inline_button": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "send_inline_bot_result": "Category 3: Telegram Automation (Telegram Automation Actions)",
