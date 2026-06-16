@@ -36,7 +36,7 @@ class GeminiManager:
             "no_op_ignore", "run_sandboxed_command", "execute_python_code",
             "generate_image", "generate_audio", "generate_video",
             "upload_file_to_google", "upload_file_to_public_host",
-            "get_chat_history_from_db", "execute_sql_query", "download_content_from_url", "send_agent_message"
+            "get_chat_history_from_db", "execute_sql_query", "download_content_from_url"
         ]
         self.tool_pattern = re.compile(
             r"(?:tools\.)?(" + "|".join(tool_names) + r")\s*\((.*?)\)",
@@ -217,6 +217,7 @@ class GeminiManager:
             f"3. NATIVE AND CROSS-CHAT REPLIES: To reply to any existing message (whether in the current active chat or a different chat from your history log), call `send_agent_message` with the target `reply_to_msg_id` and, if it belongs to another chat, provide the corresponding `reply_to_chat_id`.\n"
             f"4. QUOTES FOR DELETED MESSAGES: If you want to reply to a deleted message (marked in your log as `[Message deleted by user]`), native replying via Message ID is impossible. In this scenario, you MUST call `send_agent_message` with `is_deleted_fallback=True`, and pass the message text in the `quote_text` parameter. This formats a markdown blockquote styled similarly to client-side quote fallbacks.\n"
             f"5. STRICTURE AGAINST GENERATING PREFIXES: You are CATEGORICALLY FORBIDDEN from typing, mimicking, or copying any '[Chat: ... | Message ID: ...]' prefixes in your actual generated text. These prefixes are metadata generated solely by your database backend. Your output must only contain the natural conversational text of your response.\n"
+            f"6. TOOL EXECUTION SEQUENCE AND TEXT TIMING: If you need to invoke any tools (such as generating an image, searching the web, or setting a timer) and also want to write a text response, you MUST execute all required tool calls FIRST in your generation turns. Only after all tools have successfully run and returned their results should you generate your final plain conversational text (response.text) in your final turn. If you must send an intermediate text update before a tool finishes, you MUST use the `send_agent_message` tool to send it explicitly so the multi-turn transaction loop does not break prematurely.\n"
         )
         return prompt
 
@@ -681,9 +682,6 @@ class GeminiManager:
                                 
                                 if fn_name == "no_op_ignore":
                                     should_ignore = True
-                                
-                        # Clear response.text to prevent technical strings from being sent to the Chat!
-                        response.text = None
 
                 # Sending the reply to the current Chat as a reply strictly to the locked message from the start
                 if response.text and not response.function_calls and not should_ignore:
