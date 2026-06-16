@@ -18,7 +18,7 @@ from config import (
     WORKSPACE_DIR, TELEGRAM_METHOD_BLACKLIST, TOR_SOCKS_PORT, TOR_CONTROL_PORT,
     TOR_ROTATION_TIMEOUT, POLLINATIONS_MAX_ATTEMPTS, TOR_MAX_CONSECUTIVE_FAILURES,
     SQL_SELECT_LIMIT, SQL_STDOUT_CHAR_LIMIT, WEB_SEARCH_RESULTS_LIMIT,
-    SCRAPE_CHAR_LIMIT, BOT_RESPONSE_TIMEOUT, BUTTON_CLICK_TIMEOUT, DOWNLOAD_MEDIA_TIMEOUT,
+    SCRAPE_CHAR_LIMIT, BOT_RESPONSE_TIMEOUT, DEFAULT_RESULT_INDEX, BUTTON_CLICK_TIMEOUT, DOWNLOAD_MEDIA_TIMEOUT,
     USER_AGENT, TOR_HOST, TOR_PASSWORD, WEB_SEARCH_TIMEOUT, WEB_MEDIA_SEARCH_TIMEOUT, SCRAPE_TIMEOUT,
     DEFAULT_IMAGE_MODEL, DEFAULT_IMAGE_WIDTH, DEFAULT_IMAGE_HEIGHT, GENERATE_IMAGE_TIMEOUT,
     DEFAULT_AUDIO_VOICE, DEFAULT_AUDIO_MODEL, GENERATE_AUDIO_TIMEOUT,
@@ -77,11 +77,11 @@ async def rotate_tor_ip() -> bool:
 
 
 async def call_pollinations_api(url: str, params: dict, timeout: float) -> httpx.Response:
-    """
+    f"""
     Universal asynchronous method for executing requests to the Pollinations API.
     - For Secret keys (sk_): on failures, immediately rotates keys without changing IP in Tor.
     - For App keys (pk_): rotates IP in Tor an infinite number of times as long as it brings success.
-    Rotates the App key itself to the next one only if 2 consecutive IP rotation attempts fail to resolve the 429 issue.
+    Rotates the App key itself to the next one only if {POLLINATIONS_MAX_ATTEMPTS} consecutive IP rotation attempts fail to resolve the 429 issue.
     """
     global pollinations_key_manager
     
@@ -169,12 +169,12 @@ class AIToolKit:
 
     def save_file_to_workspace(self, filename: str, content_hex: str, **kwargs) -> str:
         """
-        Сохраняет текстовые или бинарные данные в File внутри локальной рабочей директории бота (bot_workspace).
-        Используется, когда нужно создать новый локальный File на диске или записать обновленную информацию.
-        
+        Saves text or binary data into a File inside the local bot workspace directory (bot_workspace).
+        Used when you need to create a new local File on disk or write updated information.
+
         Args:
-            filename: Имя создаваемого или перезаписываемого файла (например, 'notes.txt', 'config.json' или 'image.jpg').
-            content_hex: Содержимое файла, переданное в шестнадцатеричном (hex) формате. Перед записью строка автоматически декодируется в бинарный вид.
+            filename: The name of the file to be created or overwritten (e.g., 'notes.txt', 'config.json' or 'image.jpg').
+            content_hex: The file content passed in hexadecimal (hex) format. Before writing, the string is automatically decoded into binary.
         """
         try:
             file_path = WORKSPACE_DIR / os.path.basename(filename)
@@ -187,14 +187,14 @@ class AIToolKit:
 
     async def save_file_from_telegram(self, message_id: int, filename: str, chat_id: Any = None, **kwargs) -> str:
         """
-        Скачивает медиафайл или документ из указанного сообщения в выбранном чате Telegram 
-        и сохраняет его в локальную папку песочницы (bot_workspace) под выбранным именем.
-        Используется, когда вам нужно скачать File, присланный в текущем или любом другом чате/канале.
+        Downloads a media file or document from the specified Telegram message in the chosen chat
+        and saves it into the local sandbox folder (bot_workspace) under a selected name.
+        Used when you need to download a File sent in the current or any other chat/channel.
 
         Args:
-            message_id: ID сообщения в чате, из которого нужно скачать медиафайл.
-            filename: Имя, под которым File будет сохранен в песочнице (например, 'user_photo.jpg' или 'report.pdf').
-            chat_id: Опциональный ID или юзернейм of chat/канала, откуда скачивается File. Если не указан, используется текущий чат.
+            message_id: The ID of the message in the chat containing the media file to download.
+            filename: The name under which the File will be saved in the sandbox (e.g., 'user_photo.jpg' or 'report.pdf').
+            chat_id: Optional ID or username of the chat/channel from which the File is downloaded. If not specified, the current chat is used.
         """
         if not client:
             return "Error: Telethon client is not initialized."
@@ -203,7 +203,7 @@ class AIToolKit:
             try:
                 chat_id = current_chat_id.get()
             except LookupError:
-                return "Error: Не удалось определить текущий чат."
+                return "Error: Failed to determine the current chat."
 
         try:
             if isinstance(chat_id, str):
@@ -280,7 +280,7 @@ class AIToolKit:
             return f"Error deleting file: {str(e)}"
 
     async def download_content_from_url(self, url: str, filename: str = None, timeout: float = DOWNLOAD_MEDIA_TIMEOUT, **kwargs) -> str:
-        """
+        f"""
         Downloads any media content, video clips, audio files, or documents from the specified link (URL)
         into the local AI storage (bot_workspace).
         The tool automatically detects the source of the link:
@@ -296,7 +296,7 @@ class AIToolKit:
         Args:
             url: Full web link to download the media file or document (e.g., 'https://www.youtube.com/watch?v=...' or 'https://example.com/file.pdf').
             filename: Optional name under which the file will be saved in the sandbox (e.g., 'custom_video.mp4'). If not specified, the filename will be determined automatically.
-            timeout: Operation execution timeout in seconds. Default is 120.0.
+            timeout: Operation execution timeout in seconds. Default is {DOWNLOAD_MEDIA_TIMEOUT}.
         """
         import urllib.parse
         from pathlib import Path
@@ -340,8 +340,8 @@ class AIToolKit:
                     logger.info(f"File successfully downloaded via yt_dlp: {actual_filename}")
                     return (
                         f"Success. Streaming media content downloaded and saved to the working folder as '{os.path.basename(actual_filename)}'.\n"
-                        f"[ВНИМАНИЕ]: Если ты хочешь просмотреть или прослушать этот скачанный File, "
-                        f"ты ОБЯЗАНА немедленно вызвать инструмент 'upload_file_to_google' (указав имя этого файла), чтобы увидеть/услышать его содержимое!"
+                        f"[WARNING]: If you want to view or listen to this downloaded file, "
+                        f"you MUST immediately call the 'upload_file_to_google' tool (specifying the name of this file) to see/hear its content!"
                     )
             except Exception as e:
                 logger.error(f"Download failed via yt_dlp: {str(e)}. Trying direct download...")
@@ -380,8 +380,8 @@ class AIToolKit:
                     logger.info(f"File successfully downloaded directly and saved: {out_path}")
                     return (
                         f"Success. Static file downloaded and saved to the working folder under the name '{os.path.basename(out_filename)}'.\n"
-                        f"[ВНИМАНИЕ]: Если ты хочешь просмотреть или прослушать этот скачанный File, "
-                        f"ты ОБЯЗАНА немедленно вызвать инструмент 'upload_file_to_google' (указав имя этого файла), чтобы увидеть/услышать его содержимое!"
+                        f"[WARNING]: If you want to view or listen to this downloaded file, "
+                        f"you MUST immediately call the 'upload_file_to_google' tool (specifying the name of this file) to see/hear its content!"
                     )
                 else:
                     return f"Direct download error. Server returned status code {resp.status_code}."
@@ -393,13 +393,13 @@ class AIToolKit:
     # =====================================================================
 
     async def internet_search(self, query: str, timeout: float = WEB_SEARCH_TIMEOUT, **kwargs) -> str:
-        """
+        f"""
         Performs a text search on the Internet for a given query via DuckDuckGo and returns brief results.
         Used when the user needs up-to-date information from the outside world, news, or reference data.
         
         Args:
             query: Text search query (e.g., 'current dollar rate' or 'latest Telegram news').
-            timeout: Server response timeout in seconds. Default is 10.0.
+            timeout: Server response timeout in seconds. Default is {WEB_SEARCH_TIMEOUT}.
         """
         headers = {
             "User-Agent": USER_AGENT
@@ -420,13 +420,13 @@ class AIToolKit:
             return f"Search error: {str(e)}"
 
     async def internet_media_search(self, query: str, media_type: str = "image", timeout: float = WEB_MEDIA_SEARCH_TIMEOUT, **kwargs) -> str:
-        """
+        f"""
         Performs a search for multimedia files or PDF documents on the Internet via DuckDuckGo.
 
         Args:
             query: Search query.
             media_type: Category of media files to search for ('image', 'video', or 'document').
-            timeout: Server response timeout in seconds. Default is 10.0.
+            timeout: Server response timeout in seconds. Default is {WEB_MEDIA_SEARCH_TIMEOUT}.
         """
         headers = {
             "User-Agent": USER_AGENT
@@ -460,12 +460,12 @@ class AIToolKit:
             return f"Error searching for media: {str(e)}"
 
     async def scrape_url(self, url: str, timeout: float = SCRAPE_TIMEOUT, **kwargs) -> str:
-        """
+        f"""
         Extracts clean text content (without HTML tags, scripts, and styles) of a web page at the specified URL.
 
         Args:
             url: Full link of the web page.
-            timeout: Page load timeout in seconds. Default is 10.0.
+            timeout: Page load timeout in seconds. Default is {SCRAPE_TIMEOUT}.
         """
         headers = {
             "User-Agent": USER_AGENT
@@ -587,10 +587,10 @@ class AIToolKit:
             if is_current_chat_send:
                 logger.info("AI successfully sent a message to the current chat via the tool. Returning instruction to the AI not to duplicate the response.")
                 return (
-                    f"Успешно. Action {method_name} executed. Result: {str(result)[:200]}.\n"
-                    f"[ВНИМАНИЕ ИИ]: Это сообщение уже было отправлено и доставлено получателю в текущий активный чат. "
-                    f"Пожалуйста, НЕ дублируй этот же текст в своем обычном ответе (response.text) на следующем шаге, если тебе это не было нужно. "
-                    "Если диалог завершен, просто вызови инструмент no_op_ignore и заверши транзакцию."
+                    f"Success. Action {method_name} executed. Result: {str(result)[:200]}.\n"
+                    f"[WARNING TO AI]: This message has already been sent and delivered to the recipient in the current active chat. "
+                    f"Please DO NOT duplicate this exact text in your normal reply (response.text) at the next step unless you explicitly need to. "
+                    "If the dialogue is finished, simply call the 'no_op_ignore' tool and complete the transaction."
                 )
 
             # Waiting for bot responses
@@ -636,9 +636,9 @@ class AIToolKit:
                                     buttons_summary = "\n[Inline buttons in the message from the bot]:\n" + "\n".join(buttons_text)
                                     
                                 return (
-                                    f"Сообщение успешно доставлено.\n"
-                                    f"--- Моментальный ответ от бота (ID сообщения: {bot_reply.id}) ---\n"
-                                    f"Текст: {reply_text}\n{buttons_summary}"
+                                    f"Message successfully delivered.\n"
+                                    f"--- Instant reply from the bot (Message ID: {bot_reply.id}) ---\n"
+                                    f"Text: {reply_text}\n{buttons_summary}"
                                 )
                         except Exception as hist_err:
                             logger.error(f"Error receiving bot response: {str(hist_err)}")
@@ -647,16 +647,16 @@ class AIToolKit:
         except Exception as e:
             return f"Error executing '{method_name}': {str(e)}"
 
-    async def send_inline_bot_result(self, bot_username: str, query: str, result_index: int = 0, chat_id: Any = None, **kwargs) -> str:
-        """
-        Выполняет инлайн-запрос (inline query) к указанному внешнему боту (например, 'pic', 'gif', 'youtube', 'like') 
-        и отправляет выбранный результат в указанный чат в виде ответа (реплая) на последнее сообщение пользователя.
+    async def send_inline_bot_result(self, bot_username: str, query: str, result_index: int = DEFAULT_RESULT_INDEX, chat_id: Any = None, **kwargs) -> str:
+        f"""
+        Performs an inline query to the specified external bot (e.g., 'pic', 'gif', 'youtube', 'like')
+        and sends the selected result to the specified chat as a reply to the user's latest message.
 
         Args:
-            bot_username: Юзернейм инлайн-бота без знака @ (например, 'pic', 'gif', 'youtube', 'like').
-            query: Поисковый запрос для инлайн-бота (например, 'котики', 'lofi hip hop').
-            result_index: Порядковый номер результата в списке (0, 1, 2...). По умолчанию 0 (первый результат).
-            chat_id: Опциональный ID или юзернейм of chat/канала, куда отправить результат. Если не указан, отправляет в текущий чат.
+            bot_username: The username of the inline bot without the @ symbol (e.g., 'pic', 'gif', 'youtube', 'like').
+            query: The search query for the inline bot (e.g., 'cats', 'lofi hip hop').
+            result_index: The sequential index of the result in the list (0, 1, 2...). Default is {DEFAULT_IMAGE_WIDTH + " (the first result)" if DEFAULT_RESULT_INDEX == 0 else DEFAULT_RESULT_INDEX}.
+            chat_id: Optional ID or username of the chat/channel to send the result to. If not specified, sends to the current chat.
         """
         if not client:
             return "Error: Telethon client is not initialized."
@@ -665,7 +665,7 @@ class AIToolKit:
             try:
                 chat_id = current_chat_id.get()
             except LookupError:
-                return "Error: Не удалось определить целевой чат."
+                return "Error: Failed to determine the target chat."
                 
         try:
             if isinstance(chat_id, str):
@@ -697,15 +697,15 @@ class AIToolKit:
             return f"Error executing inline query: {str(e)}"
 
     async def click_inline_button(self, chat_entity: str, message_id: int, button_index: int = None, button_text: str = None, timeout: float = BUTTON_CLICK_TIMEOUT, **kwargs) -> str:
-        """
-        Нажимает на инлайн-кнопку в указанном сообщении другого бота.
+        f"""
+        Clicks on an inline button in the specified message of another bot.
 
         Args:
-            chat_entity: Юзернейм или ID of chat/бота, приславшего кнопки.
-            message_id: ID сообщения.
-            button_index: Порядковый номер кнопки для клика (начиная с 0).
-            button_text: Точный текст на кнопке.
-            timeout: Время ожидания нажатия на кнопку в секундах. По умолчанию 15.0.
+            chat_entity: The username or ID of the chat/bot that sent the buttons.
+            message_id: The message ID.
+            button_index: The sequential index of the button to click (starting from 0).
+            button_text: The exact text on the button.
+            timeout: Button click timeout in seconds. Default is {BUTTON_CLICK_TIMEOUT}.
         """
         if not client:
             return "Error: Telethon client is not initialized."
@@ -816,14 +816,14 @@ class AIToolKit:
 
 
     async def list_task_triggers(self, **kwargs) -> str:
-        """Возвращает отформатированный текстовый список всех активных триггеров автопробуждения для текущего of chat."""
+        """Returns a formatted text list of all active wake triggers for the current chat."""
         if not db:
             return "Error: Database is not initialized."
         try:
             cid = current_chat_id.get()
             triggers = await db.get_active_triggers(cid)
             if not triggers:
-                return "Для этого of chat no активных триггеров пробуждения."
+                return "There are no active wake triggers for this chat."
             
             lines = []
             for t_id, t_type, t_val, t_action, t_code in triggers:
@@ -845,7 +845,7 @@ class AIToolKit:
         Some models, such as 'flux' and 'zimage', have no censorship.
 
         Available models (model, source https://gen.pollinations.ai/image/models):
-        - 'flux' (FLUX.1 Schnell) — default. Ultra-fast versatile photorealistic model.
+        - 'flux' (FLUX.1 Schnell) — ultra-fast versatile photorealistic model.
         - 'zimage' (Alibaba S3-DiT 6B) — anime, art, high speed, and high-quality SPAN upscaling.
         - 'grok-imagine' (xAI) — official photorealistic model from Elon Musk.
         - 'grok-imagine-pro' (xAI Aurora) — premium version of Grok for ultra-detailed images.
@@ -896,8 +896,8 @@ class AIToolKit:
             cid = current_chat_id.get()
             return (
                 f"Image generated and saved as '{out_filename}'.\n"
-                f"Для отправки файла вызови функцию:\n"
-                f"execute_telegram_action(method_name='send_file', args_json='{{\"entity\": {cid}, \"file\": \"{out_filename}\", \"caption\": \"Твой промпт\"}}')"
+                f"To send the file, call the function:\n"
+                f"execute_telegram_action(method_name='send_file', args_json='{{\"entity\": {cid}, \"file\": \"{out_filename}\", \"caption\": \"Your prompt\"}}')"
             )
         except Exception as e:
             return f"Image generation error: {str(e)}"
@@ -909,7 +909,7 @@ class AIToolKit:
         Completely free, supports any additional parameters in kwargs (e.g., lyrics, tempo, audio_output).
 
         Available models (model, source https://gen.pollinations.ai/audio/models):
-        - 'qwen-tts-instruct' — default. Excellent TTS with support for emotion, intonation, and style control.
+        - 'qwen-tts-instruct' — excellent TTS with support for emotion, intonation, and style control.
         - 'qwen-tts' — fast, multilingual, and high-quality speech synthesis.
         - 'elevenflash' (ElevenLabs v2.5) — high-quality low-latency TTS (~75ms, 32 languages, paid).
         - 'elevenlabs' (ElevenLabs v3) — premium synthesis with expressive emotions and audio tag markup (paid).
@@ -942,7 +942,7 @@ class AIToolKit:
             cid = current_chat_id.get()
             return (
                 f"Speech synthesized and saved as '{out_filename}'.\n"
-                f"Для отправки вызови функцию:\n"
+                f"To send, call the function:\n"
                 f"execute_telegram_action(method_name='send_file', args_json='{{\"entity\": {cid}, \"file\": \"{out_filename}\", \"voice\": true}}')"
             )
         except Exception as e:
@@ -955,7 +955,7 @@ class AIToolKit:
         Completely free, supports any additional parameters in kwargs (e.g., start_frame, audio_output).
 
         Available models (model, source https://gen.pollinations.ai/image/models):
-        - 'wan' (Alibaba Wan 2.6) — default. High-quality video generation up to 1080P with native sound (2-15 sec).
+        - 'wan' (Alibaba Wan 2.6) — high-quality video generation up to 1080P with native sound (2-15 sec).
         - 'wan-fast' (Alibaba Wan 2.2) — ultra-fast and cost-effective video generation (5 sec, 480P).
         - 'wan-pro' (Alibaba Wan 2.7) — professional Alibaba model with built-in background music generation (720P/1080P, paid).
         - 'ltx-2' (Lightricks 2.3) — fast and smooth camera dynamics with an integrated smart upscaler.
@@ -984,7 +984,7 @@ class AIToolKit:
             logger.info("Launching video generation...")
             resp = await call_pollinations_api(url, params, timeout=timeout)
             if resp.status_code != 200:
-                return f"Video generation error: статус {resp.status_code}"
+                return f"Video generation error: status {resp.status_code}"
                 
             video_bytes = resp.content
             out_filename = "generated_video.mp4"
@@ -994,135 +994,25 @@ class AIToolKit:
             cid = current_chat_id.get()
             return (
                 f"Video clip generated and saved as '{out_filename}'.\n"
-                f"Для отправки вызови функцию:\n"
-                f"execute_telegram_action(method_name='send_file', args_json='{{\"entity\": {cid}, \"file\": \"{out_filename}\", \"caption\": \"Твое видео\"}}')"
+                f"To send, call the function:\n"
+                f"execute_telegram_action(method_name='send_file', args_json='{{\"entity\": {cid}, \"file\": \"{out_filename}\", \"caption\": \"Your video\"}}')"
             )
         except Exception as e:
             return f"Video generation error: {str(e)}"
 
 
-    async def download_content_from_url(self, url: str, filename: str = None, timeout: float = 120.0, **kwargs) -> str:
-        """
-        Downloads any media content, video clips, audio files, or documents from the specified link (URL)
-        into the local AI storage (bot_workspace).
-        The tool automatically detects the source of the link:
-        - Streaming platforms (YouTube, TikTok, Instagram, Twitter/X, Reddit, SoundCloud, Vimeo): utilizes the advanced
-          'yt_dlp' library for automatic seamless extraction of media with sound in the best available quality (mp4/mp3).
-        - Direct links to static files (images, PDF documents, archives, audio files): downloads the file directly via httpx.
-
-        RULE FOR AI: After you have successfully downloaded a file using this tool, you are CATEGORICALLY UNABLE
-        to see or analyze its content upon download! To view or listen to this downloaded file,
-        you MUST immediately call the 'upload_file_to_google' tool (passing the name of this downloaded file) to send it
-        to Gemini servers and natively 'see'/'hear' its content on the next generation step!
-
-        Args:
-            url: Full web link to download the media file or document (e.g., 'https://www.youtube.com/watch?v=...' or 'https://example.com/file.pdf').
-            filename: Optional name under which the file will be saved in the sandbox (e.g., 'custom_video.mp4'). If not specified, the filename will be determined automatically.
-            timeout: Operation execution timeout in seconds. Default is 120.0.
-        """
-        import urllib.parse
-        from pathlib import Path
-        
-        # 1. Check if the link is streaming (requires yt_dlp)
-        is_streaming = any(domain in url.lower() for domain in ["youtube.com", "youtu.be", "tiktok.com", "instagram.com", "twitter.com", "x.com", "vimeo.com", "soundcloud.com", "reddit.com"])
-        
-        out_filename = filename if filename else "downloaded_media"
-        out_path = WORKSPACE_DIR / os.path.basename(out_filename)
-        
-        if is_streaming:
-            try:
-                logger.info(f"Streaming service detected. Launching yt_dlp to download {url}...")
-                import yt_dlp
-                
-                # yt_dlp settings for cross-platform downloading in best quality
-                ydl_opts = {
-                    'outtmpl': str(WORKSPACE_DIR / '%(title)s.%(ext)s'),
-                    'format': 'bestvideo+bestaudio/best',
-                    'merge_output_format': 'mp4',
-                    'quiet': True,
-                    'noprogress': True
-                }
-                if kwargs:
-                    ydl_opts.update(kwargs)
-                    
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    # Execute in a separate thread to avoid blocking asyncio
-                    info = await asyncio.to_thread(ydl.extract_info, url, download=True)
-                    actual_filename = ydl.prepare_filename(info)
-                    
-                    # If the AI explicitly passed the output filename, rename it
-                    if filename:
-                        actual_path = Path(actual_filename)
-                        if actual_path.exists():
-                            ext = actual_path.suffix
-                            out_path = out_path.with_suffix(ext)
-                            actual_path.rename(out_path)
-                            actual_filename = str(out_path.resolve())
-                            
-                    logger.info(f"File successfully downloaded via yt_dlp: {actual_filename}")
-                    return (
-                        f"Success. Streaming media content downloaded and saved to the working folder as '{os.path.basename(actual_filename)}'.\n"
-                        f"[ВНИМАНИЕ]: Если ты хочешь просмотреть или прослушать этот скачанный File, "
-                        f"ты ОБЯЗАНА немедленно вызвать инструмент 'upload_file_to_google' (указав имя этого файла), чтобы увидеть/услышать его содержимое!"
-                    )
-            except Exception as e:
-                logger.error(f"Download failed via yt_dlp: {str(e)}. Trying direct download...")
-
-        # 2. Direct download of static file via httpx
-        headers = {
-            "User-Agent": USER_AGENT
-        }
-        try:
-            logger.info(f"Launching direct file download from link {url}...")
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client_httpx:
-                resp = await client_httpx.get(url, headers=headers)
-                if resp.status_code == 200:
-                    content_bytes = resp.content
-                    
-                    # If the filename is omitted, determine it by URL or by Content-Type header
-                    if not filename:
-                        parsed_url = urllib.parse.urlparse(url)
-                        url_filename = os.path.basename(parsed_url.path)
-                        if url_filename and "." in url_filename:
-                            out_filename = url_filename
-                        else:
-                            content_type = resp.headers.get("Content-Type", "")
-                            ext = ".bin"
-                            if "image/jpeg" in content_type: ext = ".jpg"
-                            elif "image/png" in content_type: ext = ".png"
-                            elif "application/pdf" in content_type: ext = ".pdf"
-                            elif "audio/mpeg" in content_type: ext = ".mp3"
-                            elif "video/mp4" in content_type: ext = ".mp4"
-                            out_filename = f"downloaded_file_{int(time.time())}{ext}"
-                            
-                    out_path = WORKSPACE_DIR / os.path.basename(out_filename)
-                    with open(out_path, "wb") as f:
-                        f.write(content_bytes)
-                        
-                    logger.info(f"File successfully downloaded directly and saved: {out_path}")
-                    return (
-                        f"Success. Static file downloaded and saved to the working folder under the name '{os.path.basename(out_filename)}'.\n"
-                        f"[ВНИМАНИЕ]: Если ты хочешь просмотреть или прослушать этот скачанный File, "
-                        f"ты ОБЯЗАНА немедленно вызвать инструмент 'upload_file_to_google' (указав имя этого файла), чтобы увидеть/услышать его содержимое!"
-                    )
-                else:
-                    return f"Direct download error. Server returned status code {resp.status_code}."
-        except Exception as e:
-            return f"Critical error during direct file download: {str(e)}"
-
-
     async def upload_file_to_google(self, filename: str, timeout: float = GOOGLE_UPLOAD_TIMEOUT, **kwargs) -> dict:
-        """
+        f"""
         Uploads the specified file from the sandbox (bot_workspace) to remote Google Gemini API cloud servers.
         Returns a structured dictionary with metadata of the uploaded file.
         Used when the file is too large to be passed directly into the prompt or when working with heavy documents/videos.
 
         Args:
             filename: The name of the file in the sandbox (e.g., 'generated_image.png' or 'notes.txt').
-            timeout: File upload timeout limit in seconds. Default is 120.0.
+            timeout: File upload timeout limit in seconds. Default is {GOOGLE_UPLOAD_TIMEOUT}.
         """
         if not key_manager:
-            return {"status": "error", "message": "Error: Ключ-менеджер Gemini не инициализирован."}
+            return {"status": "error", "message": "Error: Gemini KeyManager is not initialized."}
             
         file_path = WORKSPACE_DIR / os.path.basename(filename)
         if not file_path.exists() or not file_path.is_file():
@@ -1151,12 +1041,12 @@ class AIToolKit:
 
 
     async def upload_file_to_public_host(self, filename: str, provider: str = DEFAULT_PUBLIC_UPLOAD_PROVIDER, timeout: float = PUBLIC_UPLOAD_TIMEOUT, **kwargs) -> str:
-        """
+        f"""
         Uploads a media file or document from the local AI sandbox to the free anonymous cloud Telegraph, file.io, Uguu.se,
         or the native secure media storage PollinationsAI.
 
         Available providers (provider):
-        - 'auto' — default. Automatically selects the best available hosting for the current file type.
+        - 'auto' — automatically selects the best available hosting for the current file type.
         - 'pollinations' — uploads the file to the native PollinationsAI media storage with authorization via your current API key (Bearer token).
           Returns a long-lived link like https://media.pollinations.ai/<hash>, perfectly compatible with all models.
         - 'telegraph' — uploads only images or short mp4s to the anonymous Telegra.ph cloud.
@@ -1165,8 +1055,8 @@ class AIToolKit:
 
         Args:
             filename: The name of the file in the local folder (e.g., 'generated_image.png').
-            provider: The name of the selected provider ('auto', 'pollinations', 'telegraph', 'file.io', 'uguu.se'). Default is 'auto'.
-            timeout: Network request execution timeout limit in seconds. Default is 60.0.
+            provider: The name of the selected provider ('auto', 'pollinations', 'telegraph', 'file.io', 'uguu.se'). Default is {DEFAULT_PUBLIC_UPLOAD_PROVIDER}.
+            timeout: Network request execution timeout limit in seconds. Default is {PUBLIC_UPLOAD_TIMEOUT}.
         """
         import time
         from PIL import Image
@@ -1239,8 +1129,8 @@ class AIToolKit:
                                 if public_url:
                                     logger.info(f"File successfully uploaded to PollinationsAI: {public_url}")
                                     return (
-                                        f"File '{filename}' успешно загружен на облачное медиа-хранилище PollinationsAI!\n"
-                                        f"Публичный URL: {public_url}\n"
+                                        f"File '{filename}' successfully uploaded to PollinationsAI cloud media storage!\n"
+                                        f"Public URL: {public_url}\n"
                                         f"You can pass this URL to the parameters of other generators!"
                                     )
                 except Exception as e:
@@ -1264,8 +1154,8 @@ class AIToolKit:
                                     public_url = "https://telegra.ph" + data[0]["src"]
                                     logger.info(f"File '{filename}' successfully uploaded to Telegraph: {public_url}")
                                     return (
-                                        f"File '{filename}' успешно загружен на анонимное облако Telegraph!\n"
-                                        f"Публичный URL: {public_url}\n"
+                                        f"File '{filename}' successfully uploaded to the anonymous Telegraph cloud!\n"
+                                        f"Public URL: {public_url}\n"
                                         f"You can pass this URL to the 'reference_image_url' parameter of the 'generate_image' function for style transfer (Image-to-Image)!"
                                     )
                             else:
@@ -1288,8 +1178,8 @@ class AIToolKit:
                                     public_url = res_json.get("link")
                                     logger.info(f"File '{filename}' successfully uploaded to file.io: {public_url}")
                                     return (
-                                        f"File '{filename}' успешно загружен на разработческий хостинг file.io!\n"
-                                        f"Публичный URL: {public_url}\n"
+                                        f"File '{filename}' successfully uploaded to the developer hosting file.io!\n"
+                                        f"Public URL: {public_url}\n"
                                         f"You can pass this URL to the 'reference_image_url' parameter of the 'generate_image' function for style transfer (Image-to-Image)!"
                                     )
                             else:
@@ -1312,8 +1202,8 @@ class AIToolKit:
                                     public_url = res_json["files"][0]["url"]
                                     logger.info(f"File successfully uploaded to Uguu.se: {public_url}")
                                     return (
-                                        f"File '{filename}' успешно загружен на резервный хостинг Uguu.se!\n"
-                                        f"Публичный URL: {public_url}\n"
+                                        f"File '{filename}' successfully uploaded to the backup hosting Uguu.se!\n"
+                                        f"Public URL: {public_url}\n"
                                         f"You can pass this URL to the 'reference_image_url' parameter of the 'generate_image' function for style transfer (Image-to-Image)!"
                                     )
                             else:
@@ -1322,11 +1212,11 @@ class AIToolKit:
                     logger.error(f"Upload to Uguu.se failed: {str(e)}")
 
             return (
-                f"Критический сбой всех доступных хостингов.\n"
-                f"- PollinationsAI: Сбой соединения\n"
-                f"- Telegraph: Ошибка 400\n"
-                f"- file.io: Ошибка соединения\n"
-                f"- Uguu.se: Ошибка соединения"
+                f"Critical failure of all available hostings.\n"
+                f"- PollinationsAI: Connection failure\n"
+                f"- Telegraph: Error 400\n"
+                f"- file.io: Connection failure\n"
+                f"- Uguu.se: Connection failure"
             )
 
         finally:

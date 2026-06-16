@@ -48,12 +48,12 @@ last_chat_updates = {}     # {chat_id_int: timestamp_int}
 async def run_and_log_sandbox_code(chat_id: int, code: str, source_type: str = "trigger", event = None):
     """Asynchronously runs code in the VM, prints results to the console, and writes them to the chat history for the AI."""
     result = await tools.execute_python_code(code, chat_id=chat_id, event=event)
-    logger.info(f"--- Execution result of background VM code ({source_type}) ---\n{result}\n--------------------------------------------")
+    logger.info(f"--- VM background code execution result ({source_type}) ---\n{result}\n--------------------------------------------")
     
     p_result = result[:1500] + "..." if len(result) > 1500 else result
     notice_text = (
-        f"[System notification: Autonomous Python code {source_type} завершил выполнение]\n"
-        f"Код:\n{code}\n\n"
+        f"[System notification: Autonomous Python code {source_type} finished execution]\n"
+        f"Code:\n{code}\n\n"
         f"Execution result:\n{p_result}"
     ).strip()
     
@@ -100,10 +100,10 @@ async def check_and_run_triggers(chat_id: int, text: str, input_chat_entity, eve
         
         if force_wake_up:
             if wake_code and wake_code.strip():
-                logger.info("Триггер сработал. Запуск автономного Python-кода из trigger...")
+                logger.info("Trigger fired. Starting autonomous Python code from trigger...")
                 asyncio.create_task(run_and_log_sandbox_code(chat_id, wake_code, source_type="trigger", event=event))
             
-            logger.info(f"Триггер пробуждения сработал in chat {chat_id}. Starting AI generation...")
+            logger.info(f"Wake trigger fired in chat {chat_id}. Starting AI generation...")
             await db.save_message(str(chat_id), "user", wake_reason)
             asyncio.create_task(run_pending_query(chat_id, input_chat_entity))
             return True
@@ -223,7 +223,7 @@ async def on_raw_reaction(event):
                 elif hasattr(rc.reaction, 'document_id'):
                     rx_parts.append(f"[Custom emoji ID {rc.reaction.document_id}] (x{rc.count})")
                     
-    # 2. Случай UpdateBotMessageReaction (содержит список новых реакций)
+    # 2. Case of UpdateBotMessageReaction (contains a list of new reactions)
     new_reactions = getattr(event, "new_reactions", None)
     if new_reactions and isinstance(new_reactions, list):
         counts = {}
@@ -231,7 +231,7 @@ async def on_raw_reaction(event):
             if hasattr(r, 'emoticon'):
                 counts[r.emoticon] = counts.get(r.emoticon, 0) + 1
             elif hasattr(r, 'document_id'):
-                key = f"Custom эмодзи ID {r.document_id}"
+                key = f"Custom emoji ID {r.document_id}"
                 counts[key] = counts.get(key, 0) + 1
         for k, v in counts.items():
             rx_parts.append(f"'{k}' (x{v})" if not k.startswith("Custom") else f"[{k}] (x{v})")
@@ -344,9 +344,9 @@ async def on_new_message(event):
         meta_prefix += f"[Channel post: '{channel_title}']\n"
     elif is_channel_pm:
         channel_title = getattr(sender, 'title', 'Channel')
-        meta_prefix += f"[Личный Chat с КАНАЛОМ | Название: '{channel_title}' | ID: {event.message.peer_id.channel_id}]\n"
+        meta_prefix += f"[Private Chat with CHANNEL | Title: '{channel_title}' | ID: {event.message.peer_id.channel_id}]\n"
     else:
-        meta_prefix += f"[Личный Chat | Отправитель: {sender_info}]\n"
+        meta_prefix += f"[Private Chat | Sender: {sender_info}]\n"
 
     if event.message.is_reply:
         reply_meta = await parse_reply_metadata(event.message, chat_id, client, db)
@@ -438,7 +438,7 @@ async def on_message_edited(event):
     logger.info(f"Message {msg_id} updated (edit/reaction) in chat {chat_id}.")
     await db.update_message_text(str(chat_id), msg_id, new_text, media_info)
 
-    # Background update of Premium metadata and avatars of sender and chat once every 1 hour
+    # Background update of Premium metadata and avatars of sender and chat once every PROFILE_UPDATE_INTERVAL
     now_ts = int(time.time())
     sender = await event.get_sender()
     if sender and getattr(sender, "id", None):
@@ -456,6 +456,10 @@ async def on_message_edited(event):
     # 2. Check triggers on edit
     if await check_and_run_triggers(chat_id, new_text, input_chat_entity, event):
         return
+
+    reply_meta = ""
+    if event.message.is_reply:
+        reply_meta = await parse_reply_metadata(event.message, chat_id, client, db)
 
     sender_info = parse_sender_info(sender, event.message)
     
@@ -481,16 +485,15 @@ async def on_message_edited(event):
 
     notice_text = (
         f"[System notification: Sender {sender_info} edited message {msg_id}]\n"
-        f"--- ПРЕДЫДУЩЕЕ СОСТОЯНИЕ ---\n"
-        f"Текст: '{prev_text}'\n"
-        f"Медиа: {prev_media}\n"
-        f"--- НОВОЕ СОСТОЯНИЕ ---\n"
-        f"Текст с метаданными: '{reply_meta}{new_text}'\n"
+        f"--- PREVIOUS STATE ---\n"
+        f"Text: '{prev_text}'\n"
+        f"Media: {prev_media}\n"
+        f"--- NEW STATE ---\n"
+        f"Text with metadata: '{reply_meta}{new_text}'\n"
         f"{buttons_summary}"
     ).strip()
 
     await db.save_message(str(chat_id), "user", notice_text, media_info)
-
 
 # Message deletion handler
 @client.on(events.MessageDeleted)
@@ -528,10 +531,10 @@ async def on_message_deleted(event):
                     if orig_text and (orig_text.startswith("{") or "FunctionCall" in orig_text or "FunctionResponse" in orig_text):
                         continue
 
-                    logger.info(f"Detected deletion of message {msg_id} in chat {cid_int}. Text: '{orig_text[:50]}...'")
-                    await db.update_message_text(str(cid_int), msg_id, f"[Message удалено пользователем]: {orig_text}")
+                    logger.info(f"Message deletion detected {msg_id} in chat {cid_int}. Text: '{orig_text[:50]}...'")
+                    await db.update_message_text(str(cid_int), msg_id, f"[Message deleted by user]: {orig_text}")
                     
-                    notice_text = f"[Системное уведомление: Message #{msg_id} ('{orig_text[:50]}...') was deleted by the sender]"
+                    notice_text = f"[System notification: Message #{msg_id} ('{orig_text[:50]}...') was deleted by the sender]"
                     await db.save_message(str(cid_int), "user", notice_text)
                     
                     is_private_chat = cid_int > 0
@@ -544,7 +547,7 @@ async def on_message_deleted(event):
                             entity_cache[cid_int] = input_chat_entity
                             
                         if input_chat_entity and cid_int not in generating_chats:
-                            logger.info(f"Запуск генерации ответа на удаление in chat {cid_int}...")
+                            logger.info(f"Starting generation of response to deletion in chat {cid_int}...")
                             generating_chats.add(cid_int)
                             try:
                                 await ai_manager.handle_query(str(cid_int), input_chat_entity)

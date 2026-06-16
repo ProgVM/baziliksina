@@ -10,7 +10,7 @@ logger = logging.getLogger("Services")
 
 
 async def keep_alive_online(client):
-    """Keeps the account status 'Online' every KEEP_ALIVE_INTERVAL seconds."""
+    f"""Keeps the account status 'Online' every {KEEP_ALIVE_INTERVAL} seconds."""
     while True:
         try:
             await client(UpdateStatusRequest(offline=False))
@@ -21,9 +21,9 @@ async def keep_alive_online(client):
 
 
 async def bootstrap_database_if_empty(client, db):
-    """
-    [FIRST RUN]: If the database is completely empty, this method scans the last DIALOGS_LIMIT chats
-    and populates the local memory with the last BOOTSTRAP_MESSAGES_LIMIT messages from each dialog.
+    f"""
+    [FIRST RUN]: If the database is completely empty, this method scans the last {DIALOGS_LIMIT} chats
+    and populates the local memory with the last {BOOTSTRAP_MESSAGES_LIMIT} messages from each dialog.
     """
     try:
         async with db.db.execute("SELECT COUNT(*) FROM messages") as cursor:

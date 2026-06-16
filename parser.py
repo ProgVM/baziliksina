@@ -13,8 +13,8 @@ logger = logging.getLogger("Parser")
 
 async def parse_and_cache_user_metadata(client, db, user) -> dict:
     """
-    Асинхронно запрашивает у Telegram полную информацию о пользователе, скачивает аватарку
-    (включая видео-аватарку .mp4) и сохраняет in БД со всеми Premium-атрибутами и бизнес-данными.
+    Asynchronously requests full user information from Telegram, downloads the avatar
+    (including .mp4 video avatars) and saves it in the DB with all Premium attributes and business data.
     """
     if not user:
         return {}
@@ -110,8 +110,8 @@ async def parse_and_cache_user_metadata(client, db, user) -> dict:
 
 async def parse_and_cache_chat_metadata(client, db, chat) -> dict:
     """
-    Асинхронно запрашивает полную информацию о группе, супергруппе или канале,
-    скачивает их логотипы и сохраняет in БД chats_meta с сырыми структурами.
+    Asynchronously requests full user information from Telegram, downloads the avatar
+    (including .mp4 video avatars) and saves it in the DB with all Premium attributes and business data.
     """
     if not chat:
         return {}
@@ -176,7 +176,7 @@ async def parse_and_cache_chat_metadata(client, db, chat) -> dict:
 
 
 def parse_sender_info(sender, message) -> str:
-    """Извлекает базовые строковые метаданные об отправителе для системного промпта AI."""
+    """Extracts basic string metadata about the sender for the AI system prompt."""
     if not sender:
         return "Unknown sender"
     
@@ -213,16 +213,16 @@ def parse_sender_info(sender, message) -> str:
         
     elif p_type == "Chat":
         title = getattr(sender, 'title', 'Group')
-        return f"Обычная Group '{title}' [ID: {sender.id}]{badges_str}"
+        return f"Regular Group '{title}' [ID: {sender.id}]{badges_str}"
         
     return f"Entity {p_type} [ID: {getattr(sender, 'id', 'hidden')}]{badges_str}"
 
 
 async def parse_message_payload(client, db, message) -> str:
     """
-    Рекурсивно анализирует сообщение, извлекает и кэширует премиум-эмодзи,
-    анимации Star Gifts, структуру инлайн-кнопок, а также сохраняет свойства реакций 
-    и сырые свойства сообщения in отдельную таблицу msgs_meta in формате JSON.
+    Recursively analyzes the message, extracts and caches premium emojis,
+    Star Gift animations, inline button structures, and saves reaction properties
+    and raw message properties in a separate msgs_meta table in JSON format.
     """
     meta_parts = []
     text = message.message or ""
@@ -259,10 +259,10 @@ async def parse_message_payload(client, db, message) -> str:
             local_gift_path = await get_cached_gift_animation(client, gift_id)
 
         gift_ref = (
-            f"[Системное событие: Получен подарок Telegram Star Gift]\n"
-            f"- Отправитель ID: {sender_gift_id}\n"
+            f"[System event: Telegram Star Gift received]\n"
+            f"- Sender ID: {sender_gift_id}\n"
             f"- Gift text: '{gift_text}'\n"
-            f"- Анимация подарка локально: '{local_gift_path or 'not downloaded'}'"
+            f"- Gift animation locally: '{local_gift_path or 'not downloaded'}'"
         )
         meta_parts.append(gift_ref)
 
@@ -337,7 +337,7 @@ async def parse_message_payload(client, db, message) -> str:
         if rx_parts:
             meta_parts.append("[Reactions on message]: " + " | ".join(rx_parts))
 
-    # Сохраняем все визуальные/второстепенные метаданные сообщения in msgs_meta
+    # Save all visual/secondary message metadata in msgs_meta
     meta_text_block = "\n".join(meta_parts).strip()
     if meta_text_block:
         await db.save_msg_meta(chat_id, msg_id, meta_text=meta_text_block, raw_meta_dict=raw_meta_dict)

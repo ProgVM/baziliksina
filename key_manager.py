@@ -189,7 +189,7 @@ class PollinationsKeyManager:
         return self.keys[self.current_index]
 
     async def get_active_key(self) -> str:
-        """Returns the first working active key, resetting hourly limits on schedule."""
+        """Returns the first working active key, resetting limits on schedule."""
         if not self.keys:
             return ""
             

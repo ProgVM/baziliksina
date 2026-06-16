@@ -138,7 +138,7 @@ async def sync_custom_tools_with_db(db_manager):
                 # Compile the function code from the string
                 compiled_func = compile_custom_tool(name, code)
                 
-                # Регистрируем в глобальном синглтоне
+                # Register in the global singleton
                 registry.register(
                     name=name,
                     callable_func=compiled_func,
@@ -148,8 +148,8 @@ async def sync_custom_tools_with_db(db_manager):
                 )
                 success_count += 1
             except Exception as err:
-                logger.error(f"Не удалось скомпилировать и зарегистрировать custom инструмент '{tool_data.get('name')}': {str(err)}")
-                
+                logger.error(f"Failed to compile and register custom tool '{tool_data.get('name')}': {str(err)}")
+
         logger.info(f"Synchronization complete. Successfully compiled and added tools: {success_count}/{len(custom_tools_list)}")
     except Exception as db_err:
         logger.error(f"Error reading custom tools from the SQLite database: {str(db_err)}")

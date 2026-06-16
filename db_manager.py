@@ -267,9 +267,9 @@ class DBManager:
         await self.db.commit()
 
     async def get_history(self, chat_id: str, limit: int = MESSAGES_LIMIT) -> list:
-        """
-        Extracts end-to-end message history. 
-        By default, returns the last MESSAGES_LIMIT messages in chronological order.
+        f"""
+        Extracts end-to-end message history.
+        By default, returns the last {MESSAGES_LIMIT} messages in chronological order.
         """
         # For end-to-end history, we always use the 'global' key to store the end-to-end summary
         async with self.db.execute("SELECT summary FROM summaries WHERE chat_id = 'global'") as cursor:
@@ -326,7 +326,6 @@ class DBManager:
         return history
 
     async def clear_history_for_summarization(self, chat_id: str, keep_last_n: int = SUMMARIZATION_KEEP_LIMIT):
-        # [FIXED]: Use SUMMARIZATION_KEEP_LIMIT by default
         async with self.db.execute("""
             SELECT id FROM messages 
             ORDER BY id DESC LIMIT ?
