@@ -486,42 +486,49 @@ class GeminiManager:
                     
                     tool_matches = self.tool_pattern.findall(response.text)
                     if tool_matches:
-                        if response.function_calls is None:
-                            response.function_calls = []
+                        if response.candidates and response.candidates[0].content:
+                            content_obj = response.candidates[0].content
+                            if content_obj.parts is None:
+                                content_obj.parts = []
                             
-                        for fn_name, args_str in tool_matches:
-                            logger.warning(f"AI mistakenly issued command '{fn_name}' as plain text: '{fn_name}({args_str})'. Starting auto-heal...")
+                            # Filter out text parts so the plain-text tool-call is not sent to the chat
+                            content_obj.parts = [p for p in content_obj.parts if not p.text]
                             
-                            # Safely parse arguments via Abstract Syntax Tree (AST)
-                            kwargs = {}
-                            try:
-                                tree = ast.parse(f"f({args_str})")
-                                for kw in tree.body[0].value.keywords:
-                                    kwargs[kw.arg] = ast.literal_eval(kw.value)
-                            except Exception as ast_err:
-                                logger.warning(f"Parsing via AST failed: {str(ast_err)}. Starting regular parser...")
-                                # Fallback key-value pair parser
-                                pairs = re.findall(r"([a-zA-Z0-9_-]+)\s*=\s*(['\"].*?['\"]|\d+(?:\.\d+)?)", args_str)
-                                for k, v in pairs:
-                                    kwargs[k] = v.strip("'\"")
-                                    if kwargs[k].isdigit():
-                                        kwargs[k] = int(kwargs[k])
-                                    else:
-                                        try:
-                                            kwargs[k] = float(kwargs[k])
-                                        except ValueError:
-                                            pass
-                            
-                            # Form a mock FunctionCall object for native processing by the core
-                            mock_call = types.FunctionCall(
-                                id=f"heal_{fn_name[:4]}_{int(time.time())}",
-                                name=fn_name,
-                                args=kwargs
-                            )
-                            response.function_calls.append(mock_call)
-                            
-                            if fn_name == "no_op_ignore":
-                                should_ignore = True
+                            for fn_name, args_str in tool_matches:
+                                logger.warning(f"AI mistakenly issued command '{fn_name}' as plain text: '{fn_name}({args_str})'. Starting auto-heal...")
+                                
+                                # Safely parse arguments via Abstract Syntax Tree (AST)
+                                kwargs = {}
+                                try:
+                                    tree = ast.parse(f"f({args_str})")
+                                    for kw in tree.body[0].value.keywords:
+                                        kwargs[kw.arg] = ast.literal_eval(kw.value)
+                                except Exception as ast_err:
+                                    logger.warning(f"Parsing via AST failed: {str(ast_err)}. Starting regular parser...")
+                                    # Fallback key-value pair parser
+                                    pairs = re.findall(r"([a-zA-Z0-9_-]+)\s*=\s*(['\"].*?['\"]|\d+(?:\.\d+)?)", args_str)
+                                    for k, v in pairs:
+                                        kwargs[k] = v.strip("'\"")
+                                        if kwargs[k].isdigit():
+                                            kwargs[k] = int(kwargs[k])
+                                        else:
+                                            try:
+                                                kwargs[k] = float(kwargs[k])
+                                            except ValueError:
+                                                pass
+                                
+                                # Construct the native Part containing the FunctionCall and append it to parts
+                                healed_part = types.Part(
+                                    function_call=types.FunctionCall(
+                                        id=f"heal_{fn_name[:4]}_{int(time.time())}",
+                                        name=fn_name,
+                                        args=kwargs
+                                    )
+                                )
+                                content_obj.parts.append(healed_part)
+                                
+                                if fn_name == "no_op_ignore":
+                                    should_ignore = True
                                 
                         # Clear response.text to prevent technical strings from being sent to the Chat!
                         response.text = None
