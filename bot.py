@@ -178,7 +178,7 @@ async def run_pending_query(cid, entity):
         generating_chats.discard(cid_int)
         if cid_int in pending_buffers:
             p_data = pending_buffers.pop(cid_int)
-            asyncio.create_task(schedule_debounce_query(cid_int, p_data["entity"]))
+            schedule_debounce_query(cid_int, p_data["entity"])
 
 
 # --- Universal background tracking of reactions on posts, channels, and PMs ---
@@ -388,7 +388,7 @@ async def on_new_message(event):
             generating_chats.discard(cid)
             if cid in pending_buffers:
                 p_data = pending_buffers.pop(cid)
-                asyncio.create_task(schedule_debounce_query(cid, p_data["entity"]))
+                schedule_debounce_query(cid, p_data["entity"])
 
     asyncio.create_task(wait_and_send(chat_id, current_trigger_id))
 

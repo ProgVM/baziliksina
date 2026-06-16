@@ -372,11 +372,13 @@ class GeminiManager:
                     re.IGNORECASE
                 )
                 
+                media_count = 0
+                
                 for idx, (content_obj, media_info_str) in enumerate(history_raw):
                     if content_obj.parts is None:
                         content_obj.parts = []
                     
-                    # Scan text parts for links to Google URIs and compile them into native Part.from_uri
+                    # Scan text parts for links to Google URIs and compile...
                     new_parts = []
                     for part in content_obj.parts:
                         new_parts.append(part)
@@ -384,7 +386,6 @@ class GeminiManager:
                             uris = GOOGLE_FILE_URI_REGEX.findall(part.text)
                             for uri in uris:
                                 try:
-                                    # Look up the saved mime_type in our database
                                     mime_type = await self.db.get_memory(uri)
                                     if mime_type:
                                         logger.info(f"Google URI detected: {uri}. Substituting native Part.from_uri ({mime_type})...")
@@ -393,6 +394,8 @@ class GeminiManager:
                                     logger.error(f"Failed to substitute Part.from_uri for {uri}: {str(uri_err)}")
                     content_obj.parts = new_parts
 
+                    is_within_limit = media_count < media_limit
+                    
                     if media_info_str and is_within_limit:
                         try:
                             media_data = json.loads(media_info_str)
@@ -422,6 +425,8 @@ class GeminiManager:
                                             break
                                     if not has_inline:
                                         content_obj.parts.insert(0, types.Part.from_bytes(data=file_bytes, mime_type=m_type))
+                                    
+                                    media_count += 1  
                         except Exception as me_err:
                             logger.error(f"Error loading media data: {str(me_err)}")
                     contents.append(content_obj)

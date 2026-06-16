@@ -655,7 +655,7 @@ class AIToolKit:
         Args:
             bot_username: The username of the inline bot without the @ symbol (e.g., 'pic', 'gif', 'youtube', 'like').
             query: The search query for the inline bot (e.g., 'cats', 'lofi hip hop').
-            result_index: The sequential index of the result in the list (0, 1, 2...). Default is {DEFAULT_IMAGE_WIDTH + " (the first result)" if DEFAULT_RESULT_INDEX == 0 else DEFAULT_RESULT_INDEX}.
+            result_index: The sequential index of the result in the list (0, 1, 2...). Default is {f"{DEFAULT_RESULT_INDEX} (the first result)" if DEFAULT_RESULT_INDEX == 0 else DEFAULT_RESULT_INDEX}.
             chat_id: Optional ID or username of the chat/channel to send the result to. If not specified, sends to the current chat.
         """
         if not client:
