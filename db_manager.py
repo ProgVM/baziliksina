@@ -7,7 +7,7 @@ import base64
 import time
 from datetime import datetime, date
 from google.genai import types
-from config import SAFE_DB_DIR, MESSAGES_LIMIT, SUMMARIZATION_KEEP_LIMIT
+from config import SAFE_DB_DIR, MESSAGES_LIMIT, SUMMARIZATION_KEEP_LIMIT, CONTEXT_LOCAL_RATIO, CONTEXT_LOCAL_MIN_LIMIT
 
 logger = logging.getLogger("Database")
 DB_PATH = SAFE_DB_DIR / "bot_context.db"
@@ -267,9 +267,9 @@ class DBManager:
         await self.db.commit()
 
     async def get_history(self, chat_id: str, limit: int = MESSAGES_LIMIT) -> list:
-        f"""
+        """
         Extracts end-to-end message history.
-        By default, returns the last {MESSAGES_LIMIT} messages in chronological order.
+        Ensures the active chat context is preserved while blending global cross-chat memory.
         """
         async with self.db.execute("SELECT summary FROM summaries WHERE chat_id = 'global'") as cursor:
             row = await cursor.fetchone()
@@ -288,41 +288,64 @@ class DBManager:
             )
             history.append((ack_content, None))
 
+        # Dynamically allocate limits: active chat gets a configurable ratio of the total limit (guaranteed minimum)
+        local_limit = max(CONTEXT_LOCAL_MIN_LIMIT, int(limit * CONTEXT_LOCAL_RATIO))
+        global_limit = limit - local_limit
+
+        # 1. Fetch recent messages specifically from the active chat
         async with self.db.execute("""
-            SELECT * FROM (
-                SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, m.id, m.chat_id
-                FROM messages m
-                LEFT JOIN msgs_meta meta ON m.chat_id = meta.chat_id AND m.msg_id = meta.msg_id
-                ORDER BY m.id DESC LIMIT ?
-            ) sub
-            ORDER BY sub.id ASC
-        """, (limit,)) as cursor:
-            rows = await cursor.fetchall()
-            for role, text, raw_json, media_info, meta_text, msg_db_id, m_chat_id in rows:
-                prefix = f"[Chat: {m_chat_id} | Message ID: {msg_db_id or 'unknown'}]\n"
-                if meta_text:
-                    prefix += f"{meta_text}\n"
+            SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, m.id, m.chat_id
+            FROM messages m
+            LEFT JOIN msgs_meta meta ON m.chat_id = meta.chat_id AND m.msg_id = meta.msg_id
+            WHERE m.chat_id = ?
+            ORDER BY m.id DESC LIMIT ?
+        """, (str(chat_id), local_limit)) as cursor:
+            local_rows = await cursor.fetchall()
 
-                full_text = f"{prefix}{text or ''}".strip()
+        # 2. Fetch recent messages globally to maintain cross-chat memory
+        async with self.db.execute("""
+            SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, m.id, m.chat_id
+            FROM messages m
+            LEFT JOIN msgs_meta meta ON m.chat_id = meta.chat_id AND m.msg_id = meta.msg_id
+            ORDER BY m.id DESC LIMIT ?
+        """, (global_limit,)) as cursor:
+            global_rows = await cursor.fetchall()
 
-                if raw_json:
-                    try:
-                        content_obj = dict_to_content(json.loads(raw_json))
-                        if content_obj.parts:
-                            for part in content_obj.parts:
-                                if part.text:
-                                    part.text = f"{prefix}{part.text}".strip()
-                                    break
-                        history.append((content_obj, media_info))
-                        continue
-                    except Exception as e:
-                        logger.error(f"Failed to deserialize raw_content_json: {str(e)}")
-                
-                parts = []
-                if full_text:
-                    parts.append(types.Part.from_text(text=full_text))
-                fallback_content = types.Content(role=role, parts=parts)
-                history.append((fallback_content, media_info))
+        # Merge results to eliminate duplicates and preserve chronological database order
+        merged_rows_dict = {}
+        for row in (local_rows + global_rows):
+            m_db_id = row[5]  # m.id index
+            merged_rows_dict[m_db_id] = row
+
+        sorted_keys = sorted(merged_rows_dict.keys())
+        sorted_rows = [merged_rows_dict[k] for k in sorted_keys]
+
+        for role, text, raw_json, media_info, meta_text, msg_db_id, m_chat_id in sorted_rows:
+            prefix = f"[Chat: {m_chat_id} | Message ID: {msg_db_id or 'unknown'}]\n"
+            if meta_text:
+                prefix += f"{meta_text}\n"
+
+            full_text = f"{prefix}{text or ''}".strip()
+
+            if raw_json:
+                try:
+                    content_obj = dict_to_content(json.loads(raw_json))
+                    if content_obj.parts:
+                        for part in content_obj.parts:
+                            if part.text:
+                                part.text = f"{prefix}{part.text}".strip()
+                                break
+                    history.append((content_obj, media_info))
+                    continue
+                except Exception as e:
+                    logger.error(f"Failed to deserialize raw_content_json: {str(e)}")
+            
+            parts = []
+            if full_text:
+                parts.append(types.Part.from_text(text=full_text))
+            fallback_content = types.Content(role=role, parts=parts)
+            history.append((fallback_content, media_info))
+            
         return history
 
     async def clear_history_for_summarization(self, chat_id: str, keep_last_n: int = SUMMARIZATION_KEEP_LIMIT):

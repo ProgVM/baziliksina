@@ -363,13 +363,44 @@ class GeminiManager:
         max_turns = MAX_TURNS
         should_ignore = False
         
+        # Local helper function to perfectly align tool calls and responses chronologically
+        def align_tool_calls_and_responses(raw_contents):
+            aligned = []
+            skip_indices = set()
+            
+            for i, content in enumerate(raw_contents):
+                if i in skip_indices:
+                    continue
+                    
+                has_fc = any(part.function_call for part in (content.parts or []))
+                if content.role == "model" and has_fc:
+                    aligned.append(content)
+                    # Look ahead to find the corresponding function response
+                    for j in range(i + 1, len(raw_contents)):
+                        if j in skip_indices:
+                            continue
+                        sub_content = raw_contents[j]
+                        has_fr = any(part.function_response for part in (sub_content.parts or []))
+                        if sub_content.role == "user" and has_fr:
+                            aligned.append(sub_content)
+                            skip_indices.add(j)
+                            break
+                elif content.role == "user" and any(part.function_response for part in (content.parts or [])):
+                    # Skip orphaned or already processed responses
+                    continue
+                else:
+                    aligned.append(content)
+                    
+            return aligned
+
         try:
             for turn in range(max_turns):
-                # Extract history according to our dynamic/config limit
+                # Reload history dynamically at the start of EACH turn to catch real-time interruptions!
                 history_raw = await self.db.get_history(chat_id, limit=MESSAGES_LIMIT)
 
-                contents = []
+                contents_raw = []
                 media_limit = MEDIA_LIMIT
+                media_count = 0
                 import re
                 
                 # Regular expression to find Google File API URIs in prompt texts
@@ -378,13 +409,11 @@ class GeminiManager:
                     re.IGNORECASE
                 )
                 
-                media_count = 0
-                
                 for idx, (content_obj, media_info_str) in enumerate(history_raw):
                     if content_obj.parts is None:
                         content_obj.parts = []
                     
-                    # Scan text parts for links to Google URIs and compile...
+                    # Scan text parts for links to Google URIs and compile them into native Part.from_uri
                     new_parts = []
                     for part in content_obj.parts:
                         new_parts.append(part)
@@ -392,6 +421,7 @@ class GeminiManager:
                             uris = GOOGLE_FILE_URI_REGEX.findall(part.text)
                             for uri in uris:
                                 try:
+                                    # Look up the saved mime_type in our database
                                     mime_type = await self.db.get_memory(uri)
                                     if mime_type:
                                         logger.info(f"Google URI detected: {uri}. Substituting native Part.from_uri ({mime_type})...")
@@ -401,7 +431,6 @@ class GeminiManager:
                     content_obj.parts = new_parts
 
                     is_within_limit = media_count < media_limit
-                    
                     if media_info_str and is_within_limit:
                         try:
                             media_data = json.loads(media_info_str)
@@ -431,11 +460,13 @@ class GeminiManager:
                                             break
                                     if not has_inline:
                                         content_obj.parts.insert(0, types.Part.from_bytes(data=file_bytes, mime_type=m_type))
-                                    
-                                    media_count += 1  
+                                    media_count += 1
                         except Exception as me_err:
                             logger.error(f"Error loading media data: {str(me_err)}")
-                    contents.append(content_obj)
+                    contents_raw.append(content_obj)
+
+                # Dynamically align raw contents to preserve valid tool sequences
+                contents = align_tool_calls_and_responses(contents_raw)
 
                 # High-precision token counting
                 try:

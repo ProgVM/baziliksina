@@ -122,6 +122,10 @@ DUPLICATE_CACHE_SIZE = int(os.getenv("DUPLICATE_CACHE_SIZE", 1000))
 # Limit of messages loaded into active history (default: 150)
 MESSAGES_LIMIT = int(os.getenv("MESSAGES_LIMIT", 150))
 
+# Context window allocation parameters (ratio and minimum messages for active chat)
+CONTEXT_LOCAL_RATIO = float(os.getenv("CONTEXT_LOCAL_RATIO", 0.4))
+CONTEXT_LOCAL_MIN_LIMIT = int(os.getenv("CONTEXT_LOCAL_MIN_LIMIT", 15))
+
 # Limit for loading messages from DB for end-to-end context summarization (default: 500)
 SUMMARIZATION_MESSAGES_LIMIT = int(os.getenv("SUMMARIZATION_MESSAGES_LIMIT", 500))
 
