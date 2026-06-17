@@ -529,7 +529,6 @@ class GeminiManager:
                 if response.text:
                     import ast
                     import time
-                    import inspect
                     
                     healed_calls = []
                     
