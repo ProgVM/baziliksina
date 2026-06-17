@@ -146,7 +146,7 @@ async def run_timers_loop():
 
 
 # Helper debouncer for the downloader and system triggers
-def schedule_debounce_query(chat_id, entity):
+def schedule_debounce_query(chat_id, entity, trigger_msg_id=None):
     chat_id = int(chat_id)
     current_time_id = time.time()
     if chat_id not in message_buffers:
@@ -154,6 +154,7 @@ def schedule_debounce_query(chat_id, entity):
         
     message_buffers[chat_id]["last_time"] = current_time_id
     message_buffers[chat_id]["entity"] = entity
+    message_buffers[chat_id]["trigger_msg_id"] = trigger_msg_id # Store the triggering message ID
 
     async def wait_and_send_debounce(cid, trigger_time):
         await asyncio.sleep(DEBOUNCE_DELAY)
@@ -163,22 +164,23 @@ def schedule_debounce_query(chat_id, entity):
             return
             
         entity_obj = message_buffers[cid]["entity"]
+        t_msg_id = message_buffers[cid].get("trigger_msg_id")
         del message_buffers[cid]
-        await run_pending_query(cid, entity_obj)
+        await run_pending_query(cid, entity_obj, trigger_msg_id=t_msg_id)
 
     asyncio.create_task(wait_and_send_debounce(chat_id, current_time_id))
 
 # Handler for executing pending queries (strictly int types for queues)
-async def run_pending_query(cid, entity):
+async def run_pending_query(cid, entity, trigger_msg_id=None):
     cid_int = int(cid)
     generating_chats.add(cid_int)
     try:
-        await ai_manager.handle_query(str(cid_int), entity)
+        await ai_manager.handle_query(str(cid_int), entity, trigger_msg_id=trigger_msg_id)
     finally:
         generating_chats.discard(cid_int)
         if cid_int in pending_buffers:
             p_data = pending_buffers.pop(cid_int)
-            schedule_debounce_query(cid_int, p_data["entity"])
+            schedule_debounce_query(cid_int, p_data["entity"], trigger_msg_id=p_data.get("trigger_msg_id"))
 
 
 # --- Universal background tracking of reactions on posts, channels, and PMs ---
@@ -325,6 +327,7 @@ async def on_new_message(event):
         
     message_buffers[chat_id]["last_time"] = current_trigger_id
     message_buffers[chat_id]["entity"] = input_chat_entity
+    message_buffers[chat_id]["trigger_msg_id"] = msg_id # Capture the triggering message ID
 
     # 4. Processing incoming messages
     text = await parse_message_payload(client, db, event.message)
@@ -375,21 +378,22 @@ async def on_new_message(event):
             return
 
         entity = message_buffers[cid]["entity"]
+        t_msg_id = message_buffers[cid].get("trigger_msg_id")
         del message_buffers[cid]
 
         if cid in generating_chats:
             logger.info(f"Chat {cid} is busy generating. Adding to the pending queue.")
-            pending_buffers[cid] = {"entity": entity}
+            pending_buffers[cid] = {"entity": entity, "trigger_msg_id": t_msg_id}
             return
 
         generating_chats.add(cid)
         try:
-            await ai_manager.handle_query(str(cid), entity)
+            await ai_manager.handle_query(str(cid), entity, trigger_msg_id=t_msg_id) # Pass the original trigger ID
         finally:
             generating_chats.discard(cid)
             if cid in pending_buffers:
                 p_data = pending_buffers.pop(cid)
-                schedule_debounce_query(cid, p_data["entity"])
+                schedule_debounce_query(cid, p_data["entity"], trigger_msg_id=p_data.get("trigger_msg_id"))
 
     asyncio.create_task(wait_and_send(chat_id, current_trigger_id))
 
