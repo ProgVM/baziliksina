@@ -504,7 +504,9 @@ class GeminiManager:
                     continue
                 except APIError as e:
                     if e.code == 429:
-                        logger.warning(f"Gemini API Rate Limit (429) encountered. Exhausted key: '{gemini_client.api_key[:10]}...'. Retrying with key rotation...")
+                        # Safely retrieve the current active key from our key manager to avoid internal SDK attribute dependencies
+                        active_key = self.key_manager.keys[self.key_manager.current_key_index]
+                        logger.warning(f"Gemini API Rate Limit (429) encountered. Exhausted key: '{active_key[:10]}...'. Retrying with key rotation...")
                         await asyncio.sleep(RATE_LIMIT_SLEEP)
                         # Mark the current Gemini key/model as exhausted in the DB before rotation
                         await self.key_manager.mark_key_exhausted()
