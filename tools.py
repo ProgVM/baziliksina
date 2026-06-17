@@ -498,7 +498,7 @@ class AIToolKit:
             reply_to_msg_id: Optional message ID to reply to (works for same-chat and cross-chat).
             reply_to_chat_id: Required only if reply_to_msg_id is in another chat.
             quote_text: Optional snippet of the text you are quoting.
-            is_deleted_fallback: Set to True if you are replying to a DELETED message. 
+            is_deleted_fallback: Set to True if you are replying to a DELETED message.
                                 This will format the message as an AyuGram-style blockquote.
             fallback_sender_name: Name of the sender for the deleted fallback quote.
             fallback_sender_id: Numerical ID of the sender for tg://user?id link.
@@ -538,6 +538,12 @@ class AIToolKit:
                 # Combine the formatted fallback quote block and the actual reply text
                 final_text = f"{formatted_quote}\n{text}"
                 result = await client.send_message(chat_id, final_text, parse_mode="markdown")
+                
+                # Synchronously write the outgoing message to the DB immediately to eliminate the race condition
+                await db.save_message(str(chat_id), "model", final_text, msg_id=result.id)
+                import bot
+                bot.processed_msg_ids.add((int(chat_id), result.id))
+                
                 return f"Message sent successfully with AyuGram-style fallback quote. Message ID: {result.id}"
 
             # Scenario 2: Standard reply or cross-chat reply via Telegram API
@@ -571,6 +577,11 @@ class AIToolKit:
                 reply_to=reply_to_param,
                 **kwargs
             )
+
+            # Synchronously write the outgoing message to the DB immediately to eliminate the race condition
+            await db.save_message(str(chat_id), "model", text, msg_id=result.id)
+            import bot
+            bot.processed_msg_ids.add((int(chat_id), result.id))
 
             # Warn the model if writing to the current chat to avoid duplicates
             cid = current_chat_id.get()
