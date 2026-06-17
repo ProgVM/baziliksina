@@ -5,15 +5,15 @@ import logging
 import asyncio
 from pathlib import Path
 from PIL import Image
-from config import WORKSPACE_DIR, MAX_FILE_SIZE, AVATAR_CACHE_TIME, FFMPEG_PATH, CONVERSION_TIMEOUT
+from config import WORKSPACE_DIR, MAX_FILE_SIZE, AVATAR_CACHE_TIME, FFMPEG_PATH, CONVERSION_TIMEOUT, EMOJI_CACHE_DIR_NAME, AVATAR_CACHE_DIR_NAME, GIFT_CACHE_DIR_NAME, TEMP_MEDIA_DIR_NAME
 
 logger = logging.getLogger("Downloader")
 
 # Cache directories
-EMOJI_CACHE_DIR = WORKSPACE_DIR / "emoji_cache"
-AVATAR_CACHE_DIR = WORKSPACE_DIR / "avatar_cache"
-GIFT_CACHE_DIR = WORKSPACE_DIR / "gift_cache"
-TEMP_MEDIA_DIR = WORKSPACE_DIR / "temp_media"
+EMOJI_CACHE_DIR = WORKSPACE_DIR / EMOJI_CACHE_DIR_NAME
+AVATAR_CACHE_DIR = WORKSPACE_DIR / AVATAR_CACHE_DIR_NAME
+GIFT_CACHE_DIR = WORKSPACE_DIR / GIFT_CACHE_DIR_NAME
+TEMP_MEDIA_DIR = WORKSPACE_DIR / TEMP_MEDIA_DIR_NAME
 
 # Create directories during module initialization
 for directory in [EMOJI_CACHE_DIR, AVATAR_CACHE_DIR, GIFT_CACHE_DIR, TEMP_MEDIA_DIR]:
@@ -260,7 +260,7 @@ async def get_cached_gift_animation(client, gift_id: int) -> str:
 
 
 async def download_and_cache_media(client, message, is_private: bool, mentioned: bool) -> str:
-    """
+    f"""
     Universal extractor and downloader for regular attachments, voice messages, video notes, and files from polls.
     Limits the maximum size to {MAX_FILE_SIZE}. Returns JSON with local path and type.
     """

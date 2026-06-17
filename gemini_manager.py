@@ -8,7 +8,7 @@ import inspect
 from google.genai import types
 from google.genai.errors import APIError
 
-from config import GEMINI_MODELS, WORKSPACE_DIR, SESSION_NAME, SESSION_PATH, SAFE_DB_DIR, OWNER_ID, MESSAGES_LIMIT, SUMMARIZATION_MESSAGES_LIMIT, SUMMARIZATION_KEEP_LIMIT, TEMPERATURE, STOP_SEQUENCES, THINKING_LEVEL, TOP_P, MAX_TURNS, MEDIA_LIMIT, SAFETY_HATE_SPEECH, SAFETY_HARASSMENT, SAFETY_SEXUALLY_EXPLICIT, SAFETY_DANGEROUS_CONTENT, GEMINI_TIMEOUT, TYPING_INTERVAL, TIMEOUT_SLEEP, RATE_LIMIT_SLEEP, API_ERROR_SLEEP, CHARACTER_FILE
+from config import GEMINI_MODELS, WORKSPACE_DIR, SESSION_NAME, SESSION_PATH, SAFE_DB_DIR, OWNER_ID, MESSAGES_LIMIT, SUMMARIZATION_MESSAGES_LIMIT, SUMMARIZATION_KEEP_LIMIT, TEMPERATURE, STOP_SEQUENCES, THINKING_LEVEL, TOP_P, MAX_TURNS, MEDIA_LIMIT, SAFETY_HATE_SPEECH, SAFETY_HARASSMENT, SAFETY_SEXUALLY_EXPLICIT, SAFETY_DANGEROUS_CONTENT, GEMINI_TIMEOUT, TYPING_INTERVAL, TIMEOUT_SLEEP, RATE_LIMIT_SLEEP, API_ERROR_SLEEP, CHARACTER_FILE, BOT_AVATAR_NAME, DB_NAME
 from key_manager import GeminiKeyManager, PollinationsKeyManager
 from db_manager import DBManager
 from registry import registry
@@ -29,6 +29,7 @@ class GeminiManager:
     def tool_pattern(self):
         """Dynamically constructs a regular expression containing all active (system and custom) tool names."""
         import re
+        from registry import registry
         tool_names = [t.name for t in registry.get_all_tools()]
         if not tool_names:
             return re.compile(r"(?!)") # Regex that matches nothing if the registry is empty
@@ -124,11 +125,11 @@ class GeminiManager:
             f"- Phone number: {me_phone}\n"
             f"- Telegram Premium: {me_premium}\n"
             f"- Your description (about me): '{me_bio}'\n"
-            f"Your profile picture is always available in the sandbox under the name 'bot_avatar.jpg'. You can analyze it if asked!\n\n"
+            f"Your profile picture is always available in the sandbox under the name '{BOT_AVATAR_NAME}'. You can analyze it if asked!\n\n"
             f"Working directory path: {WORKSPACE_DIR}\n"
             f"Session name: {SESSION_NAME}\n"
             f"Session path: {SESSION_PATH}\n"
-            f"Database path: {SAFE_DB_DIR}/bot_context.db\n\n"
+            f"Database path: {SAFE_DB_DIR}/{DB_NAME}\n\n"
             f"--- SECTION 1: TECHNICAL ARCHITECTURE AND ROOT MODULES (VM GUIDE) ---\n"
             f"You are granted full access to the codebase of the project. When writing and executing Python code (via execute_python_code), "
             f"you can directly import and use the following modules and their key methods:\n"
@@ -215,6 +216,21 @@ class GeminiManager:
             f"--- SECTION 6: STRICTURE AGAINST CONVERSATIONAL CODE EXECUTION ---\n"
             f"1. Writing Python code blocks (using ` ```python ... ``` `) in your standard text response (response.text) DOES NOT execute them! Standard text is always sent to the chat as plain readable text.\n"
             f"2. If you want to run Python code in the sandbox VM, you MUST explicitly invoke the `execute_python_code` tool. Never write Python code blocks in your conversational response expecting them to run autonomously.\n"
+            f"--- SECTION 7: VM AND CUSTOM TOOL PRE-INJECTED NAMESPACE GUIDE ---\n"
+            f"1. SANDBOX VM NAMESPACE (via execute_python_code): When executing Python scripts in the sandbox VM, you DO NOT need to initialize clients, databases, or import standard async libraries. The following variables are ALREADY pre-injected in the global scope of your script and ready for use:\n"
+            f"   - `client`: The Sandboxed Telethon MTProto client proxy (already logged in and fully functional). Use `await client.send_message(...)`, `await client.get_messages(...)`, etc.\n"
+            f"   - `db`: The active SQLite database manager. Use `await db.get_memory(...)`, `await db.set_memory(...)`, etc.\n"
+            f"   - `ai_manager`: The active AI orchestrator class.\n"
+            f"   - `asyncio`: Pre-imported asyncio module.\n"
+            f"   - `telethon`: Pre-imported telethon module.\n"
+            f"   - `chat_id`: Integer ID of the active chat.\n"
+            f"   - `event`: The original incoming Telethon event object (if triggered by a message).\n"
+            f"   - `result`: Set this global variable at the end of your script to return computed results back to the AI (e.g. `result = my_computed_value`).\n"
+            f"2. CUSTOM TOOL NAMESPACE (via create_or_update_custom_tool): When writing code for custom dynamic tools, the following global variables are ALREADY pre-injected inside your function namespace and ready to be used:\n"
+            f"   - `client`, `db`, `ai_manager` (identical to the VM objects).\n"
+            f"   - `logger`: Pre-configured logging object (e.g., `logger.info(...)`).\n"
+            f"   - `httpx`, `json`, `asyncio`, `Path`, `urllib`, `types`, `os`: Pre-imported standard packages.\n"
+            f"Avoid importing these modules inside your scripts, as they are already globally available.\n"
         )
         return prompt
 
@@ -514,6 +530,13 @@ class GeminiManager:
                         logger.error(f"Gemini API Error ({e.code}): {str(e)}")
                         raise e
 
+                # Extract all function calls from candidate content parts (handles both native and healed calls)
+                function_calls_to_execute = []
+                if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                    for part in response.candidates[0].content.parts:
+                        if part.function_call:
+                            function_calls_to_execute.append(part.function_call)
+
                 # Log successful text generation
                 if response.text:
                     logger.info(f"Received text response from Gemini (Turn {turn + 1}): '{response.text[:200]}...'")
@@ -523,6 +546,7 @@ class GeminiManager:
                 if response.text:
                     import ast
                     import time
+                    # (Removed local import of inspect to prevent shadowing the global module)
                     
                     healed_calls = []
                     
@@ -731,15 +755,25 @@ class GeminiManager:
                                 
                                 if fn_name == "no_op_ignore":
                                     should_ignore = True
+                            
+                            # Re-extract function calls since we added healed ones
+                            function_calls_to_execute = []
+                            for part in response.candidates[0].content.parts:
+                                if part.function_call:
+                                    function_calls_to_execute.append(part.function_call)
 
                 # Sending the reply to the current Chat as a reply strictly to the locked message from the start
-                if response.text and not response.function_calls and not should_ignore:
+                if response.text and not function_calls_to_execute and not should_ignore:
                     typing_task.cancel()
                     
                     # Programmatically strip any generated [Chat: ... | Message ID: ...] prefixes
                     cleaned_text = response.text
                     prefix_pattern = re.compile(r'^\[Chat:\s*-?\d+\s*\|\s*Message ID:\s*(?:\d+|unknown)\]\s*\n?', re.IGNORECASE)
                     cleaned_text = prefix_pattern.sub("", cleaned_text).strip()
+                    
+                    # Strip any leaked thought/thinking process headers from the API response
+                    thought_pattern = re.compile(r'^(?:thought|thinking|thoughts)(?:\s*:\s*|\s*\n+)?', re.IGNORECASE)
+                    cleaned_text = thought_pattern.sub("", cleaned_text).strip()
                     
                     if cleaned_text:
                         try:
@@ -757,15 +791,15 @@ class GeminiManager:
                             logger.warning(f"Failed to deliver plain-text response to chat {chat_id}: {str(tg_err)}")
                             # Write the failure reason back to the DB to make the AI aware of the Telegram restriction
                             await self.db.save_message(
-                                chat_id,
-                                "user",
-                                f"[System notification: Your last plain-text response failed to deliver due to Telegram error: {str(tg_err)}]"
+                            chat_id,
+                            "user",
+                            f"[System notification: Your last plain-text response failed to deliver due to Telegram error: {str(tg_err)}]"
                             )
 
                 # Tool calls
-                if response.function_calls:
-                    logger.info(f"Received {len(response.function_calls)} tool call(s) from Gemini (Turn {turn + 1})")
-                    logger.info(f"AI function calls (Step {turn + 1}): {response.function_calls}")
+                if function_calls_to_execute:
+                    logger.info(f"Received {len(function_calls_to_execute)} tool call(s) from Gemini (Turn {turn + 1})")
+                    logger.info(f"AI function calls (Step {turn + 1}): {function_calls_to_execute}")
                     
                     model_tool_call_content = types.Content(role="model", parts=response.candidates[0].content.parts)
                     contents.append(model_tool_call_content)
@@ -774,7 +808,7 @@ class GeminiManager:
                     tool_responses = []
                     additional_parts = []  # <-- List for native file attachment
                     
-                    for call in response.function_calls:
+                    for call in function_calls_to_execute:
                         fn_name = call.name
                         args = call.args
                         

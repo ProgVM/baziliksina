@@ -9,7 +9,7 @@ from telethon import TelegramClient, events
 from telethon.tl import types as tl_types
 
 # Import our modules
-from config import API_ID, API_HASH, SESSION_PATH, WORKSPACE_DIR, BOOTSTRAP_DATABASE, DEBOUNCE_DELAY, DUPLICATE_CACHE_SIZE, PROFILE_UPDATE_INTERVAL, TIMERS_LOOP_INTERVAL
+from config import API_ID, API_HASH, SESSION_PATH, WORKSPACE_DIR, BOOTSTRAP_DATABASE, DEBOUNCE_DELAY, DUPLICATE_CACHE_SIZE, PROFILE_UPDATE_INTERVAL, TIMERS_LOOP_INTERVAL, VM_STDOUT_NOTICE_LIMIT, BOT_AVATAR_NAME
 from db_manager import DBManager
 from gemini_manager import GeminiManager, entity_cache
 from parser import parse_message_payload, parse_reply_metadata, parse_sender_info, parse_and_cache_user_metadata, parse_and_cache_chat_metadata
@@ -50,7 +50,7 @@ async def run_and_log_sandbox_code(chat_id: int, code: str, source_type: str = "
     result = await tools.execute_python_code(code, chat_id=chat_id, event=event)
     logger.info(f"--- VM background code execution result ({source_type}) ---\n{result}\n--------------------------------------------")
     
-    p_result = result[:1500] + "..." if len(result) > 1500 else result
+    p_result = result[:VM_STDOUT_NOTICE_LIMIT] + "..." if len(result) > VM_STDOUT_NOTICE_LIMIT else result
     notice_text = (
         f"[System notification: Autonomous Python code {source_type} finished execution]\n"
         f"Code:\n{code}\n\n"
@@ -597,7 +597,7 @@ async def main():
         photos = await client.get_profile_photos(me, limit=1)
         if photos:
             logger.info("Downloading AI's own account avatar to bot_workspace...")
-            await client.download_media(photos[0], file=str(WORKSPACE_DIR / "bot_avatar.jpg"))
+            await client.download_media(photos[0], file=str(WORKSPACE_DIR / BOT_AVATAR_NAME))
     except Exception as e:
         logger.error(f"Failed to download AI avatar: {str(e)}")
     

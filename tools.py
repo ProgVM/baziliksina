@@ -697,7 +697,7 @@ class AIToolKit:
             if is_current_chat_send:
                 logger.info("AI successfully sent a message to the current chat via the tool. Returning instruction to the AI not to duplicate the response.")
                 return (
-                    f"Success. Action {method_name} executed. Result: {str(result)[:200]}.\n"
+                    f"Success. Action {method_name} executed. Result: {str(result)[:TELEGRAM_ACTION_CONFIRM_LIMIT]}.\n"
                     f"[WARNING TO AI]: This message has already been sent and delivered to the recipient in the current active chat. "
                     f"Please DO NOT duplicate this exact text in your normal reply (response.text) at the next step unless you explicitly need to. "
                     "If the dialogue is finished, simply call the 'no_op_ignore' tool and complete the transaction."
@@ -753,7 +753,10 @@ class AIToolKit:
                         except Exception as hist_err:
                             logger.error(f"Error receiving bot response: {str(hist_err)}")
                     
-            return f"Action {method_name} successfully executed. Result: {str(result)[:1000]}"
+            from utils import safe_serialize
+            serialized_res = safe_serialize(result)
+            truncated_res = serialized_res[:5000] + "\n[Output truncated]" if len(serialized_res) > 5000 else serialized_res
+            return f"Action {method_name} successfully executed. Result: {truncated_res}"
         except Exception as e:
             return f"Error executing '{method_name}': {str(e)}"
 
@@ -806,7 +809,7 @@ class AIToolKit:
         except Exception as e:
             return f"Error executing inline query: {str(e)}"
 
-    async def click_inline_button(self, chat_entity: str, message_id: int, button_index: int = None, button_text: str = None, timeout: float = BUTTON_CLICK_TIMEOUT, **kwargs) -> str:
+    async def click_inline_button(self, chat_entity: Any, message_id: int, button_index: int = None, button_text: str = None, timeout: float = BUTTON_CLICK_TIMEOUT, **kwargs) -> str:
         f"""
         Clicks on an inline button in the specified message of another bot.
 
@@ -820,6 +823,11 @@ class AIToolKit:
         if not client:
             return "Error: Telethon client is not initialized."
         try:
+            if isinstance(chat_entity, str):
+                try:
+                    chat_entity = int(chat_entity)
+                except ValueError:
+                    pass
             message = await asyncio.wait_for(client.get_messages(chat_entity, ids=message_id), timeout=timeout)
             if not message:
                 return f"Message with ID {message_id} not found."
@@ -998,7 +1006,7 @@ class AIToolKit:
                 return f"Pollinations AI error: status {resp.status_code}"
                 
             image_bytes = resp.content
-            out_filename = "generated_image.png"
+            out_filename = DEFAULT_IMAGE_NAME
             out_path = WORKSPACE_DIR / out_filename
             with open(out_path, "wb") as f:
                 f.write(image_bytes)
@@ -1045,7 +1053,7 @@ class AIToolKit:
                 return f"Audio generation error: status {resp.status_code}"
             
             audio_bytes = resp.content
-            out_filename = "generated_audio.mp3"
+            out_filename = DEFAULT_AUDIO_NAME
             with open(WORKSPACE_DIR / out_filename, "wb") as f:
                 f.write(audio_bytes)
                 
@@ -1097,7 +1105,7 @@ class AIToolKit:
                 return f"Video generation error: status {resp.status_code}"
                 
             video_bytes = resp.content
-            out_filename = "generated_video.mp4"
+            out_filename = DEFAULT_VIDEO_NAME
             with open(WORKSPACE_DIR / out_filename, "wb") as f:
                 f.write(video_bytes)
                 
@@ -1118,7 +1126,7 @@ class AIToolKit:
         Used when the file is too large to be passed directly into the prompt or when working with heavy documents/videos.
 
         Args:
-            filename: The name of the file in the sandbox (e.g., 'generated_image.png' or 'notes.txt').
+            filename: The name of the file in the sandbox (e.g., the default generated image file or any other file).
             timeout: File upload timeout limit in seconds. Default is {GOOGLE_UPLOAD_TIMEOUT}.
         """
         if not key_manager:
@@ -1164,7 +1172,7 @@ class AIToolKit:
         - 'uguu.se' — uploads any temporary files to the Uguu.se hosting.
 
         Args:
-            filename: The name of the file in the local folder (e.g., 'generated_image.png').
+            filename: The name of the file in the local folder (e.g., the default generated image file).
             provider: The name of the selected provider ('auto', 'pollinations', 'telegraph', 'file.io', 'uguu.se'). Default is {DEFAULT_PUBLIC_UPLOAD_PROVIDER}.
             timeout: Network request execution timeout limit in seconds. Default is {PUBLIC_UPLOAD_TIMEOUT}.
         """
@@ -1418,7 +1426,7 @@ class AIToolKit:
             return f"Error deleting tool '{name}': {str(e)}"
 
 
-    # Mapping of root tools to their cohesive categories for automatic self-registration
+# Mapping of root tools to their cohesive categories for automatic self-registration
     async def execute_python_code(self, code: str, **kwargs) -> str:
         """
         Executes asynchronous Python code in a safe isolated sandbox VM and returns the result.
@@ -1455,7 +1463,7 @@ class AIToolKit:
 
     async def execute_sql_query(self, sql: str, **kwargs) -> str:
         """
-        Executes a raw SQL query on the local bot_context.db SQLite database.
+        Executes a raw SQL query on the configured local SQLite database.
         Allows both data retrieval (SELECT) and database modifications (INSERT, UPDATE, DELETE, CREATE, DROP).
 
         Args:
@@ -1510,7 +1518,7 @@ class AIToolKit:
             stdout, stderr = await proc.communicate()
             
             res = stdout.decode('utf-8', errors='ignore') + stderr.decode('utf-8', errors='ignore')
-            return res[:3000] if len(res) > 3000 else res if res else "Command finished with no output."
+            return res[:SANDBOX_COMMAND_CHAR_LIMIT] if len(res) > SANDBOX_COMMAND_CHAR_LIMIT else res if res else "Command finished with no output."
         except Exception as e:
             return f"Error executing shell command: {str(e)}"
 
@@ -1550,10 +1558,11 @@ class AIToolKit:
 
     async def get_telegram_object_info(self, entity_id: Any, **kwargs) -> str:
         """
-        Requests and returns detailed properties, names, bios, and types of any Telegram user, group, or channel by its ID or username.
+        Requests and returns comprehensive properties, names, bios, types, bot status, and membership of any Telegram user, group, or channel.
+        Exposes 100% of the raw MTProto API fields by appending the full raw JSON payload to a clean visual summary.
 
         Args:
-            entity_id: The username (e.g., 'durov') or numerical ID of the entity.
+            entity_id: The username (e.g., 'durov') or numerical ID of the target user, bot, group, or channel.
         """
         if not client:
             return "Error: Telethon client is not initialized."
@@ -1565,24 +1574,174 @@ class AIToolKit:
                     pass
                     
             entity = await client.get_entity(entity_id)
-            from parser import parse_sender_info
-            info_str = parse_sender_info(entity, None)
+            e_type = type(entity).__name__
             
+            # 1. Visual Summary
+            details = [
+                f"Entity Details:",
+                f"- ID: {entity.id}",
+                f"- Type: {e_type}"
+            ]
+            
+            if hasattr(entity, "username") and entity.username:
+                details.append(f"- Username: @{entity.username}")
+                
             bio_ref = "None"
-            if type(entity).__name__ == "User":
+            
+            if e_type == "User":
+                details.append(f"- First Name: '{getattr(entity, 'first_name', '') or ''}'")
+                details.append(f"- Last Name: '{getattr(entity, 'last_name', '') or ''}'")
+                
+                # Highlight Bot Status - very important for AI context!
+                is_bot = getattr(entity, 'bot', False)
+                details.append(f"- IS BOT: {'Yes (This is a Telegram Bot)' if is_bot else 'No (This is a human user)'}")
+                
+                details.append(f"- Is Premium: {'Yes' if getattr(entity, 'premium', False) else 'No'}")
+                details.append(f"- Is Verified: {'Yes' if getattr(entity, 'verified', False) else 'No'}")
+                details.append(f"- Is Scam: {'Yes' if getattr(entity, 'scam', False) else 'No'}")
+                details.append(f"- Is Fake: {'Yes' if getattr(entity, 'fake', False) else 'No'}")
+                if getattr(entity, "phone", None):
+                    details.append(f"- Phone: {entity.phone}")
+                    
                 meta = await db.get_user_meta(str(entity.id)) if db else None
                 if meta:
                     bio_ref = meta.get("bio") or "None"
-            elif type(entity).__name__ in ["Channel", "Chat"]:
+                    
+            elif e_type in ["Channel", "Chat"]:
+                details.append(f"- Title: '{getattr(entity, 'title', '') or ''}'")
+                is_group = getattr(entity, 'megagroup', False) or getattr(entity, 'gigagroup', False) or e_type == "Chat"
+                details.append(f"- Subtype: {'Supergroup/Group' if is_group else 'Broadcast Channel'}")
+                details.append(f"- Is Verified: {'Yes' if getattr(entity, 'verified', False) else 'No'}")
+                details.append(f"- Is Scam: {'Yes' if getattr(entity, 'scam', False) else 'No'}")
+                details.append(f"- Is Fake: {'Yes' if getattr(entity, 'fake', False) else 'No'}")
+                
                 meta = await db.get_chat_meta(str(entity.id)) if db else None
                 if meta:
                     bio_ref = meta.get("bio") or meta.get("description") or "None"
                     
-            return f"Entity Info:\n- {info_str}\n- Description/Bio: {bio_ref}"
+            details.append(f"- Bio/Description from cache: '{bio_ref}'")
+            summary_text = "\n".join(details)
+            
+            # 2. Complete Raw MTProto JSON Payload
+            from utils import safe_serialize
+            raw_json = safe_serialize(entity)
+            
+            return (
+                f"{summary_text}\n\n"
+                f"=== Raw MTProto API Payload (JSON) ===\n"
+                f"{raw_json}"
+            )
         except Exception as e:
             return f"Error retrieving Telegram object info: {str(e)}"
 
+    async def get_telegram_message_details(self, chat_id: Any, message_id: int, **kwargs) -> str:
+        """
+        Requests and returns the complete properties, text, sender, formatting entities,
+        reactions, edit history, views, forwards, attached media, and inline button layout of a specific message.
+        Exposes 100% of the raw MTProto API fields (including forwards, inline bots, dice/game values, cross-chat replies, and formatting entities)
+        by appending the raw JSON payload to a clean visual summary.
 
+        Args:
+            chat_id: Username or numerical ID of the chat/channel.
+            message_id: The numerical ID of the message.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        try:
+            if isinstance(chat_id, str):
+                try:
+                    chat_id = int(chat_id)
+                except ValueError:
+                    pass
+                    
+            message = await client.get_messages(chat_id, ids=message_id)
+            if not message:
+                return f"Error: Message #{message_id} not found in chat {chat_id}."
+                
+            from parser import parse_sender_info, get_media_type_description
+            sender_info = parse_sender_info(message.sender, message)
+            
+            # 1. Visual Summary
+            details = [
+                f"Message #{message.id} Properties:",
+                f"- Sender: {sender_info}",
+                f"- Date Sent: {message.date}",
+                f"- Last Edited: {message.edit_date or 'Never edited'}",
+                f"- Raw Text Content: '{message.message or ''}'"
+            ]
+            
+            # Views and forwards (mainly channel specific)
+            if getattr(message, 'views', None) is not None:
+                details.append(f"- Views Count: {message.views}")
+            if getattr(message, 'forwards', None) is not None:
+                details.append(f"- Forwards Count: {message.forwards}")
+                
+            # Reply information
+            if message.is_reply:
+                details.append(f"- Is Reply To Message ID: {message.reply_to.reply_to_msg_id}")
+                if getattr(message.reply_to, "quote_text", None):
+                    details.append(f"- Quoted Text Fragment: '{message.reply_to.quote_text}'")
+                    
+            # Formatting entities
+            entities_list = []
+            if message.entities:
+                for ent in message.entities:
+                    ent_type = type(ent).__name__
+                    entities_list.append(ent_type)
+            details.append(f"- Text Formatting Entities: {', '.join(entities_list) if entities_list else 'None'}")
+            
+            # Attached Media details
+            media_desc = "None"
+            if message.media:
+                m_desc = get_media_type_description(message)
+                media_desc = f"{m_desc or 'Unknown Attachment'} ({type(message.media).__name__})"
+            details.append(f"- Attached Media: {media_desc}")
+            
+            # Reactions
+            reactions_list = []
+            if getattr(message, 'reactions', None) and getattr(message.reactions, 'results', None):
+                for r in message.reactions.results:
+                    emoji = getattr(r.reaction, 'emoticon', None)
+                    if not emoji and hasattr(r.reaction, 'document_id'):
+                        emoji = f"[Custom Emoji ID: {r.reaction.document_id}]"
+                    reactions_list.append(f"'{emoji or 'Unknown'}' (x{r.count})")
+            details.append(f"- Reactions: {', '.join(reactions_list) if reactions_list else 'None'}")
+            
+            # Inline button layout (reply_markup)
+            buttons_desc = []
+            if message.reply_markup and hasattr(message.reply_markup, 'rows'):
+                for r_idx, row in enumerate(message.reply_markup.rows):
+                    row_btns = []
+                    for b_idx, btn in enumerate(row.buttons):
+                        btn_desc = f"Button [Index: {b_idx} in Row: {r_idx}] | Text: '{btn.text}'"
+                        if hasattr(btn, 'data') and btn.data:
+                            try:
+                                btn_desc += f" | callback_data: '{btn.data.decode('utf-8')}'"
+                            except Exception:
+                                btn_desc += f" | callback_hex: '{btn.data.hex()}'"
+                        elif hasattr(btn, 'url') and btn.url:
+                             btn_desc += f" | URL: '{btn.url}'"
+                        row_btns.append(btn_desc)
+                    buttons_desc.append(f"Row {r_idx}:\n  " + "\n  ".join(row_btns))
+                    
+            buttons_summary = "No inline buttons."
+            if buttons_desc:
+                buttons_summary = "Inline Buttons Layout:\n" + "\n".join(buttons_desc)
+            details.append(f"- {buttons_summary}")
+            
+            summary_text = "\n".join(details)
+            
+            # 2. Complete Raw MTProto JSON Payload
+            from utils import safe_serialize
+            raw_json = safe_serialize(message)
+            
+            return (
+                f"{summary_text}\n\n"
+                f"=== Raw MTProto API Payload (JSON) ===\n"
+                f"{raw_json}"
+            )
+        except Exception as e:
+            return f"Error retrieving message details: {str(e)}"
 ROOT_TOOL_CATEGORIES = {
     "save_file_to_workspace": "Category 1: File System and Sandbox (Workspace File Management)",
     "save_file_from_telegram": "Category 1: File System and Sandbox (Workspace File Management)",
@@ -1619,6 +1778,7 @@ ROOT_TOOL_CATEGORIES = {
     "upload_file_to_google": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
     "get_chat_history_from_db": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
     "get_telegram_object_info": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "get_telegram_message_details": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
     "execute_sql_query": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
     
     "create_or_update_custom_tool": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",

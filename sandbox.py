@@ -9,6 +9,7 @@ from pathlib import Path
 
 # Import all project modules to pass into the isolated environment
 import config
+from config import SANDBOX_BLOCKED_FILES
 import db_manager
 import key_manager
 import gemini_manager
@@ -84,7 +85,7 @@ class AsyncSandbox:
         if not resolved_path.startswith(str(self.workspace)):
             raise PermissionError("Security error: Attempted to access a directory outside the AI sandbox.")
         
-        if any(x in resolved_path for x in ["bot.py", "config.py", "db_manager.py", "key_manager.py", "gemini_manager.py", ".env", "tools.py", "sandbox.py"]):
+        if any(x in resolved_path for x in SANDBOX_BLOCKED_FILES):
             raise PermissionError("Security error: Access to the bot's system files is blocked.")
             
         return open(file, mode, *args, **kwargs)
