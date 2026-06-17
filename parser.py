@@ -308,7 +308,7 @@ async def parse_message_payload(client, db, message) -> str:
     and raw message properties in a separate msgs_meta table in JSON format.
     """
     meta_parts = []
-    text = message.message or ""
+    text = message.text or ""
     chat_id = str(message.chat_id)
     msg_id = message.id
 
