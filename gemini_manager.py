@@ -400,6 +400,7 @@ class GeminiManager:
         try:
             for turn in range(max_turns):
                 # Reload history dynamically at the start of EACH turn to catch real-time interruptions!
+                logger.info(f"Reloading active history context for chat {chat_id} (Turn {turn + 1}/{max_turns})...")
                 history_raw = await self.db.get_history(chat_id, limit=MESSAGES_LIMIT)
 
                 contents_raw = []
@@ -487,6 +488,7 @@ class GeminiManager:
                 except Exception as count_err:
                     logger.error(f"Error counting tokens: {str(count_err)}")
 
+                logger.info(f"Requesting generation from Gemini API (Turn {turn + 1}/{max_turns})...")
                 try:
                     response = await asyncio.wait_for(
                         gemini_client.aio.models.generate_content(
@@ -502,16 +504,23 @@ class GeminiManager:
                     continue
                 except APIError as e:
                     if e.code == 429:
+                        logger.warning(f"Gemini API Rate Limit (429) encountered. Exhausted key: '{gemini_client.api_key[:10]}...'. Retrying with key rotation...")
                         await asyncio.sleep(RATE_LIMIT_SLEEP)
                         # Mark the current Gemini key/model as exhausted in the DB before rotation
                         await self.key_manager.mark_key_exhausted()
                         gemini_client = await self.key_manager.rotate_key_async()
                         continue
                     elif e.code in [502, 503, 504]:
+                        logger.warning(f"Gemini API Server Error ({e.code}) encountered. Sleeping for {API_ERROR_SLEEP}s before retrying...")
                         await asyncio.sleep(API_ERROR_SLEEP)
                         continue
                     else:
+                        logger.error(f"Gemini API Error ({e.code}): {str(e)}")
                         raise e
+
+                # Log successful text generation
+                if response.text:
+                    logger.info(f"Received text response from Gemini (Turn {turn + 1}): '{response.text[:200]}...'")
 
                 # AUTO-HEAL (Auto-Heal Interceptor)
                 # If the AI mistakenly outputted a technical call as plain text, we intercept it, convert it to a native FunctionCall, and run it!
@@ -574,29 +583,48 @@ class GeminiManager:
                                         if isinstance(action_input, dict):
                                             args = action_input
                                         elif isinstance(action_input, str):
-                                            # Try loading as valid JSON
+                                            # First pass: try parsing JSON or Python literal string
                                             try:
                                                 args = json.loads(action_input)
                                             except Exception:
-                                                # Fallback to ast.literal_eval for single-quoted Python dict strings
                                                 try:
                                                     args = ast.literal_eval(action_input)
                                                 except Exception:
-                                                    # Dynamically inspect tool signature to map the raw string input
-                                                    tool_meta = registry.get(fn_name)
-                                                    if tool_meta:
-                                                        sig = inspect.signature(tool_meta.callable)
-                                                        # Exclude self and generic varargs from parameter matching
-                                                        param_names = [
-                                                            p.name for p in sig.parameters.values() 
-                                                            if p.name not in ['self', 'kwargs', 'args']
-                                                        ]
-                                                        if param_names:
-                                                            args = {param_names[0]: action_input}
-                                                        else:
-                                                            args = {"text": action_input}
+                                                    args = action_input
+
+                                            # Recursive unpack: resolve double-escaped or nested stringified JSONs
+                                            while isinstance(args, str):
+                                                try:
+                                                    parsed_args = json.loads(args)
+                                                    if isinstance(parsed_args, (dict, list)):
+                                                        args = parsed_args
+                                                        break
+                                                except Exception:
+                                                    pass
+                                                try:
+                                                    parsed_args = ast.literal_eval(args)
+                                                    if isinstance(parsed_args, (dict, list)):
+                                                        args = parsed_args
+                                                        break
+                                                except Exception:
+                                                    pass
+                                                break  # Stop to prevent infinite loops if parsing fails
+
+                                            # If still a string after all attempts, perform dynamic signature mapping
+                                            if isinstance(args, str):
+                                                tool_meta = registry.get(fn_name)
+                                                if tool_meta:
+                                                    sig = inspect.signature(tool_meta.callable)
+                                                    param_names = [
+                                                        p.name for p in sig.parameters.values() 
+                                                        if p.name not in ['self', 'kwargs', 'args']
+                                                    ]
+                                                    if param_names:
+                                                        args = {param_names[0]: args}
                                                     else:
-                                                        args = {"text": action_input}
+                                                        args = {"text": args}
+                                                else:
+                                                    args = {"text": args}
                                     else:
                                         # Directly collect other keys as flat parameters (e.g. {"action": "generate_image", "prompt": "..."})
                                         args = {k: v for k, v in data.items() if k not in ["action", "parameters_schema"]}
@@ -629,6 +657,27 @@ class GeminiManager:
                                         healed_calls.append({
                                             "name": key,
                                             "args": val
+                                        })
+                            # Case F: Native-like tool_calls list {"tool_calls": [{"name": "...", "arguments": {...}}]}
+                            elif "tool_calls" in data and isinstance(data["tool_calls"], list):
+                                for tc in data["tool_calls"]:
+                                    if isinstance(tc, dict) and "name" in tc:
+                                        fn_name = tc["name"]
+                                        args = tc.get("arguments") or tc.get("args") or {}
+                                        
+                                        # If arguments is a string (escaped JSON/literal), recursively parse it
+                                        if isinstance(args, str):
+                                            try:
+                                                args = json.loads(args)
+                                            except Exception:
+                                                try:
+                                                    args = ast.literal_eval(args)
+                                                except Exception:
+                                                    pass
+                                                    
+                                        healed_calls.append({
+                                            "name": fn_name,
+                                            "args": args
                                         })
                         except Exception as json_err:
                             logger.debug(f"Auto-Heal failed to parse JSON block: {str(json_err)}")
@@ -685,15 +734,13 @@ class GeminiManager:
                                 
                                 if fn_name == "no_op_ignore":
                                     should_ignore = True
-                                
-                        # Clear response.text to prevent technical strings from being sent to the Chat!
-                        response.text = None
 
                 # Sending the reply to the current Chat as a reply strictly to the locked message from the start
                 if response.text and not response.function_calls and not should_ignore:
                     typing_task.cancel()
                     try:
                         await self.client.send_message(chat_entity, response.text, reply_to=reply_to_id)
+                        logger.info(f"Sent plain-text response to chat {chat_id}: '{response.text[:150]}...'")
                     except Exception as tg_err:
                         logger.warning(f"Failed to deliver plain-text response to chat {chat_id}: {str(tg_err)}")
                         # Write the failure reason back to the DB to make the AI aware of the Telegram restriction
@@ -704,6 +751,7 @@ class GeminiManager:
                         )
                 # Tool calls
                 if response.function_calls:
+                    logger.info(f"Received {len(response.function_calls)} tool call(s) from Gemini (Turn {turn + 1})")
                     logger.info(f"AI function calls (Step {turn + 1}): {response.function_calls}")
                     
                     model_tool_call_content = types.Content(role="model", parts=response.candidates[0].content.parts)
@@ -723,12 +771,14 @@ class GeminiManager:
                         tool_meta = registry.get(fn_name)
                         if tool_meta:
                             try:
+                                logger.info(f"Tool call '{fn_name}' arguments: {args}")
                                 logger.info(f"Tool call '{fn_name}' from registry...")
                                 if inspect.iscoroutinefunction(tool_meta.callable):
                                     result = await tool_meta.callable(**args)
                                 else:
                                     result = tool_meta.callable(**args)
                                     
+                                logger.info(f"Tool '{fn_name}' execution completed. Result: '{str(result)[:500]}...'")
                                 # Automatic interception of successful Google URI upload to attach a Part object
                                 if fn_name == "upload_file_to_google" and isinstance(result, dict) and result.get("status") == "success":
                                     g_uri = result.get("google_uri")
