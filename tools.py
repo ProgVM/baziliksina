@@ -556,9 +556,9 @@ class AIToolKit:
                 if reply_to_chat_id and str(reply_to_chat_id) != str(chat_id):
                     try:
                         if isinstance(reply_to_chat_id, str):
-                            try:
+                            try: 
                                 reply_to_chat_id = int(reply_to_chat_id)
-                            except ValueError:
+                            except ValueError: 
                                 pass
                         reply_peer = await client.get_input_entity(reply_to_chat_id)
                     except Exception as peer_err:
@@ -1418,7 +1418,171 @@ class AIToolKit:
             return f"Error deleting tool '{name}': {str(e)}"
 
 
-# Mapping of root tools to their cohesive categories for automatic self-registration
+    # Mapping of root tools to their cohesive categories for automatic self-registration
+    async def execute_python_code(self, code: str, **kwargs) -> str:
+        """
+        Executes asynchronous Python code in a safe isolated sandbox VM and returns the result.
+        The code is executed relative to the local workspace folder.
+
+        Args:
+            code: The Python code to run. Must be asynchronous (e.g., 'await client.send_message(...)').
+        """
+        from sandbox import AsyncSandbox
+        try:
+            cid = current_chat_id.get()
+        except LookupError:
+            cid = None
+            
+        sandbox = AsyncSandbox(
+            workspace_dir=WORKSPACE_DIR,
+            client_instance=client,
+            db_instance=db,
+            ai_manager_instance=ai_manager,
+            chat_id=cid
+        )
+        return await sandbox.execute(code)
+
+    def no_op_ignore(self, reason: str, **kwargs) -> str:
+        """
+        Finishes the current generation step immediately without sending any text messages to the chat.
+        Used when the incoming message is spam, flood, or does not require an answer.
+
+        Args:
+            reason: Explanation of why the conversation is being ignored.
+        """
+        logger.info(f"Dialogue ignored. Reason: {reason}")
+        return f"Dialogue successfully ignored. Reason: {reason}"
+
+    async def execute_sql_query(self, sql: str, **kwargs) -> str:
+        """
+        Executes a raw SQL query on the local bot_context.db SQLite database.
+        Allows both data retrieval (SELECT) and database modifications (INSERT, UPDATE, DELETE, CREATE, DROP).
+
+        Args:
+            sql: The SQL query string to execute.
+        """
+        if not db:
+            return "Error: Database is not initialized."
+        try:
+            async with db.db.execute(sql) as cursor:
+                if cursor.description is not None:
+                    # It is a data retrieval query (SELECT)
+                    rows = await cursor.fetchall()
+                    cols = [d[0] for d in cursor.description]
+                    results = [dict(zip(cols, row)) for row in rows[:SQL_SELECT_LIMIT]]
+                    if not results:
+                        return "Query executed. No matching rows found."
+                    
+                    from utils import safe_serialize
+                    out = safe_serialize(results)
+                    return out[:SQL_STDOUT_CHAR_LIMIT] + "\n[Output truncated]" if len(out) > SQL_STDOUT_CHAR_LIMIT else out
+                else:
+                    # It is a data modification query (INSERT, UPDATE, DELETE, CREATE, etc.)
+                    await db.db.commit()
+                    rowcount = cursor.rowcount
+                    lastrowid = cursor.lastrowid
+                    res_parts = ["Query executed successfully. Transaction committed."]
+                    if rowcount is not None and rowcount >= 0:
+                        res_parts.append(f"Affected rows: {rowcount}")
+                    if lastrowid is not None and lastrowid > 0:
+                        res_parts.append(f"Last inserted row ID: {lastrowid}")
+                    return "\n".join(res_parts)
+        except Exception as e:
+            return f"SQL Error: {str(e)}"
+
+    async def run_sandboxed_command(self, command: str, **kwargs) -> str:
+        """
+        Runs a standard system bash/shell command securely in the sandbox and returns its stdout.
+
+        Args:
+            command: Bash shell command (e.g., 'ls -l' or 'du -sh *').
+        """
+        if FORBIDDEN_SHELL_REGEX.search(command):
+            return "Security error: This shell command contains blocked terms or tries to access forbidden system files."
+            
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                cwd=str(WORKSPACE_DIR),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            
+            res = stdout.decode('utf-8', errors='ignore') + stderr.decode('utf-8', errors='ignore')
+            return res[:3000] if len(res) > 3000 else res if res else "Command finished with no output."
+        except Exception as e:
+            return f"Error executing shell command: {str(e)}"
+
+    async def get_chat_history_from_db(self, chat_id: Any, limit: int = 50, **kwargs) -> str:
+        """
+        Retrieves raw historical messages from the SQLite database for a specific chat.
+
+        Args:
+            chat_id: The target chat ID or username.
+            limit: Maximum number of messages to fetch (default is 50).
+        """
+        if not db:
+            return "Error: Database is not initialized."
+        try:
+            if isinstance(chat_id, str):
+                try:
+                    chat_id = int(chat_id)
+                except ValueError:
+                    pass
+                    
+            async with db.db.execute(
+                "SELECT role, text, timestamp FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ?",
+                (str(chat_id), limit)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                
+            if not rows:
+                return f"No message history found in the DB for chat {chat_id}."
+                
+            rows.reverse()
+            lines = []
+            for role, text, ts in rows:
+                lines.append(f"[{ts}] {role.upper()}: {text}")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Error loading chat history: {str(e)}"
+
+    async def get_telegram_object_info(self, entity_id: Any, **kwargs) -> str:
+        """
+        Requests and returns detailed properties, names, bios, and types of any Telegram user, group, or channel by its ID or username.
+
+        Args:
+            entity_id: The username (e.g., 'durov') or numerical ID of the entity.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        try:
+            if isinstance(entity_id, str):
+                try:
+                    entity_id = int(entity_id)
+                except ValueError:
+                    pass
+                    
+            entity = await client.get_entity(entity_id)
+            from parser import parse_sender_info
+            info_str = parse_sender_info(entity, None)
+            
+            bio_ref = "None"
+            if type(entity).__name__ == "User":
+                meta = await db.get_user_meta(str(entity.id)) if db else None
+                if meta:
+                    bio_ref = meta.get("bio") or "None"
+            elif type(entity).__name__ in ["Channel", "Chat"]:
+                meta = await db.get_chat_meta(str(entity.id)) if db else None
+                if meta:
+                    bio_ref = meta.get("bio") or meta.get("description") or "None"
+                    
+            return f"Entity Info:\n- {info_str}\n- Description/Bio: {bio_ref}"
+        except Exception as e:
+            return f"Error retrieving Telegram object info: {str(e)}"
+
+
 ROOT_TOOL_CATEGORIES = {
     "save_file_to_workspace": "Category 1: File System and Sandbox (Workspace File Management)",
     "save_file_from_telegram": "Category 1: File System and Sandbox (Workspace File Management)",
