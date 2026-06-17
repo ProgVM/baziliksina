@@ -110,7 +110,7 @@ class GeminiKeyManager:
             active_key = self.keys[self.current_key_index]
             await self.db.save_key_meta(active_key, "gemini", status="exhausted", exhausted_at=int(time.time()))
 
-    async def rotate_async(self):
+    async def rotate_key_async(self):
         """First rotates the model, and after a full cycle switches the key."""
         await self.mark_key_exhausted() # Mark the current key as exhausted before rotation
         
