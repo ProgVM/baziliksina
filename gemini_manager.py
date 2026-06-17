@@ -25,6 +25,90 @@ class GeminiManager:
         self.pollinations_key_manager = PollinationsKeyManager(db_manager)
         self._last_system_prompt_hash = None
 
+    async def _heal_inaccessible_file(self, file_id: str, contents: list):
+        """
+        Permanently sanitizes the local SQLite database and active session context 
+        to remove an inaccessible Google File URI after key rotations.
+        """
+        logger.info(f"Inaccessible File ID identified: {file_id}. Cleaning database and active contents...")
+        
+        # 1. Clean local database to heal context history permanently (both text and raw_content_json fields)
+        try:
+            import re
+            async with self.db.db.execute(
+                "SELECT id, text, raw_content_json FROM messages WHERE text LIKE ? OR raw_content_json LIKE ?", 
+                (f"%{file_id}%", f"%{file_id}%")
+            ) as cursor:
+                db_rows = await cursor.fetchall()
+            
+            for r_id, db_text, db_raw_json in db_rows:
+                cleaned_db_text = None
+                if db_text:
+                    cleaned_db_text = re.sub(
+                        r"https://generativelanguage\.googleapis\.com/(?:upload/)?v1beta/files/" + re.escape(file_id),
+                        "[File inaccessible due to API key rotation]",
+                        db_text,
+                        flags=re.IGNORECASE
+                    )
+                
+                cleaned_db_json = None
+                if db_raw_json:
+                    # Replace the URI inside the raw JSON text directly
+                    cleaned_db_json = re.sub(
+                        r"https://generativelanguage\.googleapis\.com/(?:upload/)?v1beta/files/" + re.escape(file_id),
+                        "[File inaccessible due to API key rotation]",
+                        db_raw_json,
+                        flags=re.IGNORECASE
+                    )
+                    
+                    try:
+                        data_obj = json.loads(cleaned_db_json)
+                        if "parts" in data_obj and isinstance(data_obj["parts"], list):
+                            new_parts = []
+                            for p in data_obj["parts"]:
+                                is_offending = False
+                                if isinstance(p, dict):
+                                    if p.get("file_data") and "[File inaccessible" in str(p.get("file_data")):
+                                        is_offending = True
+                                    elif p.get("inline_data") and "[File inaccessible" in str(p.get("inline_data")):
+                                        is_offending = True
+                                        
+                                if is_offending:
+                                    new_parts.append({"text": "[System: File attachment inaccessible due to API key rotation]"})
+                                else:
+                                    new_parts.append(p)
+                            data_obj["parts"] = new_parts
+                            cleaned_db_json = json.dumps(data_obj)
+                    except Exception as json_err:
+                        logger.error(f"Failed to deeply reconstruct JSON for File ID {file_id}: {str(json_err)}")
+
+                await self.db.db.execute(
+                    "UPDATE messages SET text = ?, raw_content_json = ? WHERE id = ?", 
+                    (cleaned_db_text if cleaned_db_text is not None else db_text, 
+                     cleaned_db_json if cleaned_db_json is not None else db_raw_json, 
+                     r_id)
+                )
+            await self.db.db.commit()
+            logger.info(f"Permanently sanitized database row(s) containing File ID {file_id} from both text and raw_content_json fields.")
+        except Exception as db_clean_err:
+            logger.error(f"Failed to sanitize database for File ID {file_id}: {str(db_clean_err)}")
+        
+        # 2. Strip the Part from the active contents list to retry the turn immediately
+        for content in contents:
+            if content.parts:
+                new_parts = []
+                for part in content.parts:
+                    is_offending = False
+                    if hasattr(part, "file_data") and part.file_data and hasattr(part.file_data, "file_uri") and part.file_data.file_uri:
+                        if file_id in part.file_data.file_uri:
+                            is_offending = True
+                    
+                    if is_offending:
+                        new_parts.append(types.Part.from_text(text="[System: File attachment inaccessible due to API key rotation]"))
+                    else:
+                        new_parts.append(part)
+                content.parts = new_parts
+
     @property
     def tool_pattern(self):
         """Dynamically constructs a regular expression containing all active (system and custom) tool names."""
@@ -500,6 +584,19 @@ class GeminiManager:
                     if total_tokens > self.key_manager.input_token_limit:
                         await self.summarize_chat_context(chat_id)
                         continue
+                except APIError as e:
+                    if e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
+                        logger.warning("Gemini API 403 error caught during token counting. Attempting to heal context...")
+                        file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
+                        if not file_match:
+                            file_match = re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
+                        
+                        if file_match:
+                            file_id = file_match.group(1)
+                            await self._heal_inaccessible_file(file_id, contents)
+                            await asyncio.sleep(TIMEOUT_SLEEP)
+                            continue
+                    logger.error(f"Error counting tokens: {str(e)}")
                 except Exception as count_err:
                     logger.error(f"Error counting tokens: {str(count_err)}")
 
@@ -529,53 +626,17 @@ class GeminiManager:
                         continue
                     elif e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
                         # Self-healing logic for 403 Permission Denied due to API key rotation
-                        logger.warning(f"Gemini API 403 error caught. Attempting to identify and remove inaccessible file reference...")
+                        logger.warning(f"Gemini API 403 error caught during generation. Attempting to heal context...")
                         file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
                         if not file_match:
                             file_match = re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
                         
                         if file_match:
                             file_id = file_match.group(1)
-                            logger.info(f"Inaccessible File ID identified: {file_id}. Cleaning database and contents...")
-                            
-                            # 1. Clean local database to heal context history permanently
-                            try:
-                                async with self.db.db.execute("SELECT id, text FROM messages WHERE text LIKE ?", (f"%{file_id}%",)) as cursor:
-                                    db_rows = await cursor.fetchall()
-                                for r_id, db_text in db_rows:
-                                    cleaned_db_text = re.sub(
-                                        r"https://generativelanguage\.googleapis\.com/(?:upload/)?v1beta/files/" + re.escape(file_id),
-                                        "[File inaccessible due to API key rotation]",
-                                        db_text,
-                                        flags=re.IGNORECASE
-                                    )
-                                    await self.db.db.execute("UPDATE messages SET text = ? WHERE id = ?", (cleaned_db_text, r_id))
-                                await self.db.db.commit()
-                                logger.info(f"Permanently sanitized database row(s) containing File ID {file_id}.")
-                            except Exception as db_clean_err:
-                                logger.error(f"Failed to sanitize database for File ID {file_id}: {str(db_clean_err)}")
-                            
-                            # 2. Strip the Part from the active contents list to retry the turn immediately
-                            for content in contents:
-                                if content.parts:
-                                    new_parts = []
-                                    for part in content.parts:
-                                        is_offending = False
-                                        if hasattr(part, "file_data") and part.file_data and hasattr(part.file_data, "file_uri") and part.file_data.file_uri:
-                                            if file_id in part.file_data.file_uri:
-                                                is_offending = True
-                                        
-                                        if is_offending:
-                                            new_parts.append(types.Part.from_text(text="[System: File attachment inaccessible due to API key rotation]"))
-                                        else:
-                                            new_parts.append(part)
-                                    content.parts = new_parts
-                            
-                            # Wait a bit, then retry the turn with cleaned contents
+                            await self._heal_inaccessible_file(file_id, contents)
                             await asyncio.sleep(TIMEOUT_SLEEP)
                             continue
                         
-                        # Fallback if we couldn't parse the file ID
                         logger.error(f"Gemini API Permission Denied (403): {str(e)}")
                         raise e
                     elif e.code in [502, 503, 504]:
