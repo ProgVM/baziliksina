@@ -218,6 +218,9 @@ class GeminiManager:
             f"4. QUOTES FOR DELETED MESSAGES: If you want to reply to a deleted message (marked in your log as `[Message deleted by user]`), native replying via Message ID is impossible. In this scenario, you MUST call `send_agent_message` with `is_deleted_fallback=True`, and pass the message text in the `quote_text` parameter. This formats a markdown blockquote styled similarly to client-side quote fallbacks.\n"
             f"5. STRICTURE AGAINST GENERATING PREFIXES: You are CATEGORICALLY FORBIDDEN from typing, mimicking, or copying any '[Chat: ... | Message ID: ...]' prefixes in your actual generated text. These prefixes are metadata generated solely by your database backend. Your output must only contain the natural conversational text of your response.\n"
             f"6. TOOL EXECUTION SEQUENCE AND TEXT TIMING: If you need to invoke any tools (such as generating an image, searching the web, or setting a timer) and also want to write a text response, you MUST execute all required tool calls FIRST in your generation turns. Only after all tools have successfully run and returned their results should you generate your final plain conversational text (response.text) in your final turn. If you must send an intermediate text update before a tool finishes, you MUST use the `send_agent_message` tool to send it explicitly so the multi-turn transaction loop does not break prematurely.\n"
+            f"--- SECTION 6: STRICTURE AGAINST CONVERSATIONAL CODE EXECUTION ---\n"
+            f"1. Writing Python code blocks (using ` ```python ... ``` `) in your standard text response (response.text) DOES NOT execute them! Standard text is always sent to the chat as plain readable text.\n"
+            f"2. If you want to run Python code in the sandbox VM, you MUST explicitly invoke the `execute_python_code` tool. Never write Python code blocks in your conversational response expecting them to run autonomously.\n"
         )
         return prompt
 
@@ -314,7 +317,7 @@ class GeminiManager:
                 "block_low_and_above": types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
                 "block_medium_and_above": types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
                 "block_only_high": types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
-                "unspecified": types.HarmBlockThreshold.HARM_BLOCK_THRESHOLD_UNSPECIFIED
+                "unspecified": types.HarmBlockThreshold.HARM_BLOCK_THRESHOLD_unspecified
             }
             return mapping.get(str(threshold_str).strip().lower(), types.HarmBlockThreshold.BLOCK_NONE)
 
@@ -571,48 +574,29 @@ class GeminiManager:
                                         if isinstance(action_input, dict):
                                             args = action_input
                                         elif isinstance(action_input, str):
-                                            # First pass: try parsing JSON or Python literal string
+                                            # Try loading as valid JSON
                                             try:
                                                 args = json.loads(action_input)
                                             except Exception:
+                                                # Fallback to ast.literal_eval for single-quoted Python dict strings
                                                 try:
                                                     args = ast.literal_eval(action_input)
                                                 except Exception:
-                                                    args = action_input
-
-                                            # Recursive unpack: resolve double-escaped or nested stringified JSONs
-                                            while isinstance(args, str):
-                                                try:
-                                                    parsed_args = json.loads(args)
-                                                    if isinstance(parsed_args, (dict, list)):
-                                                        args = parsed_args
-                                                        break
-                                                except Exception:
-                                                    pass
-                                                try:
-                                                    parsed_args = ast.literal_eval(args)
-                                                    if isinstance(parsed_args, (dict, list)):
-                                                        args = parsed_args
-                                                        break
-                                                except Exception:
-                                                    pass
-                                                break  # Stop to prevent infinite loops if parsing fails
-
-                                            # If still a string after all attempts, perform dynamic signature mapping
-                                            if isinstance(args, str):
-                                                tool_meta = registry.get(fn_name)
-                                                if tool_meta:
-                                                    sig = inspect.signature(tool_meta.callable)
-                                                    param_names = [
-                                                        p.name for p in sig.parameters.values() 
-                                                        if p.name not in ['self', 'kwargs', 'args']
-                                                    ]
-                                                    if param_names:
-                                                        args = {param_names[0]: args}
+                                                    # Dynamically inspect tool signature to map the raw string input
+                                                    tool_meta = registry.get(fn_name)
+                                                    if tool_meta:
+                                                        sig = inspect.signature(tool_meta.callable)
+                                                        # Exclude self and generic varargs from parameter matching
+                                                        param_names = [
+                                                            p.name for p in sig.parameters.values() 
+                                                            if p.name not in ['self', 'kwargs', 'args']
+                                                        ]
+                                                        if param_names:
+                                                            args = {param_names[0]: action_input}
+                                                        else:
+                                                            args = {"text": action_input}
                                                     else:
-                                                        args = {"text": args}
-                                                else:
-                                                    args = {"text": args}
+                                                        args = {"text": action_input}
                                     else:
                                         # Directly collect other keys as flat parameters (e.g. {"action": "generate_image", "prompt": "..."})
                                         args = {k: v for k, v in data.items() if k not in ["action", "parameters_schema"]}
@@ -701,6 +685,9 @@ class GeminiManager:
                                 
                                 if fn_name == "no_op_ignore":
                                     should_ignore = True
+                                
+                        # Clear response.text to prevent technical strings from being sent to the Chat!
+                        response.text = None
 
                 # Sending the reply to the current Chat as a reply strictly to the locked message from the start
                 if response.text and not response.function_calls and not should_ignore:
