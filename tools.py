@@ -556,9 +556,9 @@ class AIToolKit:
                 if reply_to_chat_id and str(reply_to_chat_id) != str(chat_id):
                     try:
                         if isinstance(reply_to_chat_id, str):
-                            try: 
+                            try:
                                 reply_to_chat_id = int(reply_to_chat_id)
-                            except ValueError: 
+                            except ValueError:
                                 pass
                         reply_peer = await client.get_input_entity(reply_to_chat_id)
                     except Exception as peer_err:
@@ -566,7 +566,7 @@ class AIToolKit:
 
                 reply_to_param = InputReplyToMessage(
                     reply_to_msg_id=int(reply_to_msg_id),
-                    peer=reply_peer,
+                    reply_to_peer_id=reply_peer,
                     quote_text=quote_text
                 )
 
