@@ -317,7 +317,7 @@ class GeminiManager:
                 "block_low_and_above": types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
                 "block_medium_and_above": types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
                 "block_only_high": types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
-                "unspecified": types.HarmBlockThreshold.HARM_BLOCK_THRESHOLD_unspecified
+                "unspecified": types.HarmBlockThreshold.HARM_BLOCK_THRESHOLD_UNSPECIFIED
             }
             return mapping.get(str(threshold_str).strip().lower(), types.HarmBlockThreshold.BLOCK_NONE)
 
