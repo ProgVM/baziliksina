@@ -615,6 +615,7 @@ class GeminiManager:
                                                 tool_meta = registry.get(fn_name)
                                                 if tool_meta:
                                                     sig = inspect.signature(tool_meta.callable)
+                                                    # Exclude self and generic varargs from parameter matching
                                                     param_names = [
                                                         p.name for p in sig.parameters.values() 
                                                         if p.name not in ['self', 'kwargs', 'args']
@@ -649,16 +650,7 @@ class GeminiManager:
                                     "name": fn_name,
                                     "args": args
                                 })
-                            # Case E: Direct tool call JSON like {"generate_image": {"prompt": "..."}} (Uses FunctionRegistry dynamically)
-                            else:
-                                active_tools = [t.name for t in registry.get_all_tools()]
-                                for key, val in data.items():
-                                    if key in active_tools and isinstance(val, dict):
-                                        healed_calls.append({
-                                            "name": key,
-                                            "args": val
-                                        })
-                            # Case F: Native-like tool_calls list {"tool_calls": [{"name": "...", "arguments": {...}}]}
+                            # Case E: Native-like tool_calls list {"tool_calls": [{"name": "...", "arguments": {...}}]}
                             elif "tool_calls" in data and isinstance(data["tool_calls"], list):
                                 for tc in data["tool_calls"]:
                                     if isinstance(tc, dict) and "name" in tc:
@@ -678,6 +670,15 @@ class GeminiManager:
                                         healed_calls.append({
                                             "name": fn_name,
                                             "args": args
+                                        })
+                            # Case F: Direct tool call JSON like {"generate_image": {"prompt": "..."}} (Uses FunctionRegistry dynamically)
+                            else:
+                                active_tools = [t.name for t in registry.get_all_tools()]
+                                for key, val in data.items():
+                                    if key in active_tools and isinstance(val, dict):
+                                        healed_calls.append({
+                                            "name": key,
+                                            "args": val
                                         })
                         except Exception as json_err:
                             logger.debug(f"Auto-Heal failed to parse JSON block: {str(json_err)}")
