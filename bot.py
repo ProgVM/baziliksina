@@ -571,6 +571,13 @@ async def main():
     tools.pollinations_key_manager = ai_manager.pollinations_key_manager
     tools.bot_callback_fn = ai_manager.handle_query
     
+    # Register system tools in the global registry at startup
+    tools.register_system_tools()
+    
+    # Sync custom tools from the SQLite database
+    from registry import sync_custom_tools_with_db
+    await sync_custom_tools_with_db(db)
+    
     # Asynchronously read and restore the saved working key from SQLite DB
     await ai_manager.key_manager.load_saved_index()
     await ai_manager.pollinations_key_manager.load_saved_index()
