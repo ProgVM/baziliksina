@@ -81,9 +81,14 @@ async def call_pollinations_api(url: str, params: dict, timeout: float) -> httpx
     Universal asynchronous method for executing requests to the Pollinations API.
     - For Secret keys (sk_): on failures, immediately rotates keys without changing IP in Tor.
     - For App keys (pk_): rotates IP in Tor an infinite number of times as long as it brings success.
-    Rotates the App key itself to the next one only if {POLLINATIONS_MAX_ATTEMPTS} consecutive IP rotation attempts fail to resolve the 429 issue.
+    Rotates the App key itself to the next one only if {{POLLINATIONS_MAX_ATTEMPTS}} consecutive IP rotation attempts fail to resolve the 429 issue.
     """
     global pollinations_key_manager
+    
+    # Resolve Tor proxy URL programmatically to keep Gemini direct and fast
+    # Double protection: only route through Tor if it is verified to be active
+    from config import is_tor_enabled
+    proxy_url = f"socks5://{TOR_HOST}:{TOR_SOCKS_PORT}" if (is_tor_enabled and TOR_HOST and TOR_SOCKS_PORT) else None
     
     num_keys = len(pollinations_key_manager.keys) if (pollinations_key_manager and pollinations_key_manager.keys) else 1
     max_attempts = max(POLLINATIONS_MAX_ATTEMPTS, num_keys * 4)
@@ -101,9 +106,16 @@ async def call_pollinations_api(url: str, params: dict, timeout: float) -> httpx
             req_params.pop("key", None)
             
         try:
-            logger.info(f"Request to Pollinations (Attempt {attempt+1}/{max_attempts}, Key: {current_key[:10]}... [Index: {pollinations_key_manager.current_index if pollinations_key_manager else 'no'}])...")
-            async with httpx.AsyncClient(timeout=timeout) as client_httpx:
-                resp = await client_httpx.get(url, params=req_params)
+            logger.info(f"Request to Pollinations (Attempt {attempt+1}/{max_attempts}, Key: {current_key[:10]}...)...")
+            
+            # Execute request via Tor proxy, with automatic fallback to direct connection
+            try:
+                async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout) as client_httpx:
+                    resp = await client_httpx.get(url, params=req_params)
+            except Exception as proxy_err:
+                logger.warning(f"Tor SOCKS5 proxy at {proxy_url} is unavailable. Falling back to direct connection...")
+                async with httpx.AsyncClient(timeout=timeout) as client_httpx:
+                    resp = await client_httpx.get(url, params=req_params)
                 
                 # If we received a rate limit (429) or authorization (401/402) error
                 if resp.status_code in [401, 402, 429]:
