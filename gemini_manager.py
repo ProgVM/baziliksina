@@ -571,29 +571,48 @@ class GeminiManager:
                                         if isinstance(action_input, dict):
                                             args = action_input
                                         elif isinstance(action_input, str):
-                                            # Try loading as valid JSON
+                                            # First pass: try parsing JSON or Python literal string
                                             try:
                                                 args = json.loads(action_input)
                                             except Exception:
-                                                # Fallback to ast.literal_eval for single-quoted Python dict strings
                                                 try:
                                                     args = ast.literal_eval(action_input)
                                                 except Exception:
-                                                    # Dynamically inspect tool signature to map the raw string input
-                                                    tool_meta = registry.get(fn_name)
-                                                    if tool_meta:
-                                                        sig = inspect.signature(tool_meta.callable)
-                                                        # Exclude self and generic varargs from parameter matching
-                                                        param_names = [
-                                                            p.name for p in sig.parameters.values() 
-                                                            if p.name not in ['self', 'kwargs', 'args']
-                                                        ]
-                                                        if param_names:
-                                                            args = {param_names[0]: action_input}
-                                                        else:
-                                                            args = {"text": action_input}
+                                                    args = action_input
+
+                                            # Recursive unpack: resolve double-escaped or nested stringified JSONs
+                                            while isinstance(args, str):
+                                                try:
+                                                    parsed_args = json.loads(args)
+                                                    if isinstance(parsed_args, (dict, list)):
+                                                        args = parsed_args
+                                                        break
+                                                except Exception:
+                                                    pass
+                                                try:
+                                                    parsed_args = ast.literal_eval(args)
+                                                    if isinstance(parsed_args, (dict, list)):
+                                                        args = parsed_args
+                                                        break
+                                                except Exception:
+                                                    pass
+                                                break  # Stop to prevent infinite loops if parsing fails
+
+                                            # If still a string after all attempts, perform dynamic signature mapping
+                                            if isinstance(args, str):
+                                                tool_meta = registry.get(fn_name)
+                                                if tool_meta:
+                                                    sig = inspect.signature(tool_meta.callable)
+                                                    param_names = [
+                                                        p.name for p in sig.parameters.values() 
+                                                        if p.name not in ['self', 'kwargs', 'args']
+                                                    ]
+                                                    if param_names:
+                                                        args = {param_names[0]: args}
                                                     else:
-                                                        args = {"text": action_input}
+                                                        args = {"text": args}
+                                                else:
+                                                    args = {"text": args}
                                     else:
                                         # Directly collect other keys as flat parameters (e.g. {"action": "generate_image", "prompt": "..."})
                                         args = {k: v for k, v in data.items() if k not in ["action", "parameters_schema"]}
