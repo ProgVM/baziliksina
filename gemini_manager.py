@@ -24,22 +24,16 @@ class GeminiManager:
         self.key_manager = GeminiKeyManager(db_manager)
         self.pollinations_key_manager = PollinationsKeyManager(db_manager)
         self._last_system_prompt_hash = None
-        
-        # Pool of all system tool names for the text race condition bypass regular expression
+
+    @property
+    def tool_pattern(self):
+        """Dynamically constructs a regular expression containing all active (system and custom) tool names."""
         import re
-        tool_names = [
-            "save_file_to_workspace", "save_file_from_telegram", "read_file_from_workspace", "list_workspace_files", "delete_file_from_workspace",
-            "internet_search", "internet_media_search", "scrape_url",
-            "get_telegram_object_info", "execute_telegram_action", "click_inline_button", "send_inline_bot_result",
-            "set_task_timer", "delete_task_timer", "list_task_timers",
-            "set_wake_trigger", "delete_wake_trigger", "list_task_triggers",
-            "no_op_ignore", "run_sandboxed_command", "execute_python_code",
-            "generate_image", "generate_audio", "generate_video",
-            "upload_file_to_google", "upload_file_to_public_host",
-            "get_chat_history_from_db", "execute_sql_query", "download_content_from_url"
-        ]
-        self.tool_pattern = re.compile(
-            r"(?:tools\.)?(" + "|".join(tool_names) + r")\s*\((.*?)\)",
+        tool_names = [t.name for t in registry.get_all_tools()]
+        if not tool_names:
+            return re.compile(r"(?!)") # Regex that matches nothing if the registry is empty
+        return re.compile(
+            r"(?:tools\.)?(" + "|".join(re.escape(name) for name in tool_names) + r")\s*\((.*?)\)",
             re.DOTALL | re.IGNORECASE
         )
 
@@ -741,25 +735,32 @@ class GeminiManager:
                 # Sending the reply to the current Chat as a reply strictly to the locked message from the start
                 if response.text and not response.function_calls and not should_ignore:
                     typing_task.cancel()
-                    try:
-                        # Send the message and capture the result object containing the message ID
-                        result = await self.client.send_message(chat_entity, response.text, reply_to=reply_to_id)
-                        logger.info(f"Sent plain-text response to chat {chat_id}: '{response.text[:150]}...'")
+                    
+                    # Programmatically strip any generated [Chat: ... | Message ID: ...] prefixes
+                    cleaned_text = response.text
+                    prefix_pattern = re.compile(r'^\[Chat:\s*-?\d+\s*\|\s*Message ID:\s*(?:\d+|unknown)\]\s*\n?', re.IGNORECASE)
+                    cleaned_text = prefix_pattern.sub("", cleaned_text).strip()
+                    
+                    if cleaned_text:
+                        try:
+                            # Send the message and capture the result object containing the message ID
+                            result = await self.client.send_message(chat_entity, cleaned_text, reply_to=reply_to_id)
+                            logger.info(f"Sent plain-text response to chat {chat_id}: '{cleaned_text[:150]}...'")
+                            
+                            # Synchronously write the outgoing message to the DB immediately to eliminate the race condition
+                            await self.db.save_message(str(chat_id), "model", cleaned_text, msg_id=result.id)
                         
-                        # Synchronously write the outgoing message to the DB immediately to eliminate the race condition
-                        await self.db.save_message(str(chat_id), "model", response.text, msg_id=result.id)
-                        
-                        # Add to the global duplicate cache so bot.py ignores the incoming network event for this message
-                        import bot
-                        bot.processed_msg_ids.add((int(chat_id), result.id))
-                    except Exception as tg_err:
-                        logger.warning(f"Failed to deliver plain-text response to chat {chat_id}: {str(tg_err)}")
-                        # Write the failure reason back to the DB to make the AI aware of the Telegram restriction
-                        await self.db.save_message(
-                            chat_id,
-                            "user",
-                            f"[System notification: Your last plain-text response failed to deliver due to Telegram error: {str(tg_err)}]"
-                        )
+                            # Add to the global duplicate cache so bot.py ignores the incoming network event for this message
+                            import bot
+                            bot.processed_msg_ids.add((int(chat_id), result.id))
+                        except Exception as tg_err:
+                            logger.warning(f"Failed to deliver plain-text response to chat {chat_id}: {str(tg_err)}")
+                            # Write the failure reason back to the DB to make the AI aware of the Telegram restriction
+                            await self.db.save_message(
+                                chat_id,
+                                "user",
+                                f"[System notification: Your last plain-text response failed to deliver due to Telegram error: {str(tg_err)}]"
+                            )
 
                 # Tool calls
                 if response.function_calls:
