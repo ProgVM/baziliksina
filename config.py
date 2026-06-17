@@ -243,6 +243,7 @@ GOOGLE_UPLOAD_TIMEOUT = float(os.getenv("GOOGLE_UPLOAD_TIMEOUT", 120.0))
 DEFAULT_PUBLIC_UPLOAD_PROVIDER = os.getenv("DEFAULT_PUBLIC_UPLOAD_PROVIDER", "auto")
 PUBLIC_UPLOAD_TIMEOUT = float(os.getenv("PUBLIC_UPLOAD_TIMEOUT", 60.0))
 
+
 # =====================================================================
 # SECTION 7: Proxy and Anonymization Settings (Tor & Proxy Controls)
 # =====================================================================
@@ -258,32 +259,45 @@ POLLINATIONS_MAX_ATTEMPTS = int(os.getenv("POLLINATIONS_MAX_ATTEMPTS", 8))
 TOR_MAX_CONSECUTIVE_FAILURES = int(os.getenv("TOR_MAX_CONSECUTIVE_FAILURES", 2))
 
 
-def check_tor_active(host: str, port: int) -> bool:
+def check_proxy_active(proxy_url_str: str) -> bool:
     """
-    Performs a quick, non-blocking TCP socket connection check 
-    to verify if the local Tor daemon is actively running.
+    Parses the hostname and port from any proxy URL string (socks5://, http://, etc.)
+    and verifies if the specified remote proxy server is active and accepting connections.
     """
     import socket
+    import urllib.parse
+    if not proxy_url_str:
+        return False
     try:
-        with socket.create_connection((host, port), timeout=1.0):
+        parsed = urllib.parse.urlparse(proxy_url_str)
+        host = parsed.hostname
+        port = parsed.port
+        if not host or not port:
+            return False
+        # Perform a fast, non-blocking TCP socket connection check
+        with socket.create_connection((host, port), timeout=1.5):
             return True
     except Exception:
         return False
 
 
-# Determine Tor status dynamically on startup to prevent global HTTPX proxy crashes
-is_tor_enabled = check_tor_active(TOR_HOST, TOR_SOCKS_PORT)
+# Read the raw proxy string configured in .env
+raw_proxy_url = os.getenv("ALL_PROXY") or os.getenv("all_proxy")
 
-if is_tor_enabled:
-    # Tor is active, safely load ALL_PROXY from environment
-    ALL_PROXY = os.getenv("ALL_PROXY", f"socks5://{TOR_HOST}:{TOR_SOCKS_PORT}")
+# Verify proxy status dynamically on startup to prevent global HTTPX proxy crashes
+is_proxy_enabled = check_proxy_active(raw_proxy_url)
+
+if is_proxy_enabled:
+    # Proxy is active, safely load ALL_PROXY to global process environment
+    ALL_PROXY = raw_proxy_url
 else:
-    # Tor is stopped, programmatically delete ALL_PROXY to avoid 'Connection refused' errors
+    # Proxy is stopped or invalid, programmatically delete ALL_PROXY to prevent connection crashes
     if "ALL_PROXY" in os.environ:
         del os.environ["ALL_PROXY"]
     if "all_proxy" in os.environ:
         del os.environ["all_proxy"]
     ALL_PROXY = None
+
 
 # =====================================================================
 # SECTION 8: Sandbox limits and Page Scrapers
