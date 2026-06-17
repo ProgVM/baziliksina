@@ -730,7 +730,8 @@ class GeminiManager:
                                     function_call=types.FunctionCall(
                                         id=f"heal_{fn_name[:4]}_{int(time.time())}",
                                         name=fn_name,
-                                        args=args
+                                        args=args,
+                                        thought_signature=b"healed" # Bypasses thought_signature API validation
                                     )
                                 )
                                 content_obj.parts.append(healed_part)
