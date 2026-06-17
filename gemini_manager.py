@@ -743,16 +743,25 @@ class GeminiManager:
                 if response.text and not response.function_calls and not should_ignore:
                     typing_task.cancel()
                     try:
-                        await self.client.send_message(chat_entity, response.text, reply_to=reply_to_id)
+                        # Send the message and capture the result object containing the message ID
+                        result = await self.client.send_message(chat_entity, response.text, reply_to=reply_to_id)
                         logger.info(f"Sent plain-text response to chat {chat_id}: '{response.text[:150]}...'")
+                        
+                        # Synchronously write the outgoing message to the DB immediately to eliminate the race condition
+                        await self.db.save_message(str(chat_id), "model", response.text, msg_id=result.id)
+                        
+                        # Add to the global duplicate cache so bot.py ignores the incoming network event for this message
+                        import bot
+                        bot.processed_msg_ids.add((int(chat_id), result.id))
                     except Exception as tg_err:
                         logger.warning(f"Failed to deliver plain-text response to chat {chat_id}: {str(tg_err)}")
                         # Write the failure reason back to the DB to make the AI aware of the Telegram restriction
                         await self.db.save_message(
-                            chat_id, 
-                            "user", 
+                            chat_id,
+                            "user",
                             f"[System notification: Your last plain-text response failed to deliver due to Telegram error: {str(tg_err)}]"
                         )
+
                 # Tool calls
                 if response.function_calls:
                     logger.info(f"Received {len(response.function_calls)} tool call(s) from Gemini (Turn {turn + 1})")
