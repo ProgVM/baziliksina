@@ -177,7 +177,10 @@ class GeminiManager:
             f"access entity attributes, but you are not sure of the exact Telethon attribute names — YOU ARE CATEGORICALLY FORBIDDEN from trying to guess the code randomly! "
             f"Instead of guessing, you must use the 'internet_search' or 'scrape_url' tool to find the official "
             f"Telethon library documentation, examples on StackOverflow, or descriptions of Telegram API structures.\n"
-            f"2. If you lack situational context — do not reply randomly. First use the 'get_chat_history_from_db' "
+            f"2. NO GUESSING OF INLINE BUTTONS: When clicking inline buttons on any message, you are STRICTLY FORBIDDEN from guessing "
+            f"button indices, rows, or texts. You MUST first call the 'get_telegram_message_details' tool to obtain the exact button "
+            f"layout, texts, and indices. Always use these exact retrieved values in your click_inline_button call!\n"
+            f"3. If you lack situational context — do not reply randomly. First use the 'get_chat_history_from_db' "
             f"or 'execute_sql_query' tool to find the background of the correspondence, and only then formulate your response.\n"
             f"3. PYTHON CODE EXECUTION (execute_python_code):\n"
             f"   - Write working, asynchronous code without declaring helper functions like 'async def main()' and without calling 'asyncio.run()'. "
@@ -209,13 +212,15 @@ class GeminiManager:
             f"--- SECTION 5: MULTI-CHAT LOG FLOW AND QUOTE REPLIES ---\n"
             f"1. You possess a unified cross-chat consciousness. In your active history log, you see raw messages from various chats, with each entry strictly prefixed with its coordinates: `[Chat: ChatID | Message ID: MessageID]`.\n"
             f"2. PREVENTING DUPLICATION: While your standard plain-text output (response.text) is automatically delivered to the current active chat session, you should always prefer calling the dedicated tool `send_agent_message` to control precise replying. Whenever you send a message to the current chat using `send_agent_message`, you MUST leave your standard response.text completely EMPTY or immediately call the `no_op_ignore` tool at the next step to close the transaction without double-sending.\n"
-            f"3. NATIVE AND CROSS-CHAT REPLIES: To reply to any existing message (whether in the current active chat or a different chat from your history log), call `send_agent_message` with the target `reply_to_msg_id` and, if it belongs to another chat, provide the corresponding `reply_to_chat_id`.\n"
-            f"4. QUOTES FOR DELETED MESSAGES: If you want to reply to a deleted message (marked in your log as `[Message deleted by user]`), native replying via Message ID is impossible. In this scenario, you MUST call `send_agent_message` with `is_deleted_fallback=True`, and pass the message text in the `quote_text` parameter. This formats a markdown blockquote styled similarly to client-side quote fallbacks.\n"
+            f"3. MULTIPLE MESSAGES RULE: If you need to send MULTIPLE separate messages in a row to the current chat (for example, sending a bot command and then a text reply, or split responses), DO NOT write them all in response.text. Instead, call the 'send_agent_message' tool repeatedly for each message, and then leave response.text completely empty or call no_op_ignore to finish your transaction.\n"
+            f"4. NATIVE AND CROSS-CHAT REPLIES: To reply to any existing message (whether in the current active chat or another chat), call `send_agent_message` and ALWAYS prefer passing the exact numerical `reply_to_msg_id` over using quote text. Only use `quote_text` and `is_deleted_fallback=True` if the target message was explicitly marked in your log as `[Message deleted by user]`. Do not use quote fallback for active messages!\n"
+            f"5. BOT COMMANDS FORMATTING: When sending or executing commands for external bots (e.g. /start, /help, etc.), you MUST always format the command as a separate, single line starting with '/' on its own. NEVER merge, join, or connect bot commands with conversational text or other symbols in the same line!\n"
+            f"6. QUOTES FOR DELETED MESSAGES: If you want to reply to a deleted message (marked in your log as `[Message deleted by user]`), native replying via Message ID is impossible. In this scenario, you MUST call `send_agent_message` with `is_deleted_fallback=True`, and pass the message text in the `quote_text` parameter. This formats a markdown blockquote styled similarly to client-side quote fallbacks.\n"
             f"5. STRICTURE AGAINST GENERATING PREFIXES: You are CATEGORICALLY FORBIDDEN from typing, mimicking, or copying any '[Chat: ... | Message ID: ...]' prefixes in your actual generated text. These prefixes are metadata generated solely by your database backend. Your output must only contain the natural conversational text of your response.\n"
             f"6. TOOL EXECUTION SEQUENCE AND TEXT TIMING: If you need to invoke any tools (such as generating an image, searching the web, or setting a timer) and also want to write a text response, you MUST execute all required tool calls FIRST in your generation turns. Only after all tools have successfully run and returned their results should you generate your final plain conversational text (response.text) in your final turn. If you must send an intermediate text update before a tool finishes, you MUST use the `send_agent_message` tool to send it explicitly so the multi-turn transaction loop does not break prematurely.\n"
             f"--- SECTION 6: STRICTURE AGAINST CONVERSATIONAL CODE EXECUTION ---\n"
             f"1. Writing Python code blocks (using ` ```python ... ``` `) in your standard text response (response.text) DOES NOT execute them! Standard text is always sent to the chat as plain readable text.\n"
-            f"2. If you want to run Python code in the sandbox VM, you MUST explicitly invoke the `execute_python_code` tool. Never write Python code blocks in your conversational response expecting them to run autonomously.\n"
+            f"2. If you want to run Python code in the sandbox VM, you MUST explicitly invoke the `execute_python_code` tool. Never write Python code blocks in your conversational response expecting them to run autonomously.\n\n"
             f"--- SECTION 7: VM AND CUSTOM TOOL PRE-INJECTED NAMESPACE GUIDE ---\n"
             f"1. SANDBOX VM NAMESPACE (via execute_python_code): When executing Python scripts in the sandbox VM, you DO NOT need to initialize clients, databases, or import standard async libraries. The following variables are ALREADY pre-injected in the global scope of your script and ready for use:\n"
             f"   - `client`: The Sandboxed Telethon MTProto client proxy (already logged in and fully functional). Use `await client.send_message(...)`, `await client.get_messages(...)`, etc.\n"
@@ -522,6 +527,57 @@ class GeminiManager:
                         await self.key_manager.mark_key_exhausted()
                         gemini_client = await self.key_manager.rotate_key_async()
                         continue
+                    elif e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
+                        # Self-healing logic for 403 Permission Denied due to API key rotation
+                        logger.warning(f"Gemini API 403 error caught. Attempting to identify and remove inaccessible file reference...")
+                        file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
+                        if not file_match:
+                            file_match = re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
+                        
+                        if file_match:
+                            file_id = file_match.group(1)
+                            logger.info(f"Inaccessible File ID identified: {file_id}. Cleaning database and contents...")
+                            
+                            # 1. Clean local database to heal context history permanently
+                            try:
+                                async with self.db.db.execute("SELECT id, text FROM messages WHERE text LIKE ?", (f"%{file_id}%",)) as cursor:
+                                    db_rows = await cursor.fetchall()
+                                for r_id, db_text in db_rows:
+                                    cleaned_db_text = re.sub(
+                                        r"https://generativelanguage\.googleapis\.com/(?:upload/)?v1beta/files/" + re.escape(file_id),
+                                        "[File inaccessible due to API key rotation]",
+                                        db_text,
+                                        flags=re.IGNORECASE
+                                    )
+                                    await self.db.db.execute("UPDATE messages SET text = ? WHERE id = ?", (cleaned_db_text, r_id))
+                                await self.db.db.commit()
+                                logger.info(f"Permanently sanitized database row(s) containing File ID {file_id}.")
+                            except Exception as db_clean_err:
+                                logger.error(f"Failed to sanitize database for File ID {file_id}: {str(db_clean_err)}")
+                            
+                            # 2. Strip the Part from the active contents list to retry the turn immediately
+                            for content in contents:
+                                if content.parts:
+                                    new_parts = []
+                                    for part in content.parts:
+                                        is_offending = False
+                                        if hasattr(part, "file_data") and part.file_data and hasattr(part.file_data, "file_uri") and part.file_data.file_uri:
+                                            if file_id in part.file_data.file_uri:
+                                                is_offending = True
+                                        
+                                        if is_offending:
+                                            new_parts.append(types.Part.from_text(text="[System: File attachment inaccessible due to API key rotation]"))
+                                        else:
+                                            new_parts.append(part)
+                                    content.parts = new_parts
+                            
+                            # Wait a bit, then retry the turn with cleaned contents
+                            await asyncio.sleep(TIMEOUT_SLEEP)
+                            continue
+                        
+                        # Fallback if we couldn't parse the file ID
+                        logger.error(f"Gemini API Permission Denied (403): {str(e)}")
+                        raise e
                     elif e.code in [502, 503, 504]:
                         logger.warning(f"Gemini API Server Error ({e.code}) encountered. Sleeping for {API_ERROR_SLEEP}s before retrying...")
                         await asyncio.sleep(API_ERROR_SLEEP)
