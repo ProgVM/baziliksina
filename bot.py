@@ -9,7 +9,7 @@ from telethon import TelegramClient, events
 from telethon.tl import types as tl_types
 
 # Import our modules
-from config import API_ID, API_HASH, SESSION_PATH, WORKSPACE_DIR, BOOTSTRAP_DATABASE, DEBOUNCE_DELAY, DUPLICATE_CACHE_SIZE, PROFILE_UPDATE_INTERVAL, TIMERS_LOOP_INTERVAL, VM_STDOUT_NOTICE_LIMIT, BOT_AVATAR_NAME
+from config import API_ID, API_HASH, SESSION_PATH, WORKSPACE_DIR, BOOTSTRAP_DATABASE, DEBOUNCE_DELAY, DUPLICATE_CACHE_SIZE, PROFILE_UPDATE_INTERVAL, TIMERS_LOOP_INTERVAL, VM_STDOUT_NOTICE_LIMIT, BOT_AVATAR_NAME, ALL_PROXY
 from db_manager import DBManager
 from gemini_manager import GeminiManager, entity_cache
 from parser import parse_message_payload, parse_reply_metadata, parse_sender_info, parse_and_cache_user_metadata, parse_and_cache_chat_metadata
@@ -21,9 +21,36 @@ import tools
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("BazilikBot")
 
+# Parse proxy settings dynamically from config for Telethon client proxying
+import urllib.parse
+import socks
+
+proxy_param = None
+if ALL_PROXY:
+    try:
+        parsed = urllib.parse.urlparse(ALL_PROXY)
+        p_type = socks.SOCKS5 if "socks5" in parsed.scheme else socks.SOCKS4 if "socks4" in parsed.scheme else socks.HTTP
+        p_host = parsed.hostname
+        p_port = parsed.port
+        p_user = parsed.username
+        p_pass = parsed.password
+        
+        if p_host and p_port:
+            proxy_param = {
+                'proxy_type': p_type,
+                'addr': p_host,
+                'port': int(p_port),
+                'username': p_user,
+                'password': p_pass,
+                'rdns': True
+            }
+            logger.info(f"Configuring Telethon to use proxy: {p_host}:{p_port} ({parsed.scheme})")
+    except Exception as proxy_err:
+        logger.warning(f"Failed to parse ALL_PROXY for Telethon: {str(proxy_err)}")
+
 # Managers initialization
 db = DBManager()
-client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
+client = TelegramClient(SESSION_PATH, API_ID, API_HASH, proxy=proxy_param)
 ai_manager = GeminiManager(client, db)
 
 # Global cache of AI account and events
