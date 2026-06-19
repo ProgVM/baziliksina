@@ -361,12 +361,10 @@ async def parse_message_payload(client, db, message) -> str:
     if meta_text_block:
         await db.save_msg_meta(chat_id, msg_id, meta_text=meta_text_block, raw_meta_dict=raw_meta_dict)
 
-    # If the message has no text but has media, return the media descriptor as fallback
     if not text and media_desc:
         return f"[{media_desc}]"
 
     return text
-
 
 async def parse_reply_metadata(message, current_chat_id: str, client_instance, db_instance) -> str:
     """

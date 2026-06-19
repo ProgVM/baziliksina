@@ -313,11 +313,16 @@ async def on_new_message(event):
     # 2. Universal processing and detailed saving of ALL outgoing messages
     if event.sender_id == me.id:
         text = await parse_message_payload(client, db, event.message)
-        logger.info(f"Recording outgoing message {msg_id} in chat {chat_id}: '{text[:100]}...'")
         
-        # Download and cache any outgoing media files similarly to incoming ones
+        # Match reply context metadata for outgoing messages
+        reply_meta = ""
+        if event.message.is_reply:
+            reply_meta = await parse_reply_metadata(event.message, chat_id, client, db)
+        full_outgoing_text = f"{reply_meta}{text}".strip()
+        
+        logger.info(f"Recording outgoing message {msg_id} in chat {chat_id}: '{full_outgoing_text[:100]}...'")
         media_info = await download_and_cache_media(client, event.message, is_private=True, mentioned=True)
-        await db.save_message(str(chat_id), "model", text, media_info, msg_id)
+        await db.save_message(str(chat_id), "model", full_outgoing_text, media_info, msg_id)
         return
 
     # Background update of Premium metadata and avatars of sender and chat once every PROFILE_UPDATE_INTERVAL
