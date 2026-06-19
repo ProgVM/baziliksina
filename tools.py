@@ -87,8 +87,8 @@ async def call_pollinations_api(url: str, params: dict, timeout: float) -> httpx
     
     # Resolve Tor proxy URL programmatically to keep Gemini direct and fast
     # Double protection: only route through Tor if it is verified to be active
-    from config import is_tor_enabled
-    proxy_url = f"socks5://{TOR_HOST}:{TOR_SOCKS_PORT}" if (is_tor_enabled and TOR_HOST and TOR_SOCKS_PORT) else None
+    from proxy_manager import proxy_rotator
+    proxy_url = proxy_rotator.get_proxy("pollinations")
     
     num_keys = len(pollinations_key_manager.keys) if (pollinations_key_manager and pollinations_key_manager.keys) else 1
     max_attempts = max(POLLINATIONS_MAX_ATTEMPTS, num_keys * 4)
@@ -417,8 +417,10 @@ class AIToolKit:
             "User-Agent": USER_AGENT
         }
         url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+        from proxy_manager import proxy_rotator
+        proxy_url = proxy_rotator.get_proxy("scraper")
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client_httpx:
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout) as client_httpx:
                 resp = await client_httpx.get(url, headers=headers)
                 if resp.status_code != 200:
                     return f"Search failed, error code: {resp.status_code}"
@@ -450,8 +452,10 @@ class AIToolKit:
             search_query += " format:jpg"
             
         url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(search_query)}"
+        from proxy_manager import proxy_rotator
+        proxy_url = proxy_rotator.get_proxy("scraper")
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client_httpx:
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout) as client_httpx:
                 resp = await client_httpx.get(url, headers=headers)
                 if resp.status_code != 200:
                     return f"Media search failed, code: {resp.status_code}"
@@ -482,8 +486,10 @@ class AIToolKit:
         headers = {
             "User-Agent": USER_AGENT
         }
+        from proxy_manager import proxy_rotator
+        proxy_url = proxy_rotator.get_proxy("scraper")
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client_httpx:
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout, follow_redirects=True) as client_httpx:
                 resp = await client_httpx.get(url, headers=headers)
                 if resp.status_code != 200:
                     return f"Failed to load page, code: {resp.status_code}"
@@ -872,6 +878,92 @@ class AIToolKit:
         except Exception as e:
             return f"Error clicking the button: {str(e)}"
 
+    async def set_message_reaction(self, chat_id: Any, message_id: int, reaction_emoji: str = None, is_add: bool = True, **kwargs) -> str:
+        """
+        Sets or removes a reaction emoji (standard emoticon or premium custom emoji) on a specific message.
+
+        Args:
+            chat_id: The username or numerical ID of the target chat/channel.
+            message_id: The ID of the message to react to.
+            reaction_emoji: The reaction emoji string (e.g., '👍', '❤️'), or custom premium emoji document ID (numeric string), or None.
+            is_add: True to add/set the reaction, False to remove/clear it. Default is True.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        try:
+            from telethon.tl.functions.messages import SendReactionRequest
+            from telethon.tl import types as tl_types
+
+            if isinstance(chat_id, str):
+                try:
+                    chat_id = int(chat_id)
+                except ValueError:
+                    pass
+
+            reaction_list = []
+            if is_add and reaction_emoji:
+                if str(reaction_emoji).isdigit():
+                    reaction_list.append(tl_types.ReactionCustomEmoji(document_id=int(reaction_emoji)))
+                else:
+                    reaction_list.append(tl_types.ReactionEmoji(emoticon=reaction_emoji))
+
+            await client(SendReactionRequest(
+                peer=chat_id,
+                msg_id=int(message_id),
+                reaction=reaction_list
+            ))
+            return f"Success. Message #{message_id} reaction updated in chat {chat_id}."
+        except Exception as e:
+            return f"Error setting reaction: {str(e)}"
+
+    async def send_telegram_media(self, chat_id: Any, media_id: str, access_hash: str, file_reference_hex: str, media_type: str, caption: str = None, reply_to_msg_id: int = None, **kwargs) -> str:
+        """
+        Sends any cached or identified Telegram media (sticker, photo, document, voice message, video note)
+        using its exact raw MTProto identification metadata.
+
+        Args:
+            chat_id: The username or numerical ID of the target chat/channel.
+            media_id: The numerical ID of the document or photo.
+            access_hash: The numerical access hash of the document or photo.
+            file_reference_hex: The hex-encoded file reference string.
+            media_type: The type of the media ('photo', 'sticker', 'voice', 'video_note', 'document').
+            caption: Optional text caption (not applicable for stickers).
+            reply_to_msg_id: Optional message ID to reply to.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        try:
+            from telethon.tl import types as tl_types
+
+            if isinstance(chat_id, str):
+                try:
+                    chat_id = int(chat_id)
+                except ValueError:
+                    pass
+
+            file_ref_bytes = bytes.fromhex(file_reference_hex) if file_reference_hex and file_reference_hex != "none" else b""
+            m_id = int(media_id)
+            a_hash = int(access_hash)
+
+            if media_type.lower() == 'photo':
+                media_obj = tl_types.InputPhoto(id=m_id, access_hash=a_hash, file_reference=file_ref_bytes)
+            else:
+                media_obj = tl_types.InputDocument(id=m_id, access_hash=a_hash, file_reference=file_ref_bytes)
+
+            reply_to_param = None
+            if reply_to_msg_id:
+                from telethon.tl.types import InputReplyToMessage
+                reply_to_param = InputReplyToMessage(reply_to_msg_id=int(reply_to_msg_id))
+
+            result = await client.send_file(
+                chat_id,
+                file=media_obj,
+                caption=caption,
+                reply_to=reply_to_param
+            )
+            return f"Success. Media sent successfully to chat {chat_id}. Message ID: {result.id}"
+        except Exception as e:
+            return f"Error sending media: {str(e)}"
 
     # =====================================================================
     # CATEGORY 4: Timers and Scheduler (SQLite Schedulers)
@@ -1770,6 +1862,8 @@ ROOT_TOOL_CATEGORIES = {
     "execute_telegram_action": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "click_inline_button": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "send_inline_bot_result": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "set_message_reaction": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_telegram_media": "Category 3: Telegram Automation (Telegram Automation Actions)",
     
     "set_task_timer": "Category 4: Timers and Scheduler (SQLite Schedulers)",
     "delete_task_timer": "Category 4: Timers and Scheduler (SQLite Schedulers)",
