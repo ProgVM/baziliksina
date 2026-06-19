@@ -304,8 +304,8 @@ def parse_sender_info(sender, message) -> str:
 async def parse_message_payload(client, db, message) -> str:
     """
     Recursively analyzes the message, extracts and caches premium emojis,
-    Star Gift animations, inline button structures, and saves reaction properties
-    and raw message properties in a separate msgs_meta table in JSON format.
+    Star Gift animations, and structural attachment parameters, outputting complete raw metadata
+    directly into the history so the multimodal AI can track and reuse specific IDs.
     """
     meta_parts = []
     text = message.text or ""
@@ -316,68 +316,45 @@ async def parse_message_payload(client, db, message) -> str:
         "to_dict_raw": message.to_dict() if hasattr(message, "to_dict") else {}
     }
 
-    # 1. Collection and automatic caching of premium emojis from text
+    # 1. Parsing and caching Premium custom emojis in-place
     if message.entities:
         emoji_refs = []
         for ent in message.entities:
             if isinstance(ent, tl_types.MessageEntityCustomEmoji):
                 doc_id = ent.document_id
                 local_path = await get_cached_premium_emoji(client, doc_id, is_animated=False)
-                if local_path:
-                    emoji_refs.append(f"[Custom emoji ID: {doc_id} (Local path: {local_path})]")
-                else:
-                    emoji_refs.append(f"[Custom emoji ID: {doc_id}]")
+                ref_str = f"[Custom Premium Emoji ID: {doc_id} (Local path: {local_path or 'not downloaded'})]"
+                emoji_refs.append(ref_str)
         if emoji_refs:
             meta_parts.append("\n".join(emoji_refs))
 
-    # 2. Analysis of Star Gifts and automatic downloading of .tgs animations
+    # 2. Parsing Star Gifts with animations
     if message.media and type(message.media).__name__ == "MessageMediaGift":
         gift = message.media
         gift_text = getattr(gift, "text", "") or ""
         sender_gift_id = getattr(gift, "from_id", "anonymously")
-        
         gift_id = getattr(gift, "gift_id", None)
-        local_gift_path = None
-        if gift_id:
-            local_gift_path = await get_cached_gift_animation(client, gift_id)
-
-        gift_ref = (
-            f"[System event: Telegram Star Gift received]\n"
-            f"- Sender ID: {sender_gift_id}\n"
-            f"- Gift text: '{gift_text}'\n"
-            f"- Gift animation locally: '{local_gift_path or 'not downloaded'}'"
-        )
+        local_gift_path = await get_cached_gift_animation(client, gift_id) if gift_id else None
+        gift_ref = f"[Star Gift Received | ID: {gift_id or 'unknown'} | Sender: {sender_gift_id} | Text: '{gift_text}' | Animation path: '{local_gift_path or 'not downloaded'}']"
         meta_parts.append(gift_ref)
 
-    # 3. Parsing of system actions (Giveaways, Premium, Pings, etc.)
-    if message.action:
-        act = message.action
-        act_name = type(act).__name__
-        meta_parts.append(f"[Service event ({act_name})]")
-
-    # 4. Deep analysis of attachments using our clean media helper
+    # 3. Extract complete raw MTProto parameters for attached media
     media_desc = get_media_type_description(message)
     if media_desc:
-        if media_desc == "File":
-            file_name = "unnamed"
-            if hasattr(message.media, "document"):
-                for attr in getattr(message.media.document, "attributes", []):
-                    if type(attr).__name__ == "DocumentAttributeFilename":
-                        file_name = attr.file_name
-            meta_parts.append(f"[File attached: '{file_name}']")
-        else:
-            meta_parts.append(f"[{media_desc} attached]")
-
-    # 5. Primary extraction and saving of reactions on incoming/outgoing message
-    if getattr(message, 'reactions', None) and getattr(message.reactions, 'results', None):
-        rx_parts = []
-        for rc in message.reactions.results:
-            if hasattr(rc.reaction, 'emoticon'):
-                rx_parts.append(f"'{rc.reaction.emoticon}' (x{rc.count})")
-            elif hasattr(rc.reaction, 'document_id'):
-                rx_parts.append(f"[Custom emoji ID {rc.reaction.document_id}] (x{rc.count})")
-        if rx_parts:
-            meta_parts.append("[Reactions on message]: " + " | ".join(rx_parts))
+        media_id = "unknown"
+        access_hash = "unknown"
+        file_ref_hex = "none"
+        if hasattr(message.media, "document") and message.media.document:
+            doc = message.media.document
+            media_id = doc.id
+            access_hash = doc.access_hash
+            file_ref_hex = doc.file_reference.hex() if doc.file_reference else "none"
+        elif hasattr(message.media, "photo") and message.media.photo:
+            photo = message.media.photo
+            media_id = photo.id
+            access_hash = photo.access_hash
+            file_ref_hex = photo.file_reference.hex() if photo.file_reference else "none"
+        meta_parts.append(f"[Attached Media - Type: {media_desc} | ID: {media_id} | Access Hash: {access_hash} | File Reference (Hex): {file_ref_hex}]")
 
     # Save all visual/secondary message metadata in msgs_meta
     meta_text_block = "\n".join(meta_parts).strip()

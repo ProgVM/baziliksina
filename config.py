@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True) # Force dotenv to overwrite cached container variables
 
 # =====================================================================
 # SECTION 1: System and Workspace Paths (General Settings)
@@ -257,7 +257,26 @@ TOR_ROTATION_TIMEOUT = float(os.getenv("TOR_ROTATION_TIMEOUT", 15.0))
 # Fallback proxy rotation thresholds
 POLLINATIONS_MAX_ATTEMPTS = int(os.getenv("POLLINATIONS_MAX_ATTEMPTS", 8))
 TOR_MAX_CONSECUTIVE_FAILURES = int(os.getenv("TOR_MAX_CONSECUTIVE_FAILURES", 2))
+PROXY_CHECK_TIMEOUT = float(os.getenv("PROXY_CHECK_TIMEOUT", "3.0"))
 
+def _parse_proxy_list(key: str) -> list:
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return []
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+# Segregated, modular proxy pools
+PROXY_LIST_TELETHON = _parse_proxy_list("TELEGRAM_PROXIES")
+PROXY_LIST_GEMINI = _parse_proxy_list("GEMINI_PROXIES")
+PROXY_LIST_POLLINATIONS = _parse_proxy_list("POLLINATIONS_PROXIES")
+PROXY_LIST_SCRAPER = _parse_proxy_list("SCRAPER_PROXIES")
+
+raw_proxy_url = os.getenv("ALL_PROXY") or os.getenv("all_proxy") or ""
+if raw_proxy_url:
+    if not PROXY_LIST_TELETHON: PROXY_LIST_TELETHON = [raw_proxy_url]
+    if not PROXY_LIST_GEMINI: PROXY_LIST_GEMINI = [raw_proxy_url]
+    if not PROXY_LIST_POLLINATIONS: PROXY_LIST_POLLINATIONS = [raw_proxy_url]
+    if not PROXY_LIST_SCRAPER: PROXY_LIST_SCRAPER = [raw_proxy_url]
 
 def check_proxy_active(proxy_url_str: str) -> bool:
     """
@@ -275,23 +294,22 @@ def check_proxy_active(proxy_url_str: str) -> bool:
         if not host or not port:
             return False
         # Perform a fast, non-blocking TCP socket connection check
-        with socket.create_connection((host, port), timeout=1.5):
+        with socket.create_connection((host, port), timeout=PROXY_CHECK_TIMEOUT):
             return True
     except Exception:
         return False
 
+ACTIVE_TELETHON_PROXIES = [p for p in PROXY_LIST_TELETHON if check_proxy_active(p)]
+ACTIVE_GEMINI_PROXIES = [p for p in PROXY_LIST_GEMINI if check_proxy_active(p)]
+ACTIVE_POLLINATIONS_PROXIES = [p for p in PROXY_LIST_POLLINATIONS if check_proxy_active(p)]
+ACTIVE_SCRAPER_PROXIES = [p for p in PROXY_LIST_SCRAPER if check_proxy_active(p)]
 
-# Read the raw proxy string configured in .env
-raw_proxy_url = os.getenv("ALL_PROXY") or os.getenv("all_proxy")
-
-# Verify proxy status dynamically on startup to prevent global HTTPX proxy crashes
-is_proxy_enabled = check_proxy_active(raw_proxy_url)
+is_tor_enabled = check_proxy_active(f"socks5://{TOR_HOST}:{TOR_SOCKS_PORT}")
+is_proxy_enabled = len(ACTIVE_TELETHON_PROXIES) > 0 or len(ACTIVE_GEMINI_PROXIES) > 0
 
 if is_proxy_enabled:
-    # Proxy is active, safely load ALL_PROXY to global process environment
-    ALL_PROXY = raw_proxy_url
+    ALL_PROXY = ACTIVE_TELETHON_PROXIES[0] if ACTIVE_TELETHON_PROXIES else (ACTIVE_GEMINI_PROXIES[0] if ACTIVE_GEMINI_PROXIES else raw_proxy_url)
 else:
-    # Proxy is stopped or invalid, programmatically delete ALL_PROXY to prevent connection crashes
     if "ALL_PROXY" in os.environ:
         del os.environ["ALL_PROXY"]
     if "all_proxy" in os.environ:
@@ -330,3 +348,12 @@ SCRAPE_CHAR_LIMIT = int(os.getenv("SCRAPE_CHAR_LIMIT", 4000))
 WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", 10.0))
 WEB_MEDIA_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", 10.0))
 SCRAPE_TIMEOUT = float(os.getenv("SCRAPE_TIMEOUT", 10.0))
+
+TELEGRAM_CONNECTION_RETRIES = os.getenv("TELEGRAM_CONNECTION_RETRIES")
+TELEGRAM_CONNECTION_RETRIES = int(TELEGRAM_CONNECTION_RETRIES) if TELEGRAM_CONNECTION_RETRIES else 5
+TELEGRAM_RETRY_DELAY = os.getenv("TELEGRAM_RETRY_DELAY")
+TELEGRAM_RETRY_DELAY = float(TELEGRAM_RETRY_DELAY) if TELEGRAM_RETRY_DELAY else 5.0
+TELEGRAM_AUTO_RECONNECT = os.getenv("TELEGRAM_AUTO_RECONNECT", "true").lower() == "true"
+TELEGRAM_TIMEOUT = os.getenv("TELEGRAM_TIMEOUT")
+TELEGRAM_TIMEOUT = os.getenv("TELEGRAM_CONNECT_TIMEOUT") or os.getenv("TELEGRAM_TIMEOUT")
+TELEGRAM_TIMEOUT = float(TELEGRAM_TIMEOUT) if TELEGRAM_TIMEOUT else 15.0
