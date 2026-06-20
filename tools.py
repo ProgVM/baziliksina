@@ -605,10 +605,26 @@ class AIToolKit:
                 )
                 result = await client(request)
 
+            # Safely resolve the newly sent message ID from both high-level Message and raw Updates objects
+            sent_msg_id = None
+            if hasattr(result, "id"):
+                sent_msg_id = result.id
+            elif hasattr(result, "updates"):
+                for upd in result.updates:
+                    if hasattr(upd, "message") and hasattr(upd.message, "id"):
+                        sent_msg_id = upd.message.id
+                        break
+                    elif hasattr(upd, "id"):
+                        sent_msg_id = upd.id
+                        break
+
             # Synchronously write the outgoing message to the DB immediately to eliminate the race condition
-            await db.save_message(str(chat_id), "model", text, msg_id=result.id)
-            import bot
-            bot.processed_msg_ids.add((int(chat_id), result.id))
+            if sent_msg_id:
+                await db.save_message(str(chat_id), "model", text, msg_id=sent_msg_id)
+                import bot
+                bot.processed_msg_ids.add((int(chat_id), sent_msg_id))
+            else:
+                await db.save_message(str(chat_id), "model", text)
 
             # Warn the model if writing to the current chat to avoid duplicates
             cid = current_chat_id.get()
