@@ -285,8 +285,16 @@ async def on_raw_reaction(event):
 # New message handler
 @client.on(events.NewMessage)
 async def on_new_message(event):
+    global me
+    if me is None:
+        try:
+            me = await client.get_me()
+        except Exception:
+            logger.debug("Telegram client is not fully ready. Skipping NewMessage event.")
+            return
+
     is_private = event.is_private
-    mentioned = event.mentioned or (event.message.message and f"@{me.username}" in event.message.message)
+    mentioned = event.mentioned or (event.message.message and me.username and f"@{me.username}" in event.message.message)
     chat_id = int(event.chat_id)
     msg_id = event.message.id
     
@@ -424,8 +432,15 @@ async def on_new_message(event):
 # Message edit handler
 @client.on(events.MessageEdited)
 async def on_message_edited(event):
+    global me
+    if me is None:
+        try:
+            me = await client.get_me()
+        except Exception:
+            return
+
     is_private = event.is_private
-    mentioned = event.mentioned or (event.message.message and f"@{me.username}" in event.message.message)
+    mentioned = event.mentioned or (event.message.message and me.username and f"@{me.username}" in event.message.message)
     
     if event.sender_id == me.id:
         return
@@ -526,6 +541,13 @@ async def on_message_edited(event):
 # Message deletion handler
 @client.on(events.MessageDeleted)
 async def on_message_deleted(event):
+    global me
+    if me is None:
+        try:
+            me = await client.get_me()
+        except Exception:
+            return
+
     # Background periodic update of group/channel profile when deletions are detected
     now_ts = int(time.time())
     chat_id = event.chat_id
