@@ -51,3 +51,31 @@ def sanitize_filename(name: str) -> str:
     import re
     cleaned = re.sub(r'[\\/*?:"<>|]', "", name)
     return cleaned.replace(" ", "_")[:100]
+
+async def wait_for_google_file_active(gemini_client, file_name: str, timeout_seconds: int = None) -> bool:
+    """
+    Periodically queries the Google Files API to wait until the specified file 
+    transitions from 'PROCESSING' to 'ACTIVE' status. Returns True if successful.
+    """
+    import asyncio
+    import logging
+    from config import GOOGLE_UPLOAD_TIMEOUT
+    
+    if timeout_seconds is None:
+        timeout_seconds = int(GOOGLE_UPLOAD_TIMEOUT) if GOOGLE_UPLOAD_TIMEOUT else 30
+        
+    log = logging.getLogger("Utils")
+    attempts = 0
+    try:
+        file_info = await gemini_client.aio.files.get(name=file_name)
+        while file_info.state.name == "PROCESSING" and attempts < timeout_seconds:
+            log.info(f"File '{file_info.display_name}' is still processing in Google cloud. Waiting... ({attempts+1}/{timeout_seconds})")
+            await asyncio.sleep(1.0)
+            file_info = await gemini_client.aio.files.get(name=file_name)
+            attempts += 1
+        if file_info.state.name == "ACTIVE":
+            return True
+        log.warning(f"Google file processing finished with state: {file_info.state.name}")
+    except Exception as e:
+        log.error(f"Error while waiting for Google file state: {str(e)}")
+    return False

@@ -27,6 +27,7 @@ from config import (
 )
 
 logger = logging.getLogger("Tools")
+from utils import wait_for_google_file_active
 
 # Global context variables and bot core references
 current_chat_id: ContextVar[int] = ContextVar("current_chat_id")
@@ -1277,6 +1278,10 @@ class AIToolKit:
             gemini_client = key_manager.get_client()
             # Upload the file to Google servers
             uploaded_file = await asyncio.wait_for(gemini_client.aio.files.upload(file=str(file_path.resolve())), timeout=timeout)
+            
+            # Wait for the file to become ACTIVE in Google cloud before returning
+            if not await wait_for_google_file_active(gemini_client, uploaded_file.name):
+                return {"status": "error", "message": f"Error: Google file processing failed or timed out for '{filename}'."}
             
             # Save Google URI -> mime_type mapping to SQLite database
             if db:

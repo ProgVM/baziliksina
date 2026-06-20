@@ -557,18 +557,44 @@ class GeminiManager:
                                     )
                                     await self.db.db.commit()
                                 else:
-                                    with open(m_path, "rb") as f:
-                                        file_bytes = f.read()
-                                    
-                                    has_inline = False
-                                    for part in (content_obj.parts or []):
-                                        if part.inline_data:
-                                            part.inline_data.data = file_bytes
-                                            has_inline = True
-                                            break
-                                    if not has_inline:
-                                        content_obj.parts.insert(0, types.Part.from_bytes(data=file_bytes, mime_type=m_type))
-                                    media_count += 1
+                                    is_image = m_type.startswith("image/")
+                                    file_size = os.path.getsize(m_path)
+                                    if is_image and file_size < 4 * 1024 * 1024:
+                                        with open(m_path, "rb") as f:
+                                            file_bytes = f.read()
+                                        has_inline = False
+                                        for part in (content_obj.parts or []):
+                                            if part.inline_data:
+                                                part.inline_data.data = file_bytes
+                                                has_inline = True
+                                                break
+                                        if not has_inline:
+                                            content_obj.parts.insert(0, types.Part.from_bytes(data=file_bytes, mime_type=m_type))
+                                        media_count += 1
+                                    else:
+                                        file_hash = hashlib.md5(m_path.encode('utf-8')).hexdigest()
+                                        cache_key = f"google_file_uri_{file_hash}"
+                                        google_uri = await self.db.get_memory(cache_key)
+                                        if not google_uri:
+                                            try:
+                                                logger.info(f"Uploading file '{m_path}' to Google Files API on the fly...")
+                                                uploaded_file = await gemini_client.aio.files.upload(file=m_path)
+                                                google_uri = uploaded_file.uri
+                                                
+                                                from utils import wait_for_google_file_active
+                                                if await wait_for_google_file_active(gemini_client, uploaded_file.name):
+                                                    await self.db.set_memory(cache_key, google_uri)
+                                                    await self.db.set_memory(google_uri, m_type)
+                                                    logger.info(f"File successfully uploaded and processed. URI: {google_uri}")
+                                                else:
+                                                    logger.warning(f"Google file processing failed or timed out for {m_path}.")
+                                                    google_uri = None
+                                            except Exception as upload_err:
+                                                logger.error(f"On-the-fly Google upload failed for {m_path}: {str(upload_err)}")
+                                                google_uri = None
+                                        if google_uri:
+                                            content_obj.parts.insert(0, types.Part.from_uri(file_uri=google_uri, mime_type=m_type))
+                                            media_count += 1
                         except Exception as me_err:
                             logger.error(f"Error loading media data: {str(me_err)}")
                     contents_raw.append(content_obj)
