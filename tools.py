@@ -565,11 +565,19 @@ class AIToolKit:
                 return f"Message sent successfully with AyuGram-style fallback quote. Message ID: {result.id}"
 
             # Scenario 2: Standard reply or cross-chat reply via Telegram API
-            reply_to_param = None
-            if reply_to_msg_id:
+            if reply_to_msg_id and (not reply_to_chat_id or str(reply_to_chat_id) == str(chat_id)) and not quote_text:
+                # Same-chat standard reply without quotes uses plain integer message ID
+                result = await client.send_message(
+                    chat_id,
+                    text,
+                    reply_to=int(reply_to_msg_id),
+                    **kwargs
+                )
+            else:
+                # Cross-chat reply or quote requires constructing InputReplyToMessage
+                from telethon.tl.functions.messages import SendMessageRequest
                 from telethon.tl.types import InputReplyToMessage
                 
-                # Identify peer entity for cross-chat replies
                 reply_peer = None
                 if reply_to_chat_id and str(reply_to_chat_id) != str(chat_id):
                     try:
@@ -583,18 +591,19 @@ class AIToolKit:
                         logger.warning(f"Failed to get reply peer entity: {str(peer_err)}")
 
                 reply_to_param = InputReplyToMessage(
-                    reply_to_msg_id=int(reply_to_msg_id),
+                    reply_to_msg_id=int(reply_to_msg_id) if reply_to_msg_id else None,
                     reply_to_peer_id=reply_peer,
                     quote_text=quote_text
                 )
 
-            # Send message via Telegram MTProto API
-            result = await client.send_message(
-                chat_id, 
-                text, 
-                reply_to=reply_to_param,
-                **kwargs
-            )
+                peer_entity = await client.get_input_entity(chat_id)
+                request = SendMessageRequest(
+                    peer=peer_entity,
+                    message=text,
+                    reply_to=reply_to_param,
+                    **kwargs
+                )
+                result = await client(request)
 
             # Synchronously write the outgoing message to the DB immediately to eliminate the race condition
             await db.save_message(str(chat_id), "model", text, msg_id=result.id)
@@ -627,6 +636,13 @@ class AIToolKit:
             call_kwargs = json.loads(args_json) if args_json else {}
             if kwargs:
                 call_kwargs.update(kwargs)
+
+            # Auto-inject current chat_id if entity is missing in send_message/send_file
+            if method_name in ["send_message", "send_file"] and "entity" not in call_kwargs:
+                try:
+                    call_kwargs["entity"] = current_chat_id.get()
+                except Exception:
+                    pass
 
             def resolve_sandbox_paths(data):
                 if isinstance(data, dict):
