@@ -575,6 +575,25 @@ class GeminiManager:
                                         file_hash = hashlib.md5(m_path.encode('utf-8')).hexdigest()
                                         cache_key = f"google_file_uri_{file_hash}"
                                         google_uri = await self.db.get_memory(cache_key)
+                                        if google_uri:
+                                            # Validate the cached file state before using it
+                                            try:
+                                                file_name = google_uri.split("/")[-1]
+                                                file_info = await gemini_client.aio.files.get(name=file_name)
+                                                if file_info.state.name == "PROCESSING":
+                                                    from utils import wait_for_google_file_active
+                                                    if not await wait_for_google_file_active(gemini_client, file_name):
+                                                        google_uri = None
+                                                elif file_info.state.name == "FAILED":
+                                                    logger.warning(f"Cached Google file {google_uri} is FAILED. Evicting cache...")
+                                                    await self.db.db.execute("DELETE FROM shared_memory WHERE key = ?", (cache_key,))
+                                                    await self.db.db.commit()
+                                                    google_uri = None
+                                            except Exception as check_err:
+                                                logger.warning(f"Cached Google file {google_uri} is inaccessible ({str(check_err)}). Evicting cache...")
+                                                await self.db.db.execute("DELETE FROM shared_memory WHERE key = ?", (cache_key,))
+                                                await self.db.db.commit()
+                                                google_uri = None
                                         if not google_uri:
                                             try:
                                                 logger.info(f"Uploading file '{m_path}' to Google Files API on the fly...")
