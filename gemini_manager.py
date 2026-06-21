@@ -303,6 +303,7 @@ class GeminiManager:
             f"5. BOT COMMANDS FORMATTING: When sending or executing commands for external bots (e.g. /start, /help, etc.), you MUST always format the command as a separate, single line starting with '/' on its own. NEVER merge, join, or connect bot commands with conversational text or other symbols in the same line!\\n"
             f"6. QUOTES FOR DELETED MESSAGES: If you want to reply to a deleted message (marked in your log as `[Message deleted by user]`), native replying via Message ID is impossible. In this scenario, you MUST call `send_agent_message` with `is_deleted_fallback=True`, and pass the message text in the `quote_text` parameter. This formats a markdown blockquote styled similarly to client-side quote fallbacks.\\n"
             f"7. PRECISE TARGETING: The default plain-text response (response.text) is automatically configured to safely reply to the original triggering message ID that initiated this generation transaction (even if new messages arrived in the meantime). However, if multiple user messages accumulated in your history context during your turns, or if you want to target a specific statement further up the thread, you should call the `send_agent_message` tool and specify the exact `reply_to_msg_id` of the message you are addressing. Be precise with your target selection to avoid confusing chat participants.\\n\""
+            f"8. PHYSICAL REPLY ROUTING: Whenever you write a plain-text response (response.text) that is meant to reply to a specific user's message, you MUST start your response with `[Reply: MESSAGE_ID]` (e.g. `[Reply: 487657]\\nYour conversational response here`). This instructs the system to route your reply arrow exactly to that message. Always make sure to use the exact Message ID of the message you are contextually answering up the thread to prevent confusing chat participants!\\n\""
             f"--- SECTION 6: STRICTURE AGAINST CONVERSATIONAL CODE EXECUTION ---\n"
             f"1. Writing Python code blocks (using ` ```python ... ``` `) in your standard text response (response.text) DOES NOT execute them! Standard text is always sent to the chat as plain readable text.\n"
             f"2. If you want to run Python code in the sandbox VM, you MUST explicitly invoke the `execute_python_code` tool. Never write Python code blocks in your conversational response expecting them to run autonomously.\n\n"
@@ -460,10 +461,8 @@ class GeminiManager:
                 async with self.client.action(chat_entity, 'typing'):
                     while True:
                         await asyncio.sleep(TYPING_INTERVAL)
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, Exception):
                 pass
-            except Exception as te:
-                logger.debug(f"Error sending typing status: {str(te)}")
 
         typing_task = asyncio.create_task(send_typing_loop())
 

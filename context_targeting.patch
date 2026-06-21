@@ -1,0 +1,60 @@
+diff a/gemini_manager.py b/gemini_manager.py
+--- gemini_manager.py
++++ gemini_manager.py
+@@ -141,12 +160,22 @@
+             f"--- SECTION 2: YOUR INHERENT MULTIMODAL CAPABILITIES (VISION AND HEARING) ---\n"
+             f"1. You possess full built-in vision and hearing on the level of the Gemini model. "
+             f"This means you are able to DIRECTLY view any attached images, video clips, video circles (video notes), as well as LISTEN to audio files and voice messages in the chat history!\n"
+             f"2. All files sent by users (voice messages, images, video notes, documents) are AUTOMATICALLY downloaded by the system and loaded into your context as binary bytes.\n"
+             f"3. YOU ARE STRICTLY FORBIDDEN from writing Python code, using ffmpeg, the speech_recognition library, or third-party scripts to manually listen to voice notes, "
+             f"view images, or play videos — you already see and hear them directly upon receipt! Just listen to/view the media file right in your history and reply to its content directly in the text.\n"
++            f"4. DISTINGUISHING FILES AND ATTACHMENTS: You will see local paths of cached profile pictures, avatars, and premium emojis in the text logs. These are NOT active chat message attachments! You should NEVER attempt to 'view' or analyze them unless the user explicitly asks you to inspect your avatar or a specific premium emoji. The only active chat message attachments are those wrapped in `[Attached Media - Type: ...]` blocks. Keep them strictly separate!\n\n"
+             f"--- SECTION 3: SAFETY AND BEHAVIOR RULES ---\n"
+diff a/gemini_manager.py b/gemini_manager.py
+--- gemini_manager.py
++++ gemini_manager.py
+@@ -321,15 +321,25 @@
+                 if response.text and not function_calls_to_execute and not should_ignore:
+                     typing_task.cancel()
+                     
+                     cleaned_text = response.text
+                     
+                     # Parse custom [Reply: MSG_ID] routing header if provided by the model
+                     custom_reply_id = reply_to_id
+                     reply_match = re.match(r'^\[Reply:\s*(\d+)\]\s*\\n?', cleaned_text, re.IGNORECASE)
+                     if reply_match:
+                         try:
+                             custom_reply_id = int(reply_match.group(1))
+                             cleaned_text = cleaned_text[reply_match.end():].strip()
+                             logger.info(f"Dynamic reply routing detected. Setting reply_to to message #{custom_reply_id}")
+                         except Exception as e:
+                             logger.warning(f"Failed to parse custom reply ID: {str(e)}")
+                     
+-                    # Programmatically strip any generated [Chat: ... | Message ID: ...] prefixes
+-                    prefix_pattern = re.compile(r'^\[Chat:\\s*-?\\d+\\s*\\|\\s*Message ID:\\s*(?:\\d+|unknown)\]\\s*\\n?', re.IGNORECASE)
+-                    cleaned_text = prefix_pattern.sub("", cleaned_text).strip()
++                    # Programmatically strip any generated [Chat: ... | Message ID: ...] or reply prefixes to avoid leakage
++                    prefix_pattern = re.compile(
++                        r'^(\[Chat:\\s*-?\\d+\\s*\\|\\s*Message ID:\\s*(?:\\d+|unknown)\]|'
++                        r'\[Reply to message\\s*#\\d+(?:\\s*in\\s*[^\\]]+)?\]|'
++                        r'\[Original text\\s*\\([^\\]]+\\):\\s*.*?\]|'
++                        r'\[Selected fragment\\s*/\\s*Quote\]:\\s*\\".*?\\"|'
++                        r'\[Attached Media\\s*-.*?\])\\s*\\n?', 
++                        re.DOTALL | re.IGNORECASE
++                    )
++                    cleaned_text = prefix_pattern.sub("", cleaned_text).strip()
+diff a/gemini_manager.py b/gemini_manager.py
+--- gemini_manager.py
++++ gemini_manager.py
+@@ -462,8 +462,5 @@
+         async def send_typing_loop():
+             try:
+                 async with self.client.action(chat_entity, 'typing'):
+                     while True:
+                         await asyncio.sleep(TYPING_INTERVAL)
+-            except asyncio.CancelledError:
+-                pass
+-            except Exception as te:
+-                logger.debug(f"Error sending typing status: {str(te)}")
++            except (asyncio.CancelledError, Exception):
++                pass
