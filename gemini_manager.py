@@ -933,6 +933,19 @@ class GeminiManager:
                     
                     # Programmatically strip any generated [Chat: ... | Message ID: ...] prefixes
                     cleaned_text = response.text
+                    
+                    # Parse custom [Reply: MSG_ID] routing header if provided by the model
+                    custom_reply_id = reply_to_id
+                    reply_match = re.match(r'^\[Reply:\s*(\d+)\]\s*\n?', cleaned_text, re.IGNORECASE)
+                    if reply_match:
+                        try:
+                            custom_reply_id = int(reply_match.group(1))
+                            cleaned_text = cleaned_text[reply_match.end():].strip()
+                            logger.info(f"Dynamic reply routing detected. Setting reply_to to message #{custom_reply_id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to parse custom reply ID: {str(e)}")
+                    
+                    # Programmatically strip any generated [Chat: ... | Message ID: ...] prefixes
                     prefix_pattern = re.compile(r'^\[Chat:\s*-?\d+\s*\|\s*Message ID:\s*(?:\d+|unknown)\]\s*\n?', re.IGNORECASE)
                     cleaned_text = prefix_pattern.sub("", cleaned_text).strip()
                     
@@ -943,7 +956,7 @@ class GeminiManager:
                     if cleaned_text:
                         try:
                             # Send the message and capture the result object containing the message ID
-                            result = await self.client.send_message(chat_entity, cleaned_text, reply_to=reply_to_id)
+                            result = await self.client.send_message(chat_entity, cleaned_text, reply_to=custom_reply_id)
                             logger.info(f"Sent plain-text response to chat {chat_id}: '{cleaned_text[:150]}...'")
                             
                             # Synchronously write the outgoing message to the DB immediately to eliminate the race condition
