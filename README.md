@@ -1,138 +1,187 @@
-# Baziliksina Userbot
+# Baziliksina Userbot 🌸
 
-**Baziliksina** is a modular, high-performance AI agent (Telegram Userbot) built on top of the MTProto-client **Telethon** and natively powered by **Google Gemini API** models and the **Pollinations.ai** gateway.
+**Baziliksina** is an autonomous, highly modular AI-driven Telegram companion (Userbot) built on top of the MTProto-client **Telethon** [README]. The bot is natively powered by **Google Gemini API** models for reasoning and unified function calling, alongside the **Pollinations.ai** gateway for generative image, audio, and video synthesis [README].
 
-Designed as an autonomous system, Baziliksina can deeply analyze multimodal chat contexts (such as images, videos, audio recordings, and voice notes), run sandboxed asynchronous Python scripts, query and modify a local SQLite database, schedule task timers, configure auto-wake triggers, and dynamically compile new custom AI tools at runtime.
-
----
-
-## Architectural Breakdown (12 Core Modules)
-
-The project is structured into 12 logically isolated Python modules:
-
-### 1. `bot.py` (Core Listener)
-* **Role:** The entry point of the program. It instantiates the Telethon MTProto client and handles network event dispatching.
-* **Key Components:**
-  * Event handlers for new messages (`NewMessage`), edited messages (`MessageEdited`), deleted messages (`MessageDeleted`), and message reactions.
-  * An incremental-counter-based debounce algorithm that prevents double-sending or parallel generations during rapid user messaging.
-  * Background keep-alive and network connection monitor services.
-
-### 2. `config.py` (Central Configuration)
-* **Role:** Manages, categorizes, and validates all environment variables and configuration constants.
-* **Structure:** Organized into 8 cohesive sections:
-  1. System and Workspace Paths (General Settings)
-  2. Telegram Core and Session Settings
-  3. Core AI Parameters (Gemini Settings)
-  4. Generative Media Models (Pollinations Settings)
-  5. Database and Summarization (Memory and Context Settings)
-  6. Network and Timing Settings (Timeouts and Cooldowns)
-  7. Proxy and Anonymization Settings (Tor & Proxy Controls)
-  8. Sandbox Limits and Page Scrapers
-
-### 3. `db_manager.py` (Database Engine)
-* **Role:** An asynchronous SQLite database wrapper designed on top of `aiosqlite`.
-* **Key Components:**
-  * Connects and optimizes SQLite transactions utilizing configurable journaling modes (such as WAL, DELETE, MEMORY) defined in config.
-  * Manages 10 database tables including message history, accompanying secondary metadata, shared memory, persistent triggers, profile caches, and dynamic tools.
-  * Features split local/global context retrieval (`get_history`) to keep the model focused on active chat threads while remaining globally aware of other conversations.
-
-### 4. `downloader.py` (Multimedia Transcoder)
-* **Role:** Handles asynchronous downloading of message attachments and performs format conversions to ensure Gemini API compatibility.
-* **Key Components:**
-  * Downloader routines for attachments, voice notes, video circles, star gifts, and avatars.
-  * On-the-fly transcoding of transparent WebM custom emojis/stickers to H.264 `.mp4` using FFmpeg.
-  * Transcoding of Opus `.ogg` voice notes to standard `.mp3` using FFmpeg for native Gemini hearing.
-
-### 5. `gemini_manager.py` (AI Orchestrator)
-* **Role:** Handles turn-based generation transactions, tool execution, and prompt assembly.
-* **Key Components:**
-  * Dynamic assembly of system instructions based on premium profile caches.
-  * Multi-turn tool execution loop resolving both native and healed function calls.
-  * An Auto-Heal Interceptor that parses stringified function calls in conversational responses and converts them into executable `FunctionCall` objects.
-  * Regular-expression filters that programmatically strip leaked metadata headers and reasoning thought blocks (`thought`).
-
-### 6. `key_manager.py` (API Rotation & Limits)
-* **Role:** Restores, rotates, and manages quotas for Gemini and Pollinations API keys.
-* **Key Components:**
-  * `GeminiKeyManager` featuring automatic model rotation (Flash vs Pro) and distinct cooldown timers (5 hours for Flash, 24 hours for Pro models) on 429 exhaustion.
-  * `PollinationsKeyManager` featuring batch blocking of all keys belonging to an owner upon quota exhaustion.
-
-### 7. `parser.py` (Structure Analyzer)
-* **Role:** Dissects complex raw MTProto Telegram objects into visual and text representations.
-* **Key Components:**
-  * Reconstructs full Markdown formatting (bold, italic, spoilers, code blocks) on incoming messages by accessing `message.text`.
-  * Extracts custom emojis, reactions, Star Gift details, and cross-chat reply/quote offsets.
-  * Populates cache tables for premium users and channel profiles.
-
-### 8. `registry.py` (Tool Registry)
-* **Role:** A thread-safe catalog storing all executable AI functions.
-* **Key Components:**
-  * Class-based function mapper (`FunctionRegistry` singleton).
-  * Runtime compiler `compile_custom_tool` compiling sandboxed functions created dynamically by the model and instantly registering them in memory.
-
-### 9. `sandbox.py` (Virtual Machine)
-* **Role:** Hosts the execution of untrusted AI-generated Python code.
-* **Key Components:**
-  * `SandboxedClient` proxies File and Network methods of Telethon to protect systemic files.
-  * `AsyncSandbox` executing code in an isolated dictionary scope with a protected, chroot-like override of the built-in `open()` function.
-
-### 10. `services.py` (Background Services)
-* **Role:** Keeps the userbot alive and handles history synchronization.
-* **Key Components:**
-  * Status ping services keeping the account online.
-  * Missed messages sync services (`catch_up_missed_messages`) populating the database after network drops or startup, scheduling automatic debounce replies where necessary.
-
-### 11. `tools.py` (AI Toolset)
-* **Role:** Exposes 33 powerful systemic tools to the model.
-* **Key Components:**
-  * Core File system management (workspace files, url downloader, Telegraph, file.io upload).
-  * Internet search engines and scrapers.
-  * Telegram automation actions (agent replies, button clicking, inline queries).
-  * Timers and auto-wake triggers.
-  * Media generators (
-flux image, wan video, qwen-tts audio).
-  * SQL transaction executors and sandbox VMs.
-  * Ultimate Telegram object and message analyzers returning 100% complete raw MTProto JSON payloads.
-
-### 12. `utils.py` (JSON Serializers)
-* **Role:** Handles deep serialization of custom objects.
-* **Key Components:**
-  * `TelegramJSONEncoder` translating custom Telethon types, sets, bytes, and dates recursively into serializeable format.
-  * File-path sanitizers protecting workspace downloads.
+Designed to function as a natural, self-sustaining mobile or PC Telegram user, Baziliksina processes multimodal context (images, videos, documents, voice notes, and video notes), manages persistent databases, schedules long-term timers, configures reactive triggers, and dynamically compiles and registers new custom tools at runtime [README].
 
 ---
 
-## Configuration Variables (`.env`)
+## Key Core Features 🌟
 
-Configure the environment by creating a `.env` file in the root directory:
+1. **Turn-Based Multimodal Memory:** Keeps absolute, context-aware records of chat history, automatically extracting local thread context alongside global cross-cutting events [33, 34].
+2. **Segmented Action Blocks:** Structures conversational replies and systemic actions natively within XML block containers (`<seq>`, `<par>`, `<bg>`), enabling sequential, parallel, or background executions [33, 34].
+3. **2026 Telegram Formatting Support:** Fully parses, serializes, and delivers rich message styles including expandable blockquotes, subscript/superscript tags, and highlighted marked text with built-in protection against HTML rendering failures [23, 25].
+4. **Autonomous Schedulers and Triggers:** Schedules robust database timers (`set_task_timer`) and reactive regex/keyword triggers (`set_wake_trigger`) that run background code or wake up the AI [37].
+5. **Dynamic Runtime Compilation:** Compiles custom, secure Python tools on the fly (`create_or_update_custom_tool`), instantly registering them in active memory and persisting them across database reboots [37].
+6. **Robust Sandboxed Virtual Machine:** Executes untrusted Python scripts inside a safe, isolated `AsyncSandbox` chroot-like environment, utilizing a proxied client to prevent modifications to vital system assets [21, 28].
+7. **Key Pool Rotation & Recovery:** Automatic failover handling with specialized recovery cooldowns for Gemini (Flash vs Pro rate limits) and Pollinations (pool blocking on exhausted owner keys) [19, 30].
+8. **Asynchronous Transcoding Engine:** Direct support for transparent WebM stickers/emojis (transcoded to H.264 MP4) and Opus OGG voice recordings (transcoded to MP3) using FFmpeg to ensure seamless compatibility with Google Gemini API [26].
+
+---
+
+## Architectural Layout 📂
+
+The project is structured into logical packages to separate responsibilities:
+
+```
+baziliksina/
+├── main.py                     # Primary Launcher (configures sys.path and boots core/bot.py)
+├── .env.example                # Documented environmental variables template
+├── .gitignore                  # Git tracking exclusion filters
+│
+├── config/
+│   └── config.py               # Path resolutions, defaults validation, and env loading
+│
+├── database/
+│   └── db_manager.py           # Asynchronous SQLite connector (aiosqlite) with 10 tables
+│
+├── core/
+│   ├── bot.py                  # Direct MTProto client, network listener, and event router
+│   ├── gemini_manager.py       # Orchestrates dialogue turns, token limits, and segment actions
+│   ├── key_manager.py          # Recovers, rotates, and registers Gemini & Pollinations keys
+│   ├── registry.py             # Active FunctionRegistry of systemic and compiled custom tools
+│   └── sandbox.py              # Isolated secure virtual execution sandbox for python VM
+│
+├── services/
+│   └── services.py             # Implements missed messages synchronization and status keep-alive
+│
+├── utils/
+│   ├── utils.py                # Serializers, sanitizers, and safe HTML formatting parser
+│   ├── parser.py               # Dissects raw MTProto structures (resolves rich styles & quotes)
+│   ├── downloader.py           # Media downloader and transcoding interface (FFmpeg)
+│   └── proxy_manager.py        # Segregated, modular PySocks proxy pool rotational controller
+│
+└── tools/
+    └── tools.py                # Unified root system toolset containing 38+ functions
+```
+
+---
+
+## Execution Blocks & Action Labels 🏷️
+
+Instead of returning a single plain-text response, the AI structures its replies inside XML block containers. This allows complex operations (such as responding to a message, reacting, deleting, and running an internet search) to occur in a structured order.
+
+### Wrapper Blocks
+*   `<seq> ... </seq>`: Executes the enclosed action labels and text replies sequentially (default behavior).
+*   `<par> ... </par>`: Executes the actions in parallel using `asyncio.gather` for immediate response times.
+*   `<bg> ... </bg>`: Launches the actions in the background as an independent asyncio task, allowing the main dialogue loop to finish instantly without waiting.
+
+### Action Labels
+*   **Text Replies:** `[Reply: MSG_ID] Your text here` — Sends a targeted reply to the specified message ID using Telethon [33, 34].
+*   **Reactions:** `[React: MSG_ID | emoji_or_document_id]` — Sets standard reactions or custom premium emojis. Setting `none` removes the reaction [33, 34].
+*   **Media Album Attachments:** `[Attach: photo.jpg, video.mp4 | Caption]` — Delivers local workspace files as a cohesive media album [33, 34].
+*   **Edit Message:** `[Edit: MSG_ID | New text]` — Edits an existing own message [33, 34].
+*   **Delete Message:** `[Delete: MSG_ID]` — Deletes the specified message [33, 34].
+*   **No-Op Ignore:** `[NoOp: reason | continue=True/False]` — Silent ignore. If `continue` is True, the AI keeps reasoning in the loop; if False, it terminates the turn [33, 34].
+*   **Direct Tool Call:** `[Tool: tool_name | param1=val1, param2=val2]` — Standard call to any registered tool [33, 34].
+
+### Shielding & Escaping
+To prevent the parser from executing a block or label (for instance, when explaining usage to a user), the AI shields the brackets using backslashes:
+`\[Reply: 12345\]` — Safely delivered as readable text in the chat, rendering as `[Reply: 12345]`.
+
+---
+
+## Comprehensive Database Schema 🗄️
+
+The `DBManager` manages 10 dedicated SQLite tables to record the entire userbot lifecycle:
+
+1.  `messages`: Dialogue history across all chats, storing role, text, raw Gemini Content JSONs, media references, and message IDs.
+2.  `msgs_meta`: Secondary visual metadata (reactions, inline button layouts, premium emojis).
+3.  `summaries`: Global summarized cross-chat history used to compress active context limits.
+4.  `shared_memory`: Shared global memory (key-value) accessible across all scripts.
+5.  `timers`: Scheduled task timers with optional code to execute when triggered.
+6.  `triggers`: Reactive keyword/regex auto-wake rules.
+7.  `users_meta`: Profiles of premium/standard users (verifications, scam flags, avatars, bios).
+8.  `chats_meta`: Metadata of groups/channels (type, titles, linked channels, descriptions).
+9.  `api_keys`: Database registry of all loaded Google Gemini and Pollinations keys, status, and quotas.
+10. `custom_tools`: Complete source code and schemas of user-compiled custom dynamic tools.
+
+---
+
+## Unified System Toolset (38 Systemic Functions) 🛠️
+
+Baziliksina's system registry provides the following core tools:
+
+### Category 1: File System & Workspace
+*   `save_file_to_workspace`: Saves text/hex binary content to a workspace file.
+*   `save_file_from_telegram`: Downloads files directly from specified Telegram message IDs.
+*   `read_file_from_workspace`: Reads text files or returns hex dumps of binary files.
+*   `list_workspace_files`: Lists all files inside the workspace.
+*   `delete_file_from_workspace`: Deletes files from the workspace disk.
+*   `download_content_from_url`: Downloads static files or utilizes `yt-dlp` for streaming audio/video.
+
+### Category 2: Web Search & Scraping
+*   `internet_search`: DuckDuckGo text search engine for real-time information retrieval.
+*   `internet_media_search`: Multimedia/PDF file search.
+*   `scrape_url`: Text extraction from web pages (strips script/CSS and decomposition tags).
+*   `send_http_request`: Direct REST API request executor supporting custom payloads, headers, and params.
+
+### Category 3: Telegram Automation
+*   `send_agent_message`: Relays replies, cross-chat messages, and markdown blockquotes for deleted messages.
+*   `execute_telegram_action`: Automated execution of raw MTProto calls or Telethon methods.
+*   `send_inline_bot_result`: Direct clicking and relaying of inline bot commands (`@gif`, `@pic`).
+*   `click_inline_button`: Automated interaction with inline keyboard layouts of other bots.
+*   `set_message_reaction`: Natively set/remove message reactions.
+*   `send_telegram_media`: Sends Telegram files by utilizing raw document IDs and access hashes.
+*   `send_media_message`: Sends single or multiple files (album) with custom blurs, self-destruct timers (`ttl`), or spoiler tags.
+*   `edit_message`: Modifies previously sent own messages.
+*   `delete_message`: Administrative deletion of own or other messages.
+*   `update_avatar`: Changes the userbot's or target chat's profile picture.
+
+### Category 4 & 5: Timers & Triggers
+*   `set_task_timer` / `delete_task_timer` / `list_task_timers`: Database task timers manager.
+*   `set_wake_trigger` / `delete_wake_trigger` / `list_task_triggers`: Reactive keyword auto-wake rules manager.
+
+### Category 6: Multimedia Generative AI
+*   `generate_image`: Flux Schnell, anime-zimage, and Grok image generation with size configuration.
+*   `generate_audio`: TTS and music synthesis utilizing Qwen and ElevenLabs models.
+*   `generate_video`: Physics-aware short video synthesis using Alibaba Wan and LTX.
+*   `upload_file_to_public_host`: Uploads local files to secure anonymous hosts (Telegraph, Uguu, Pollinations).
+
+### Category 7: System Control & Database Integration
+*   `no_op_ignore`: Completes generation turns without text output. Supports optional `continue_loop` parameters.
+*   `run_sandboxed_command`: Protected execution of basic terminal bash shell commands.
+*   `execute_python_code`: Sandbox execution VM for asynchronous scripts.
+*   `upload_file_to_google`: Uploads large local assets to Gemini cloud storage.
+*   `get_chat_history_from_db`: Extracts raw SQLite logs for specific chats.
+*   `get_telegram_object_info`: Pulls user/channel descriptions, verifications, scam tags, and raw MTProto JSONs.
+*   `get_telegram_message_details`: Pulls full message structures, reactions, views, forwards, and inline button layouts.
+*   `execute_sql_query`: Raw SELECT/INSERT/UPDATE database execution engine.
+*   `create_or_update_custom_tool` / `delete_custom_tool`: Dynamically registers/removes runtime tools.
+
+---
+
+## Configuration Variables (`.env`) ⚙️
+
+Customize the `.env` template in your root directory before launching:
 
 ```ini
-# --- TELEGRAM API CREDENTIALS ---
-TELEGRAM_API_ID=your_api_id
-TELEGRAM_API_HASH=your_api_hash
-TELEGRAM_SESSION_NAME=baziliksina_session
-OWNER_ID=your_telegram_id
+# --- TELEGRAM API CONFIGURATION ---
+TELEGRAM_API_ID=12345678
+TELEGRAM_API_HASH=your_telegram_hash
+TELEGRAM_SESSION_NAME=baziliksina
+OWNER_ID=2113692455
 
 # --- SQLITE ENGINE SETTINGS ---
+DB_NAME=bot_context.db
 SQLITE_JOURNAL_MODE=WAL
 
 # --- GOOGLE GEMINI CONFIGURATION ---
 GEMINI_API_KEYS=key1,key2,key3
 GEMINI_MODELS=gemini-2.5-flash,gemini-2.5-pro
 
-# --- POLLINATIONS AI CONFIGURATION ---
-POLLINATIONS_KEYS=pk_key1,sk_key2
-
-# --- LIMITS AND TIMEOUTS ---
-TELEGRAM_ACTION_CHAR_LIMIT=5000
+# --- FLOW & GENERATION TRIGGERS ---
+BOOTSTRAP_TRIGGER_GENERATION=true
+CATCH_UP_TRIGGER_GENERATION=true
+USE_SYSTEM_PROMPT=true
 ```
 
 ---
 
-## Setup and Installation
+## Installation & Setup 🚀
 
 ### 1. Install System Dependencies
-Ensure **Python 3.10+**, **FFmpeg**, and **Tor** are installed:
+Ensure **Python 3.10+**, **FFmpeg**, and **Tor** are active:
 
 *   **Termux (Android):**
     ```bash
@@ -153,14 +202,9 @@ cd baziliksina
 pip install -r requirements.txt
 ```
 
-### 3. Start Tor Service (Optional)
-Enable Tor SOCKS control port in `torrc` and run:
+### 3. Launching
+Run the primary launcher script:
 ```bash
-tor &
+python main.py
 ```
-
-### 4. Authenticate and Run the Userbot
-```bash
-python bot.py
-```
-Enter your phone number and 2FA password when prompted.
+Enter your phone number and 2FA password (if enabled) on first run to authorize the Telethon session.

@@ -10,7 +10,7 @@ load_dotenv(override=True) # Force dotenv to overwrite cached container variable
 # SECTION 1: System and Workspace Paths (General Settings)
 # =====================================================================
 # Project root directory
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Checking Termux environment and emulated Android storage
 is_termux = "com.termux" in sys.executable or "/data/data/com.termux" in str(BASE_DIR)
@@ -357,3 +357,16 @@ TELEGRAM_AUTO_RECONNECT = os.getenv("TELEGRAM_AUTO_RECONNECT", "true").lower() =
 TELEGRAM_TIMEOUT = os.getenv("TELEGRAM_TIMEOUT")
 TELEGRAM_TIMEOUT = os.getenv("TELEGRAM_CONNECT_TIMEOUT") or os.getenv("TELEGRAM_TIMEOUT")
 TELEGRAM_TIMEOUT = float(TELEGRAM_TIMEOUT) if TELEGRAM_TIMEOUT else 15.0
+
+
+# =====================================================================
+# SECTION 9: 2026 Additions and Generation Triggers
+# =====================================================================
+# Whether to start AI response generation immediately after first dialogue history bootstrap
+BOOTSTRAP_TRIGGER_GENERATION = os.getenv("BOOTSTRAP_TRIGGER_GENERATION", "true").lower() == "true"
+
+# Whether to trigger a debounce AI response generation after caught-up missed messages are synced
+CATCH_UP_TRIGGER_GENERATION = os.getenv("CATCH_UP_TRIGGER_GENERATION", "true").lower() == "true"
+
+# Whether to include the comprehensive system instructions prompt inside Gemini request config
+USE_SYSTEM_PROMPT = os.getenv("USE_SYSTEM_PROMPT", "true").lower() == "true"

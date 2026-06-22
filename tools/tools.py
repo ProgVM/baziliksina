@@ -1883,7 +1883,214 @@ class AIToolKit:
             )
         except Exception as e:
             return f"Error retrieving message details: {str(e)}"
+
+    # =====================================================================
+    # 2026 UPDATE: NEW ENHANCED TOOLS
+    # =====================================================================
+
+    async def send_media_message(self, chat_id: Any = None, files: List[str] = None, caption: str = None, reply_to_msg_id: int = None, **kwargs) -> str:
+        """
+        Sends one or multiple media files (photos, videos, audio, documents, GIFs) to the specified chat.
+        Supports advanced properties such as self-destruct timers (one-time view), spoiler/hiding effects, paid content,
+        and high-quality configurations through Telethon args or kwargs.
+
+        Args:
+            chat_id: Target chat username or ID. Defaults to current chat.
+            files: A list of local file names or paths in the workspace to send.
+            caption: Optional text caption for the media or media album.
+            reply_to_msg_id: Optional message ID to reply to.
+            **kwargs: Extra settings applied to the files, e.g., 'ttl' (for self-destruct/one-time view in seconds), 
+                      'spoiler' (to blur/hide media), 'attributes', etc.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        if not files:
+            return "Error: Please specify the files list."
+            
+        if chat_id is None:
+            try:
+                chat_id = current_chat_id.get()
+            except LookupError:
+                return "Error: Could not resolve target chat."
+
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+
+        try:
+            # Resolve paths
+            resolved_files = []
+            for f in files:
+                f_path = WORKSPACE_DIR / os.path.basename(f)
+                if f_path.exists():
+                    resolved_files.append(str(f_path.resolve()))
+                else:
+                    return f"Error: File '{f}' not found in workspace."
+
+            # Determine reply_to ID
+            target_reply_to = reply_to_msg_id
+            if not target_reply_to:
+                try:
+                    target_reply_to = current_reply_to_id.get()
+                except LookupError:
+                    pass
+
+            file_arg = resolved_files[0] if len(resolved_files) == 1 else resolved_files
+            
+            # Send file
+            result = await client.send_file(
+                chat_id, 
+                file=file_arg, 
+                caption=caption, 
+                reply_to=target_reply_to, 
+                parse_mode="html",
+                **kwargs
+            )
+            
+            # Save to DB
+            msg_id = getattr(result, "id", None)
+            if msg_id:
+                media_info = json.dumps({"path": resolved_files[0], "mime_type": "media"})
+                await db.save_message(str(chat_id), "model", caption or "[Sent Media]", media_info=media_info, msg_id=msg_id)
+                import bot
+                bot.processed_msg_ids.add((int(chat_id), msg_id))
+
+            return f"Success. Media message sent successfully."
+        except Exception as e:
+            return f"Error sending media message: {str(e)}"
+
+    async def edit_message(self, chat_id: Any, message_id: int, new_text: str, **kwargs) -> str:
+        """
+        Edits a previously sent own message.
+
+        Args:
+            chat_id: Target chat ID or username.
+            message_id: ID of the message to edit.
+            new_text: New text content of the message.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        try:
+            if isinstance(chat_id, str):
+                try: chat_id = int(chat_id)
+                except ValueError: pass
+            
+            # Format text safely
+            from utils import safe_telegram_html
+            formatted_text = safe_telegram_html(new_text)
+            
+            await client.edit_message(chat_id, int(message_id), formatted_text, parse_mode="html", **kwargs)
+            # Update local DB
+            if db:
+                await db.update_message_text(str(chat_id), int(message_id), formatted_text)
+            return f"Success. Message #{message_id} edited in chat {chat_id}."
+        except Exception as e:
+            return f"Error editing message: {str(e)}"
+
+    async def delete_message(self, chat_id: Any, message_id: int, **kwargs) -> str:
+        """
+        Deletes a message (own or someone else's if you have admin privileges) in the specified chat.
+
+        Args:
+            chat_id: Target chat ID or username.
+            message_id: ID of the message to delete.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        try:
+            if isinstance(chat_id, str):
+                try: chat_id = int(chat_id)
+                except ValueError: pass
+            await client.delete_messages(chat_id, [int(message_id)], **kwargs)
+            # Mark deleted in local DB
+            if db:
+                await db.update_message_text(str(chat_id), int(message_id), f"[Message deleted via tool]")
+            return f"Success. Message #{message_id} deleted in chat {chat_id}."
+        except Exception as e:
+            return f"Error deleting message: {str(e)}"
+
+    async def update_avatar(self, chat_id: Any = None, filename: str = None, **kwargs) -> str:
+        """
+        Updates the profile photo (avatar) of the userbot itself or a specified chat/group/channel (if admin permissions are present).
+
+        Args:
+            chat_id: Target chat ID or username. Defaults to the userbot itself ('me').
+            filename: The name of the file in the workspace to set as avatar (e.g. 'avatar.jpg').
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        if not filename:
+            return "Error: Please specify the filename."
+        try:
+            file_path = WORKSPACE_DIR / os.path.basename(filename)
+            if not file_path.exists():
+                return f"Error: File '{filename}' not found."
+            
+            uploaded_file = await client.upload_file(str(file_path.resolve()))
+            
+            if chat_id is None or str(chat_id).lower() == "me":
+                from telethon.tl.functions.photos import UploadProfilePhotoRequest
+                await client(UploadProfilePhotoRequest(fallback=False, file=uploaded_file))
+                return "Success. Userbot's own avatar updated."
+            else:
+                if isinstance(chat_id, str):
+                    try: chat_id = int(chat_id)
+                    except ValueError: pass
+                from telethon.tl.functions.channels import EditChatPhotoRequest
+                from telethon.tl.types import InputChatUploadedPhoto
+                entity = await client.get_input_entity(chat_id)
+                try:
+                    await client(EditChatPhotoRequest(channel=entity, photo=InputChatUploadedPhoto(file=uploaded_file)))
+                    return f"Success. Avatar updated for channel/group {chat_id}."
+                except Exception:
+                    # Fallback for regular group chat
+                    from telethon.tl.functions.messages import EditChatPhotoRequest as MsgEditChatPhotoRequest
+                    await client(MsgEditChatPhotoRequest(chat_id=entity.chat_id if hasattr(entity, 'chat_id') else chat_id, photo=InputChatUploadedPhoto(file=uploaded_file)))
+                    return f"Success. Avatar updated for group {chat_id}."
+        except Exception as e:
+            return f"Error updating avatar: {str(e)}"
+
+    async def send_http_request(self, method: str, url: str, headers_json: str = None, params_json: str = None, data_json: str = None, timeout: float = 30.0, **kwargs) -> str:
+        """
+        Sends an HTTP/HTTPS request (GET, POST, PUT, DELETE, PATCH, etc.) to any external resource, Web API, or service
+        using custom methods, payloads, headers, and params. Returns the response text or serialized JSON.
+
+        Args:
+            method: The HTTP method (e.g., 'GET', 'POST', 'PUT', 'DELETE').
+            url: The destination URL (e.g., 'https://api.example.com/data').
+            headers_json: Optional JSON string of HTTP headers to include.
+            params_json: Optional JSON string of URL query parameters.
+            data_json: Optional JSON string of data/payload to send (for POST/PUT).
+            timeout: Timeout in seconds. Default is 30.0.
+        """
+        import json
+        headers = json.loads(headers_json) if headers_json else {}
+        params = json.loads(params_json) if params_json else {}
+        data = json.loads(data_json) if data_json else None
+        
+        if kwargs:
+            if isinstance(data, dict):
+                data.update(kwargs)
+            elif data is None:
+                data = kwargs
+                
+        from proxy_manager import proxy_rotator
+        proxy_url = proxy_rotator.get_proxy("scraper")
+        
+        try:
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout, follow_redirects=True) as client_httpx:
+                resp = await client_httpx.request(method=method.upper(), url=url, headers=headers, params=params, json=data)
+                return f"HTTP Response (Status: {resp.status_code}):\n{resp.text[:4000]}"
+        except Exception as e:
+            return f"Error sending HTTP request: {str(e)}"
+
 ROOT_TOOL_CATEGORIES = {
+    "send_media_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "edit_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "delete_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "update_avatar": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_http_request": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
+
     "save_file_to_workspace": "Category 1: File System and Sandbox (Workspace File Management)",
     "save_file_from_telegram": "Category 1: File System and Sandbox (Workspace File Management)",
     "read_file_from_workspace": "Category 1: File System and Sandbox (Workspace File Management)",
