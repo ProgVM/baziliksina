@@ -956,6 +956,10 @@ class GeminiManager:
                     
                     cleaned_text = response.text
                     
+                    # Очищаем сгенерированные моделью технические префиксы [Chat: ... | Message ID: ...]
+                    prefix_pattern = re.compile(r'\[Chat:\s*-?\d+\s*\|\s*Message ID:\s*(?:\d+|unknown)\]\s*\n?', re.IGNORECASE)
+                    cleaned_text = prefix_pattern.sub("", cleaned_text).strip()
+                    
                     # Strip any leaked thought/thinking process headers from the API response
                     thought_pattern = re.compile(r'^(?:thought|thinking|thoughts)(?:\s*:\s*|\s*\n+)?', re.IGNORECASE)
                     cleaned_text = thought_pattern.sub("", cleaned_text).strip()
