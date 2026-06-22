@@ -986,11 +986,11 @@ class GeminiManager:
                     for b_type, b_content in blocks:
                         # Parse individual segments within this block
                         tag_regexes = [
-                            r'(?<!\\)\[Reply:\s*(\\d+)\]',
-                            r'(?<!\\)\[React:\s*(\\d+)\s*\|\s*(.*?)\s*\]',
+                            r'(?<!\\)\[Reply:\s*(\d+)\]',
+                            r'(?<!\\)\[React:\s*(\d+)\s*\|\s*(.*?)\s*\]',
                             r'(?<!\\)\[Attach:\s*([^|\]]+?)\s*(?:\|\s*(.*?))?\s*\]',
-                            r'(?<!\\)\[Edit:\s*(\\d+)\s*\|\s*(.*?)\s*\]',
-                            r'(?<!\\)\[Delete:\s*(\\d+)\s*\]',
+                            r'(?<!\\)\[Edit:\s*(\d+)\s*\|\s*(.*?)\s*\]',
+                            r'(?<!\\)\[Delete:\s*(\d+)\s*\]',
                             r'(?<!\\)\[NoOp:\s*([^|\]]+?)\s*(?:\|\s*continue\s*=\s*(true|false))?\s*\]',
                             r'(?<!\\)\[Tool:\s*([a-zA-Z0-9_]+)\s*\|\s*(.*?)\s*\]'
                         ]
