@@ -328,6 +328,26 @@ async def parse_message_payload(client, db, message) -> str:
         if emoji_refs:
             meta_parts.append("\n".join(emoji_refs))
 
+    
+    # 1.1 Parsing and extracting rich formatting entities (2026 update)
+    if message.entities:
+        formatting_refs = []
+        for ent in message.entities:
+            ent_type = type(ent).__name__
+            if ent_type in ["MessageEntitySubscript", "MessageEntitySuperscript", "MessageEntityMarked", "MessageEntityBlockquote"]:
+                offset = ent.offset
+                length = ent.length
+                plain_text = message.message or ""
+                try:
+                    utf16_text = plain_text.encode('utf-16-le')
+                    sliced = utf16_text[offset*2:(offset+length)*2].decode('utf-16-le')
+                    ref_str = f"[{ent_type.replace('MessageEntity', '')} text: '{sliced}']"
+                    formatting_refs.append(ref_str)
+                except Exception:
+                    pass
+        if formatting_refs:
+            meta_parts.append("\n".join(formatting_refs))
+
     # 2. Parsing Star Gifts with animations
     if message.media and type(message.media).__name__ == "MessageMediaGift":
         gift = message.media

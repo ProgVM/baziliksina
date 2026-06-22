@@ -79,3 +79,51 @@ async def wait_for_google_file_active(gemini_client, file_name: str, timeout_sec
     except Exception as e:
         log.error(f"Error while waiting for Google file state: {str(e)}")
     return False
+
+
+def safe_telegram_html(text: str) -> str:
+    """
+    Safely escapes characters (like &, <, >) inside text to be compatible with 
+    Telegram HTML parse mode, while preserving valid, supported Telegram HTML tags
+    (including <b>, <i>, <u>, <s>, <tg-spoiler>, <blockquote expandable>, <sub>, <sup>, and <mark>).
+    """
+    import re
+    
+    # List of allowed tag names in Telegram HTML format (as of 2026)
+    allowed_tags = [
+        'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 
+        'span', 'tg-spoiler', 'a', 'tg-emoji', 'code', 'pre', 'blockquote',
+        'details', 'summary', 'sub', 'sup', 'mark', 'time'
+    ]
+    
+    tag_pattern = re.compile(r'<(/?)(\\w+)([^>]*)>')
+    
+    parts = []
+    last_idx = 0
+    
+    for match in tag_pattern.finditer(text):
+        start, end = match.span()
+        # Escaping non-tag segments
+        before_text = text[last_idx:start]
+        before_escaped = before_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        parts.append(before_escaped)
+        
+        is_closing = match.group(1) == '/'
+        tag_name = match.group(2).lower()
+        attrs = match.group(3)
+        
+        if tag_name in allowed_tags:
+            # Let the valid tag pass through intact
+            parts.append(match.group(0))
+        else:
+            # Escape invalid tags entirely
+            tag_escaped = match.group(0).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            parts.append(tag_escaped)
+            
+        last_idx = end
+        
+    after_text = text[last_idx:]
+    after_escaped = after_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    parts.append(after_escaped)
+    
+    return ''.join(parts)

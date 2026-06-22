@@ -1,3 +1,13 @@
+import sys
+from pathlib import Path
+_root = Path(__file__).resolve().parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+for sub in ["config", "core", "database", "services", "utils", "tools"]:
+    sub_path = str(_root / sub)
+    if sub_path not in sys.path:
+        sys.path.append(sub_path)
+
 # bot.py
 import sys
 import json
@@ -639,7 +649,7 @@ async def main():
     
     # [FIRST RUN]: Bootstrap AI dialogue history if allowed by the BOOTSTRAP_DATABASE setting
     if BOOTSTRAP_DATABASE:
-        await services.bootstrap_database_if_empty(client, db)
+        await services.bootstrap_database_if_empty(client, db, run_pending_query_fn=schedule_debounce_query)
     
     # Download AI's own avatar for autonomous analysis at startup
     try:

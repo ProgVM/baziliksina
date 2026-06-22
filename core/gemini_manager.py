@@ -8,10 +8,11 @@ import inspect
 from google.genai import types
 from google.genai.errors import APIError
 
-from config import GEMINI_MODELS, WORKSPACE_DIR, SESSION_NAME, SESSION_PATH, SAFE_DB_DIR, OWNER_ID, MESSAGES_LIMIT, SUMMARIZATION_MESSAGES_LIMIT, SUMMARIZATION_KEEP_LIMIT, TEMPERATURE, STOP_SEQUENCES, THINKING_LEVEL, TOP_P, MAX_TURNS, MEDIA_LIMIT, SAFETY_HATE_SPEECH, SAFETY_HARASSMENT, SAFETY_SEXUALLY_EXPLICIT, SAFETY_DANGEROUS_CONTENT, GEMINI_TIMEOUT, TYPING_INTERVAL, TIMEOUT_SLEEP, RATE_LIMIT_SLEEP, API_ERROR_SLEEP, CHARACTER_FILE, BOT_AVATAR_NAME, DB_NAME
+from config import GEMINI_MODELS, WORKSPACE_DIR, SESSION_NAME, SESSION_PATH, SAFE_DB_DIR, OWNER_ID, MESSAGES_LIMIT, SUMMARIZATION_MESSAGES_LIMIT, SUMMARIZATION_KEEP_LIMIT, TEMPERATURE, STOP_SEQUENCES, THINKING_LEVEL, TOP_P, MAX_TURNS, MEDIA_LIMIT, SAFETY_HATE_SPEECH, SAFETY_HARASSMENT, SAFETY_SEXUALLY_EXPLICIT, SAFETY_DANGEROUS_CONTENT, GEMINI_TIMEOUT, TYPING_INTERVAL, TIMEOUT_SLEEP, RATE_LIMIT_SLEEP, API_ERROR_SLEEP, CHARACTER_FILE, BOT_AVATAR_NAME, DB_NAME, USE_SYSTEM_PROMPT
 from key_manager import GeminiKeyManager, PollinationsKeyManager
 from db_manager import DBManager
 from registry import registry
+from utils import safe_telegram_html
 import tools
 
 logger = logging.getLogger("GeminiManager")
@@ -159,7 +160,7 @@ class GeminiManager:
         """
         from telethon.tl.functions.users import GetFullUserRequest
 
-        # 1. Extracting AI profile data
+        # 1. Extracting AI profile data (with extended 2026 statuses)
         try:
             me = await self.client.get_me()
             me_id = me.id
@@ -168,29 +169,51 @@ class GeminiManager:
             me_user = me.username or "no"
             me_phone = me.phone or "hidden"
             me_premium = "yes" if getattr(me, 'premium', False) else "no"
+            me_verified = "yes" if getattr(me, 'verified', False) else "no"
+            me_scam = "yes" if getattr(me, 'scam', False) else "no"
+            me_fake = "yes" if getattr(me, 'fake', False) else "no"
+            me_bot = "yes" if getattr(me, 'bot', False) else "no"
             
             full_me = await self.client(GetFullUserRequest(me))
             me_bio = getattr(full_me.full_user, 'about', None) or "description missing"
+            
+            bday_obj = getattr(full_me.full_user, 'birthday', None)
+            me_birthday = "hidden"
+            if bday_obj:
+                me_birthday = f"{bday_obj.day:02d}.{bday_obj.month:02d}"
+                if getattr(bday_obj, 'year', None):
+                    me_birthday += f".{bday_obj.year}"
         except Exception as e:
             logger.error(f"Error getting AI profile for prompt: {str(e)}")
-            me_id, me_first, me_last, me_user, me_phone, me_premium, me_bio = (
-                "hidden", "Baziliksina", "", "baziliksina", "unknown", "no", "AI Assistant"
+            me_id, me_first, me_last, me_user, me_phone, me_premium, me_bio, me_verified, me_scam, me_fake, me_bot, me_birthday = (
+                "hidden", "Baziliksina", "", "baziliksina", "unknown", "no", "AI Assistant", "no", "no", "no", "no", "unknown"
             )
 
-        # 2. Extracting creator's profile data
+        # 2. Extracting creator's profile data (with extended 2026 statuses)
         try:
             creator = await self.client.get_entity(OWNER_ID)
             creator_first = creator.first_name or "Bazilevs"
             creator_last = creator.last_name or ""
             creator_user = creator.username or "mcpeorakul"
             creator_premium = "yes" if getattr(creator, 'premium', False) else "no"
+            creator_verified = "yes" if getattr(creator, 'verified', False) else "no"
+            creator_scam = "yes" if getattr(creator, 'scam', False) else "no"
+            creator_fake = "yes" if getattr(creator, 'fake', False) else "no"
+            creator_bot = "yes" if getattr(creator, 'bot', False) else "no"
             
             full_creator = await self.client(GetFullUserRequest(creator))
             creator_bio = getattr(full_creator.full_user, 'about', None) or "description missing"
+            
+            cbday_obj = getattr(full_creator.full_user, 'birthday', None)
+            creator_birthday = "hidden"
+            if cbday_obj:
+                creator_birthday = f"{cbday_obj.day:02d}.{cbday_obj.month:02d}"
+                if getattr(cbday_obj, 'year', None):
+                    creator_birthday += f".{cbday_obj.year}"
         except Exception as e:
             logger.error(f"Error getting creator profile for prompt: {str(e)}")
-            creator_first, creator_last, creator_user, creator_premium, creator_bio = (
-                "Bazilevs", "", "mcpeorakul", "no", "Bot creator"
+            creator_first, creator_last, creator_user, creator_premium, creator_bio, creator_verified, creator_scam, creator_fake, creator_bot, creator_birthday = (
+                "Bazilevs", "", "mcpeorakul", "no", "Bot creator", "no", "no", "no", "no", "unknown"
             )
 
         # Read dynamic character from file
@@ -446,7 +469,7 @@ class GeminiManager:
 
         # Native execution of ALL (system + dynamic custom) tools on the fly via FunctionRegistry
         config = types.GenerateContentConfig(
-            system_instruction=dynamic_prompt,
+            system_instruction=dynamic_prompt if USE_SYSTEM_PROMPT else None,
             tools=registry.get_all_callables(),
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             safety_settings=safety_settings,
@@ -927,53 +950,192 @@ class GeminiManager:
                                 if part.function_call:
                                     function_calls_to_execute.append(part.function_call)
 
-                # Sending the reply to the current Chat as a reply strictly to the locked message from the start
+                # Sending the reply to the current Chat as a reply strictly to the locked message from the start (2026 Enhanced Multimodal Segments)
                 if response.text and not function_calls_to_execute and not should_ignore:
                     typing_task.cancel()
                     
-                    # Programmatically strip any generated [Chat: ... | Message ID: ...] prefixes
                     cleaned_text = response.text
-                    
-                    # Parse custom [Reply: MSG_ID] routing header if provided by the model
-                    custom_reply_id = reply_to_id
-                    reply_match = re.match(r'^\[Reply:\s*(\d+)\]\s*\n?', cleaned_text, re.IGNORECASE)
-                    if reply_match:
-                        try:
-                            custom_reply_id = int(reply_match.group(1))
-                            cleaned_text = cleaned_text[reply_match.end():].strip()
-                            logger.info(f"Dynamic reply routing detected. Setting reply_to to message #{custom_reply_id}")
-                        except Exception as e:
-                            logger.warning(f"Failed to parse custom reply ID: {str(e)}")
-                    
-                    # Programmatically strip any generated [Chat: ... | Message ID: ...] prefixes
-                    prefix_pattern = re.compile(r'^\[Chat:\s*-?\d+\s*\|\s*Message ID:\s*(?:\d+|unknown)\]\s*\n?', re.IGNORECASE)
-                    cleaned_text = prefix_pattern.sub("", cleaned_text).strip()
                     
                     # Strip any leaked thought/thinking process headers from the API response
                     thought_pattern = re.compile(r'^(?:thought|thinking|thoughts)(?:\s*:\s*|\s*\n+)?', re.IGNORECASE)
                     cleaned_text = thought_pattern.sub("", cleaned_text).strip()
                     
-                    if cleaned_text:
-                        try:
-                            # Send the message and capture the result object containing the message ID
-                            result = await self.client.send_message(chat_entity, cleaned_text, reply_to=custom_reply_id)
-                            logger.info(f"Sent plain-text response to chat {chat_id}: '{cleaned_text[:150]}...'")
-                            
-                            # Synchronously write the outgoing message to the DB immediately to eliminate the race condition
-                            await self.db.save_message(str(chat_id), "model", cleaned_text, msg_id=result.id)
+                    # Split into sequential/parallel/background blocks
+                    # If there are no <seq>/<par>/<bg> tags, the entire text is a single sequential block
+                    block_pattern = re.compile(r'<(seq|par|bg)>(.*?)</\1>', re.DOTALL | re.IGNORECASE)
+                    
+                    blocks = []
+                    last_idx = 0
+                    
+                    for block_match in block_pattern.finditer(cleaned_text):
+                        start_pos, end_pos = block_match.span()
+                        before_part = cleaned_text[last_idx:start_pos].strip()
+                        if before_part:
+                            blocks.append(("seq", before_part))
                         
-                            # Add to the global duplicate cache so bot.py ignores the incoming network event for this message
-                            import bot
-                            bot.processed_msg_ids.add((int(chat_id), result.id))
-                        except Exception as tg_err:
-                            logger.warning(f"Failed to deliver plain-text response to chat {chat_id}: {str(tg_err)}")
-                            # Write the failure reason back to the DB to make the AI aware of the Telegram restriction
-                            await self.db.save_message(
-                            chat_id,
-                            "user",
-                            f"[System notification: Your last plain-text response failed to deliver due to Telegram error: {str(tg_err)}]"
-                            )
-
+                        b_type = block_match.group(1).lower()
+                        b_content = block_match.group(2).strip()
+                        blocks.append((b_type, b_content))
+                        last_idx = end_pos
+                        
+                    after_part = cleaned_text[last_idx:].strip()
+                    if after_part:
+                        blocks.append(("seq", after_part))
+                        
+                    # Let's execute the blocks
+                    for b_type, b_content in blocks:
+                        # Parse individual segments within this block
+                        tag_regexes = [
+                            r'(?<!\\)\[Reply:\s*(\\d+)\]',
+                            r'(?<!\\)\[React:\s*(\\d+)\s*\|\s*(.*?)\s*\]',
+                            r'(?<!\\)\[Attach:\s*([^|\]]+?)\s*(?:\|\s*(.*?))?\s*\]',
+                            r'(?<!\\)\[Edit:\s*(\\d+)\s*\|\s*(.*?)\s*\]',
+                            r'(?<!\\)\[Delete:\s*(\\d+)\s*\]',
+                            r'(?<!\\)\[NoOp:\s*([^|\]]+?)\s*(?:\|\s*continue\s*=\s*(true|false))?\s*\]',
+                            r'(?<!\\)\[Tool:\s*([a-zA-Z0-9_]+)\s*\|\s*(.*?)\s*\]'
+                        ]
+                        combined_tag_pattern = re.compile('|'.join(f'({pat})' for pat in tag_regexes), re.IGNORECASE | re.DOTALL)
+                        
+                        segments = []
+                        last_seg_idx = 0
+                        
+                        matches_list = list(combined_tag_pattern.finditer(b_content))
+                        for match_obj in matches_list:
+                            s_start, s_end = match_obj.span()
+                            before_seg_text = b_content[last_seg_idx:s_start].strip()
+                            if before_seg_text:
+                                segments.append(("text", before_seg_text))
+                                
+                            # Identify tag type
+                            if match_obj.group(1): # Reply
+                                segments.append(("reply", {"msg_id": int(match_obj.group(2))}))
+                            elif match_obj.group(3): # React
+                                segments.append(("react", {"msg_id": int(match_obj.group(4)), "emoji": match_obj.group(5)}))
+                            elif match_obj.group(6): # Attach
+                                files_list = [f.strip() for f in match_obj.group(7).split(",")]
+                                cap_text = match_obj.group(8) or ""
+                                segments.append(("attach", {"files": files_list, "caption": cap_text}))
+                            elif match_obj.group(9): # Edit
+                                segments.append(("edit", {"msg_id": int(match_obj.group(10)), "text": match_obj.group(11)}))
+                            elif match_obj.group(12): # Delete
+                                segments.append(("delete", {"msg_id": int(match_obj.group(13))}))
+                            elif match_obj.group(14): # NoOp
+                                segments.append(("noop", {"reason": match_obj.group(15), "continue": True if match_obj.group(16) and match_obj.group(16).lower() == "true" else False}))
+                            elif match_obj.group(17): # Tool
+                                segments.append(("tool", {"tool_name": match_obj.group(18), "args_str": match_obj.group(19)}))
+                                
+                            last_seg_idx = s_end
+                            
+                        after_seg_text = b_content[last_seg_idx:].strip()
+                        if after_seg_text:
+                            segments.append(("text", after_seg_text))
+                            
+                        # Merge text segments into preceding reply segments
+                        merged_segments = []
+                        current_rep_id = None
+                        for s_type, s_data in segments:
+                            if s_type == "reply":
+                                current_rep_id = s_data["msg_id"]
+                            elif s_type == "text":
+                                if current_rep_id is not None:
+                                    merged_segments.append(("reply_msg", {"msg_id": current_rep_id, "text": s_data}))
+                                    current_rep_id = None
+                                else:
+                                    merged_segments.append(("msg", {"text": s_data}))
+                            else:
+                                merged_segments.append((s_type, s_data))
+                        if current_rep_id is not None:
+                            merged_segments.append(("reply_msg", {"msg_id": current_rep_id, "text": ""}))
+                            
+                        # Definition of execution task
+                        async def execute_segment(segment):
+                            nonlocal should_ignore
+                            s_type, s_data = segment
+                            from utils import safe_telegram_html
+                            
+                            if s_type == "msg":
+                                # Conversational text to the current chat
+                                raw_text = s_data["text"]
+                                # Perform unescaping of shielded tags
+                                unescaped_text = raw_text.replace(r'\[', '[').replace(r'\]', ']')
+                                formatted_html = safe_telegram_html(unescaped_text)
+                                try:
+                                    result = await self.client.send_message(chat_entity, formatted_html, reply_to=reply_to_id, parse_mode="html")
+                                    await self.db.save_message(str(chat_id), "model", unescaped_text, msg_id=result.id)
+                                    import bot
+                                    bot.processed_msg_ids.add((int(chat_id), result.id))
+                                except Exception as tg_err:
+                                    logger.error(f"Failed to deliver msg: {str(tg_err)}")
+                                
+                            elif s_type == "reply_msg":
+                                raw_text = s_data["text"]
+                                unescaped_text = raw_text.replace(r'\[', '[').replace(r'\]', ']')
+                                formatted_html = safe_telegram_html(unescaped_text)
+                                try:
+                                    result = await self.client.send_message(chat_entity, formatted_html, reply_to=int(s_data["msg_id"]), parse_mode="html")
+                                    await self.db.save_message(str(chat_id), "model", unescaped_text, msg_id=result.id)
+                                    import bot
+                                    bot.processed_msg_ids.add((int(chat_id), result.id))
+                                except Exception as tg_err:
+                                    logger.error(f"Failed to deliver reply msg: {str(tg_err)}")
+                                
+                            elif s_type == "react":
+                                emoji = s_data["emoji"]
+                                is_add = emoji.lower() != "none"
+                                await tools.toolkit.set_message_reaction(chat_entity, s_data["msg_id"], reaction_emoji=emoji if is_add else None, is_add=is_add)
+                                
+                            elif s_type == "attach":
+                                await tools.toolkit.send_media_message(chat_id=chat_entity, files=s_data["files"], caption=s_data["caption"])
+                                
+                            elif s_type == "edit":
+                                await tools.toolkit.edit_message(chat_entity, s_data["msg_id"], s_data["text"])
+                                
+                            elif s_type == "delete":
+                                await tools.toolkit.delete_message(chat_entity, s_data["msg_id"])
+                                
+                            elif s_type == "noop":
+                                tools.toolkit.no_op_ignore(s_data["reason"])
+                                if not s_data["continue"]:
+                                    should_ignore = True
+                                    
+                            elif s_type == "tool":
+                                t_name = s_data["tool_name"]
+                                t_args_str = s_data["args_str"]
+                                t_args = {}
+                                try:
+                                    t_args = json.loads(t_args_str)
+                                except Exception:
+                                    # Fallback ast parser
+                                    import ast
+                                    try:
+                                        tree = ast.parse(f"f({t_args_str})")
+                                        for kw in tree.body[0].value.keywords:
+                                            t_args[kw.arg] = ast.literal_eval(kw.value)
+                                    except Exception:
+                                        t_args = {"query": t_args_str, "text": t_args_str}
+                                        
+                                tool_meta = registry.get(t_name)
+                                if tool_meta:
+                                    try:
+                                        if inspect.iscoroutinefunction(tool_meta.callable):
+                                            tool_res = await tool_meta.callable(**t_args)
+                                        else:
+                                            tool_res = tool_meta.callable(**t_args)
+                                        await self.db.save_message(str(chat_id), "user", f"[System notification: Tool '{t_name}' executed. Result: {tool_res}]")
+                                    except Exception as terr:
+                                        logger.error(f"Error executing tool label {t_name}: {str(terr)}")
+                                        
+                        # Group execution
+                        if b_type == "seq":
+                            for segment in merged_segments:
+                                await execute_segment(segment)
+                        elif b_type == "par":
+                            tasks_list = [execute_segment(segment) for segment in merged_segments]
+                            await asyncio.gather(*tasks_list, return_exceptions=True)
+                        elif b_type == "bg":
+                            for segment in merged_segments:
+                                asyncio.create_task(execute_segment(segment))
+                                
                 # Tool calls
                 if function_calls_to_execute:
                     logger.info(f"Received {len(function_calls_to_execute)} tool call(s) from Gemini (Turn {turn + 1})")

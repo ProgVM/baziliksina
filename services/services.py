@@ -3,7 +3,7 @@ import asyncio
 import logging
 from telethon.tl.functions.account import UpdateStatusRequest
 
-from config import DIALOGS_LIMIT, BOOTSTRAP_MESSAGES_LIMIT, MISSED_MESSAGES_LIMIT, KEEP_ALIVE_INTERVAL, CONNECTION_MONITOR_INTERVAL
+from config import DIALOGS_LIMIT, BOOTSTRAP_MESSAGES_LIMIT, MISSED_MESSAGES_LIMIT, KEEP_ALIVE_INTERVAL, CONNECTION_MONITOR_INTERVAL, BOOTSTRAP_TRIGGER_GENERATION, CATCH_UP_TRIGGER_GENERATION
 from parser import parse_message_payload, parse_and_cache_user_metadata, parse_and_cache_chat_metadata
 
 logger = logging.getLogger("Services")
@@ -20,7 +20,7 @@ async def keep_alive_online(client):
         await asyncio.sleep(KEEP_ALIVE_INTERVAL)
 
 
-async def bootstrap_database_if_empty(client, db):
+async def bootstrap_database_if_empty(client, db, run_pending_query_fn=None):
     f"""
     [FIRST RUN]: If the database is completely empty, this method scans the last {DIALOGS_LIMIT} chats
     and populates the local memory with the last {BOOTSTRAP_MESSAGES_LIMIT} messages from each dialog.
@@ -72,6 +72,14 @@ async def bootstrap_database_if_empty(client, db):
                 await db.save_message(chat_id, role, parsed_text, None, msg.id)
 
         logger.info("--- INITIAL CHAT HISTORY CATCH-UP SUCCESSFULLY COMPLETED! ---")
+        # Trigger initial generation for the most recent active chat if requested
+        if BOOTSTRAP_TRIGGER_GENERATION and run_pending_query_fn:
+            try:
+                async for dialog in client.iter_dialogs(limit=1):
+                    logger.info(f"Triggering initial bootstrap generation for chat '{dialog.name}'...")
+                    run_pending_query_fn(dialog.id, dialog.entity)
+            except Exception as e:
+                logger.error(f"Failed to trigger initial bootstrap generation: {str(e)}")
     except Exception as e:
         logger.error(f"Database bootstrap error: {str(e)}")
 
@@ -139,7 +147,8 @@ async def catch_up_missed_messages(client, db, workspace_dir, processed_msg_ids,
                     entity = dialog.entity
                     entity_cache[dialog.id] = entity
                     logger.info(f"Debounce response scheduled for {newly_saved_count} missed messages in chat '{dialog.name}'...")
-                    run_pending_query_fn(int(chat_id), entity)
+                    if CATCH_UP_TRIGGER_GENERATION:
+                        run_pending_query_fn(int(chat_id), entity)
     except Exception as e:
         logger.error(f"History catch-up error: {str(e)}")
 
