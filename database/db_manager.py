@@ -462,7 +462,7 @@ class DBManager:
         
         sql = f"""
             INSERT INTO users_meta ({", ".join(keys)}) VALUES ({placeholders})
-            ON CONFLICT(id) DO UPDATE SET {updates}
+            ON CONFLICT(id) DO UPDATE SET {updates}, timestamp = CURRENT_TIMESTAMP
         """
         await self.db.execute(sql, vals)
         await self.db.commit()
@@ -494,7 +494,7 @@ class DBManager:
         
         sql = f"""
             INSERT INTO chats_meta ({", ".join(keys)}) VALUES ({placeholders})
-            ON CONFLICT(id) DO UPDATE SET {updates}
+            ON CONFLICT(id) DO UPDATE SET {updates}, timestamp = CURRENT_TIMESTAMP
         """
         await self.db.execute(sql, vals)
         await self.db.commit()

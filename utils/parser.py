@@ -105,6 +105,31 @@ async def parse_and_cache_user_metadata(client, db, user) -> dict:
     user_id = str(user.id)
     logger.info(f"Collecting and caching full metadata of user ID {user_id}...")
 
+    # Check database cache first to prevent hammering Telegram API (FloodWait protection)
+    try:
+        from config import PROFILE_UPDATE_INTERVAL
+        import time
+        from datetime import datetime
+        cached = await db.get_user_meta(user_id)
+        if cached:
+            db_ts_str = cached.get("timestamp")
+            if db_ts_str:
+                db_dt = None
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+                    try:
+                        db_dt = datetime.strptime(db_ts_str, fmt)
+                        break
+                    except ValueError:
+                        continue
+                
+                if db_dt:
+                    delta = (datetime.utcnow() - db_dt).total_seconds()
+                    if delta < PROFILE_UPDATE_INTERVAL:
+                        logger.debug(f"Profile cache for user {user_id} is fresh ({int(delta)}s old). Skipping API requests.")
+                        return cached
+    except Exception as cache_err:
+        logger.error(f"Error checking user cache freshness in DB: {str(cache_err)}")
+
     username = getattr(user, "username", None)
     first_name = getattr(user, "first_name", "") or ""
     last_name = getattr(user, "last_name", "") or ""
@@ -204,6 +229,30 @@ async def parse_and_cache_chat_metadata(client, db, chat) -> dict:
         chat_id = f"-100{chat_id}" if type(chat).__name__ == "Channel" else f"-{chat_id}"
 
     logger.info(f"Collecting and caching metadata of chat/channel ID {chat_id}...")
+
+    # Check database cache first to prevent hammering Telegram API (FloodWait protection)
+    try:
+        from config import PROFILE_UPDATE_INTERVAL
+        from datetime import datetime
+        cached = await db.get_chat_meta(chat_id)
+        if cached:
+            db_ts_str = cached.get("timestamp")
+            if db_ts_str:
+                db_dt = None
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+                    try:
+                        db_dt = datetime.strptime(db_ts_str, fmt)
+                        break
+                    except ValueError:
+                        continue
+                
+                if db_dt:
+                    delta = (datetime.utcnow() - db_dt).total_seconds()
+                    if delta < PROFILE_UPDATE_INTERVAL:
+                        logger.debug(f"Profile cache for chat {chat_id} is fresh ({int(delta)}s old). Skipping API requests.")
+                        return cached
+    except Exception as cache_err:
+        logger.error(f"Error checking chat cache freshness in DB: {str(cache_err)}")
 
     title = getattr(chat, "title", "Group")
     username = getattr(chat, "username", None)
