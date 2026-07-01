@@ -1007,14 +1007,14 @@ class GeminiManager:
                     for b_type, b_content in blocks:
                         # Parse individual segments within this block
                         tag_regexes = [
-                            r'(?<!\\)\[Reply:\s*(\d+)\]',
+                            r'(?<!\\)\[Reply(?:\s+to\s+message\s+#?|:\s*)(\d+)\]',
                             r'(?<!\\)\[React:\s*(\d+)\s*\|\s*(.*?)\s*\]',
                             r'(?<!\\)\[Attach:\s*([^|\]]+?)\s*(?:\|\s*(.*?))?\s*\]',
                             r'(?<!\\)\[Edit:\s*(\d+)\s*\|\s*(.*?)\s*\]',
                             r'(?<!\\)\[Delete:\s*(\d+)\s*\]',
                             r'(?<!\\)\[NoOp:\s*([^|\]]+?)\s*(?:\|\s*continue\s*=\s*(true|false))?\s*\]',
                             r'(?<!\\)\[Tool:\s*([a-zA-Z0-9_]+)\s*\|\s*(.*?)\s*\]'
-                        ]
+                        ]]
                         combined_tag_pattern = re.compile('|'.join(f'({pat})' for pat in tag_regexes), re.IGNORECASE | re.DOTALL)
                         
                         segments = []
