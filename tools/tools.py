@@ -651,8 +651,10 @@ class AIToolKit:
 
         try:
             call_kwargs = json.loads(args_json) if args_json else {}
+            call_kwargs.pop("method_name", None)
             if kwargs:
                 call_kwargs.update(kwargs)
+            call_kwargs.pop("method_name", None)
 
             # Auto-inject current chat_id if entity is missing in send_message/send_file
             if method_name in ["send_message", "send_file"] and "entity" not in call_kwargs:
@@ -885,31 +887,110 @@ class AIToolKit:
             if not message.reply_markup or not hasattr(message.reply_markup, 'rows'):
                 return "There are no inline buttons in the message."
 
-            buttons = []
-            for row in message.reply_markup.rows:
-                for btn in row.buttons:
-                    buttons.append(btn)
+            target_i = None
+            target_j = None
+            found = False
 
-            target_btn = None
             if button_text is not None:
-                for btn in buttons:
-                    if btn.text.strip().lower() == button_text.strip().lower():
-                        target_btn = btn
+                for r_idx, row in enumerate(message.reply_markup.rows):
+                    for b_idx, btn in enumerate(row.buttons):
+                        if btn.text.strip().lower() == button_text.strip().lower():
+                            target_i = r_idx
+                            target_j = b_idx
+                            found = True
+                            break
+                    if found:
                         break
-                if not target_btn:
+                if not found:
                     return f"Button with text '{button_text}' not found."
             elif button_index is not None:
-                if 0 <= button_index < len(buttons):
-                    target_btn = buttons[button_index]
-                else:
+                idx = 0
+                for r_idx, row in enumerate(message.reply_markup.rows):
+                    for b_idx, btn in enumerate(row.buttons):
+                        if idx == button_index:
+                            target_i = r_idx
+                            target_j = b_idx
+                            found = True
+                            break
+                        idx += 1
+                    if found:
+                        break
+                if not found:
                     return f"Button index {button_index} out of range."
             else:
                 return "Specify button_index or button_text to click."
 
-            await asyncio.wait_for(message.click(button=target_btn, **kwargs), timeout=timeout)
-            return f"Button '{target_btn.text}' successfully clicked."
+            await asyncio.wait_for(message.click(i=target_i, j=target_j, **kwargs), timeout=timeout)
+            return f"Button successfully clicked at row {target_i}, col {target_j}."
         except Exception as e:
             return f"Error clicking the button: {str(e)}"
+
+    async def send_poll(self, question: str, options: List[str], chat_id: Any = None, is_anonymous: bool = True, is_multiple_choice: bool = False, is_quiz: bool = False, correct_option_index: int = None, explanation: str = None, **kwargs) -> str:
+        """
+        Sends a native Telegram poll or quiz (with correct answers/explanations) to the specified chat.
+
+        Args:
+            question: The poll question string (max 255 chars).
+            options: List of answers options (up to 10 strings).
+            chat_id: Target chat ID or username. Defaults to current chat.
+            is_anonymous: If True, users vote anonymously. Default is True.
+            is_multiple_choice: If True, allows selecting multiple answers (not allowed in quiz mode).
+            is_quiz: If True, sends as a Quiz/trivia (with correct answer and explanation).
+            correct_option_index: 0-based index of correct option (for quiz mode).
+            explanation: Optional text shown on wrong answer (max 200 chars).
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+            
+        if chat_id is None:
+            try:
+                chat_id = current_chat_id.get()
+            except LookupError:
+                return "Error: Could not resolve target chat."
+
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+
+        try:
+            from telethon.tl import types
+            import random
+
+            poll_answers = []
+            for idx, opt in enumerate(options):
+                poll_answers.append(types.PollAnswer(text=opt, option=str(idx).encode('utf-8')))
+
+            correct_answers = []
+            if is_quiz and correct_option_index is not None:
+                correct_answers.append(str(correct_option_index).encode('utf-8'))
+
+            poll_obj = types.Poll(
+                id=random.randint(1, 10**12),
+                question=question,
+                answers=poll_answers,
+                closed=False,
+                public_voters=not is_anonymous,
+                multiple_choice=is_multiple_choice if not is_quiz else False,
+                quiz=is_quiz
+            )
+
+            media_poll = types.InputMediaPoll(
+                poll=poll_obj,
+                correct_answers=correct_answers if is_quiz else None,
+                explanation=explanation if is_quiz else None
+            )
+
+            result = await client.send_file(chat_id, media_poll, **kwargs)
+            
+            if db:
+                poll_info_str = f"[Poll: '{question}' | Options: {', '.join(options)}]"
+                await db.save_message(str(chat_id), "model", poll_info_str, msg_id=result.id)
+                import bot
+                bot.processed_msg_ids.add((int(chat_id), result.id))
+
+            return f"Success. Poll successfully sent. Message ID: {result.id}"
+        except Exception as e:
+            return f"Error sending Telegram poll: {str(e)}"
 
     async def set_message_reaction(self, chat_id: Any, message_id: int, reaction_emoji: str = None, is_add: bool = True, **kwargs) -> str:
         """
@@ -1591,16 +1672,17 @@ class AIToolKit:
         )
         return await sandbox.execute(code)
 
-    def no_op_ignore(self, reason: str, **kwargs) -> str:
+    def no_op_ignore(self, reason: str, continue_loop: bool = False, **kwargs) -> str:
         """
         Finishes the current generation step immediately without sending any text messages to the chat.
         Used when the incoming message is spam, flood, or does not require an answer.
 
         Args:
             reason: Explanation of why the conversation is being ignored.
+            continue_loop: If True, do not stop the generation loop and let the AI continue reasoning in the same turn. Default is False.
         """
-        logger.info(f"Dialogue ignored. Reason: {reason}")
-        return f"Dialogue successfully ignored. Reason: {reason}"
+        logger.info(f"Dialogue ignored. Reason: {reason} | Continue loop: {continue_loop}")
+        return f"Dialogue successfully ignored. Reason: {reason} | Continue loop: {continue_loop}"
 
     async def execute_sql_query(self, sql: str, **kwargs) -> str:
         """
@@ -2108,6 +2190,7 @@ ROOT_TOOL_CATEGORIES = {
     "send_inline_bot_result": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "set_message_reaction": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "send_telegram_media": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_poll": "Category 3: Telegram Automation (Telegram Automation Actions)",
     
     "set_task_timer": "Category 4: Timers and Scheduler (SQLite Schedulers)",
     "delete_task_timer": "Category 4: Timers and Scheduler (SQLite Schedulers)",

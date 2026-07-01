@@ -173,6 +173,7 @@ class GeminiManager:
             me_scam = "yes" if getattr(me, 'scam', False) else "no"
             me_fake = "yes" if getattr(me, 'fake', False) else "no"
             me_bot = "yes" if getattr(me, 'bot', False) else "no"
+            me_restricted = "yes" if getattr(me, 'restricted', False) else "no"
             
             full_me = await self.client(GetFullUserRequest(me))
             me_bio = getattr(full_me.full_user, 'about', None) or "description missing"
@@ -185,13 +186,14 @@ class GeminiManager:
                     me_birthday += f".{bday_obj.year}"
         except Exception as e:
             logger.error(f"Error getting AI profile for prompt: {str(e)}")
-            me_id, me_first, me_last, me_user, me_phone, me_premium, me_bio, me_verified, me_scam, me_fake, me_bot, me_birthday = (
-                "hidden", "Baziliksina", "", "baziliksina", "unknown", "no", "AI Assistant", "no", "no", "no", "no", "unknown"
+            me_id, me_first, me_last, me_user, me_phone, me_premium, me_bio, me_verified, me_scam, me_fake, me_bot, me_restricted, me_birthday = (
+                "hidden", "Baziliksina", "", "baziliksina", "unknown", "no", "AI Assistant", "no", "no", "no", "no", "no", "unknown"
             )
 
         # 2. Extracting creator's profile data (with extended 2026 statuses)
         try:
             creator = await self.client.get_entity(OWNER_ID)
+            creator_id = creator.id
             creator_first = creator.first_name or "Bazilevs"
             creator_last = creator.last_name or ""
             creator_user = creator.username or "mcpeorakul"
@@ -212,18 +214,25 @@ class GeminiManager:
                     creator_birthday += f".{cbday_obj.year}"
         except Exception as e:
             logger.error(f"Error getting creator profile for prompt: {str(e)}")
-            creator_first, creator_last, creator_user, creator_premium, creator_bio, creator_verified, creator_scam, creator_fake, creator_bot, creator_birthday = (
-                "Bazilevs", "", "mcpeorakul", "no", "Bot creator", "no", "no", "no", "no", "unknown"
+            creator_id, creator_first, creator_last, creator_user, creator_premium, creator_bio, creator_verified, creator_scam, creator_fake, creator_bot, creator_birthday = (
+                OWNER_ID, "Bazilevs", "", "mcpeorakul", "no", "Bot creator", "no", "no", "no", "no", "unknown"
             )
 
         # Read dynamic character from file
         char_prompt = await self.get_character_prompt()
 
-        prompt = (
-            f"{char_prompt}\n\n"
-            f"Your sole creator and owner is {creator_first} {creator_last} (@{creator_user}, eternal ID: {OWNER_ID}).\n"
+        # Core technical prompt constructed FIRST
+        core_prompt = (
+            f"Your sole creator and owner is {creator_first} {creator_last} (@{creator_user}, eternal ID: {creator_id}).\n"
             f"--- YOUR CREATOR'S PROFILE ({creator_first}) ---\n"
+            f"- Numerical ID: {creator_id}\n"
+            f"- Username: @{creator_user}\n"
             f"- Telegram Premium: {creator_premium}\n"
+            f"- Verified Account: {creator_verified}\n"
+            f"- Scam Flag: {creator_scam}\n"
+            f"- Fake Flag: {creator_fake}\n"
+            f"- Bot Flag: {creator_bot}\n"
+            f"- Date of Birth (Birthday): {creator_birthday}\n"
             f"- Profile description (about me): '{creator_bio}'\n\n"
             f"--- YOUR CURRENT PROFILE ({me_first}) ---\n"
             f"- Telegram Name: {me_first} {me_last}\n"
@@ -231,8 +240,14 @@ class GeminiManager:
             f"- Numerical ID: {me_id}\n"
             f"- Phone number: {me_phone}\n"
             f"- Telegram Premium: {me_premium}\n"
+            f"- Verified Account: {me_verified}\n"
+            f"- Scam Flag: {me_scam}\n"
+            f"- Fake Flag: {me_fake}\n"
+            f"- Bot Flag: {me_bot}\n"
+            f"- Account Restricted: {me_restricted}\n"
+            f"- Date of Birth (Birthday): {me_birthday}\n"
             f"- Your description (about me): '{me_bio}'\n"
-            f"Your profile picture is always available in the sandbox under the name '{BOT_AVATAR_NAME}'. You can analyze it if asked!\n\n"
+            f"Your profile picture is always available in the sandbox under the name '{BOT_AVATAR_NAME}'.\n\n"
             f"Working directory path: {WORKSPACE_DIR}\n"
             f"Session name: {SESSION_NAME}\n"
             f"Session path: {SESSION_PATH}\n"
@@ -346,7 +361,9 @@ class GeminiManager:
             f"   - `httpx`, `json`, `asyncio`, `Path`, `urllib`, `types`, `os`: Pre-imported standard packages.\n"
             f"Avoid importing these modules inside your scripts, as they are already globally available.\n"
         )
-        return prompt
+
+        # Dynamic character prompt appended LAST to maximize attention
+        return f"{core_prompt}\n\n--- SECTION 8: ACTIVE CONVERSATIONAL STYLE GUIDE (YOUR CHARACTER) ---\n{char_prompt}"
 
     async def summarize_chat_context(self, chat_id: str):
         """Compresses the global cross-cutting correspondence history of all chats."""

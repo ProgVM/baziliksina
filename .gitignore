@@ -24,7 +24,7 @@ bot_workspace/
 *.log
 
 # Prompts
-*.txt
+# *.txt
 
 # OS specifics
 .DS_Store
