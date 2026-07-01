@@ -1014,7 +1014,7 @@ class GeminiManager:
                             r'(?<!\\)\[Delete:\s*(\d+)\s*\]',
                             r'(?<!\\)\[NoOp:\s*([^|\]]+?)\s*(?:\|\s*continue\s*=\s*(true|false))?\s*\]',
                             r'(?<!\\)\[Tool:\s*([a-zA-Z0-9_]+)\s*\|\s*(.*?)\s*\]'
-                        ]]
+                        ]
                         combined_tag_pattern = re.compile('|'.join(f'({pat})' for pat in tag_regexes), re.IGNORECASE | re.DOTALL)
                         
                         segments = []
