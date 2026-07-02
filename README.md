@@ -1,46 +1,73 @@
 # Baziliksina Userbot 🌸
 
-**Baziliksina** is an autonomous, highly modular AI-driven Telegram companion (Userbot) built on top of the MTProto-client **Telethon** [README]. The bot is natively powered by **Google Gemini API** models for deep reasoning and unified function calling, alongside the **Pollinations.ai** gateway for generative image, audio, and video synthesis [README].
-
-Designed to function as a natural, self-sustaining Telegram user, Baziliksina processes multimodal context (images, videos, documents, voice notes, and video notes), manages persistent databases, schedules long-term timers, configures reactive triggers, and dynamically compiles and registers new custom tools at runtime [README].
+**Baziliksina** is an autonomous, highly modular AI-driven Telegram companion (Userbot) built on top of the MTProto-client **Telethon**. The bot is natively powered by **Google Gemini API** models for deep reasoning and unified function calling, alongside the **Pollinations.ai** gateway for generative image, audio, and video synthesis.
 
 ---
 
-## Logical Folder Structure 📂
+## Decoupled Folder Structure 📂
 
-The project is organized into logical packages [README]:
+The project is organized into structured, highly cohesive directories:
 
 ```
 baziliksina/
-├── main.py                     # Primary Launcher (configures sys.path and boots core/bot.py)
+├── main.py                     # Primary Launcher (configures sys.path)
 ├── .env.example                # Unified template for environment variables
 ├── .gitignore                  # Git tracking exclusion filters
 │
 ├── config/
-│   └── config.py               # Centralized configuration validator, default paths, and env loading
+│   ├── config.py               # Centralized configuration validator, and multi-tier loader
+│   ├── system_prompt.txt       # Technical VM & sandbox instruction prompt template
+│   ├── character.txt           # Personality, cynical tone, and lazy style prompt template
+│   ├── rules_prompt.txt        # Behavioral rules inside group chats template
+│   ├── env_prompt.txt          # Active environment chat parameters template
+│   └── summarize_prompt.txt    # Instructions for context compressing
 │
 ├── database/
-│   └── db_manager.py           # Asynchronous SQLite DB Manager (aiosqlite) with 10 tables
+│   └── db_manager.py           # Asynchronous SQLite DB Manager with settings override table
 │
 ├── core/
-│   ├── bot.py                  # Direct MTProto client, network listener, and event router
-│   ├── gemini_manager.py       # Orchestrates dialogue turns, token limits, and segment actions
+│   ├── bot.py                  # Direct MTProto client, and unified network event router
+│   ├── gemini_manager.py       # Orchestrates dialogue turns and coordinates modules
+│   ├── context_manager.py      # Computes token limits and manages context logs
+│   ├── prompt_interpolator.py  # Dynamically loads and interpolates config templates
+│   ├── response_executor.py    # Parsed sequential/parallel/background XML segment actions
 │   ├── key_manager.py          # API Quotas, Model, and Key Rotation Manager
-│   ├── sandbox.py              # Isolated secure virtual execution sandbox for python VM
+│   ├── sandbox.py              # Isolated secure virtual execution sandbox (reboot VM)
 │   └── registry.py             # Active RAM Function Registry of system and custom tools
 │
+├── server/
+│   └── server.py               # Asynchronous HTTP admin REST API with IP ACL middleware
+│
 ├── services/
-│   └── services.py             # Implements missed messages synchronization and status keep-alive
+│   └── services.py             # Implements missed messages synchronization
 │
 ├── utils/
 │   ├── utils.py                # Safe JSON serializers and custom HTML parser
-│   ├── parser.py               # Dissects raw MTProto structures (resolves rich styles & quotes)
+│   ├── parser.py               # Dissects raw MTProto structures (premium emojis & gifts)
 │   ├── downloader.py           # Media downloader and transcoding interface (FFmpeg)
 │   └── proxy_manager.py        # Modular segregated proxy pools rotation (PySocks)
 │
 └── tools/
-    └── tools.py                # Unified root system toolset containing 39+ functions
+    └── tools.py                # Unified root system toolset containing 50+ functions
 ```
+
+---
+
+## Secure Sandbox Virtual Machine 🛡️
+
+Baziliksina implements an isolated, self-healing sandbox environment (`sandbox.py`) for the VM execution of arbitrary Python scripts:
+*   **Dynamic Tool Binding:** Directly binds registered tools from the dynamic `FunctionRegistry` into the execution scope.
+*   **Secrets Masking (`SandboxedConfig`):** Proxies the `config` module. Attempts to read sensitive tokens (like `API_HASH` or `GEMINI_API_KEYS`) return `[REDACTED_SECURITY_SENSITIVE_DATA]`.
+*   **Self-Healing & Crash-Recovery:** Isolates execution blocks. In case of syntax failures, runtime errors, or memory overflows, the sandbox wipes the contaminated scope and fully restores the VM state for subsequent turns.
+
+---
+
+## Secure REST Administration Server 🖥️
+
+An integrated asynchronous HTTP server is built directly on top of `aiohttp.web` inside `server/server.py`:
+*   **IP Whitelist ACL Middleware:** Automatically verifies client host IP against `config.WEB_SERVER_IP_ACL` on network level.
+*   **API Tokens Authorization:** Validates `Authorization: Bearer` keys with granular permissions and rate limits.
+*   **Administrative Endpoints:** 24 control points to dynamically alter `config.py` in RAM, inspect database queries, download DB backups, read real-time log files, and initiate hot restarts.
 
 ---
 
@@ -52,9 +79,6 @@ Baziliksina features native support for advanced Telegram formatting entities:
 *   **Marked Text (Highlighter):** `<mark>highlighted text</mark>`
 *   **Time Tags:** `<time datetime="2026-06-22T06:54:00Z">June 2026</time>`
 
-### Rich Parser & Safe HTML Formatter
-The userbot parses formatting on incoming messages (caching them as structured metadata inside SQLite) and uses a **Safe HTML escaping parser** (`safe_telegram_html` inside `utils.py`) to prevent Telegram API errors by escaping raw naked characters like `<`, `>`, and `&` while preserving allowed formatting tags [23, 25].
-
 ---
 
 ## XML-Style Execution Blocks & Labels 🏷️
@@ -62,82 +86,33 @@ The userbot parses formatting on incoming messages (caching them as structured m
 Rather than sending a single plain text blob, the AI can structure its output into XML-style block containers and individual action labels to perform compound operations sequentially, in parallel, or in the background:
 
 ### Blocks
-*   `<seq> ... </seq>`: Executes contained segments sequentially (default behavior) [33, 34].
-*   `<par> ... </par>`: Executes contained segments in parallel using `asyncio.gather` [33, 34].
-*   `<bg> ... </bg>`: Schedules segments to run in the background (using `asyncio.create_task`), allowing the AI to complete its turn immediately without waiting [33, 34].
+*   `<seq> ... </seq>`: Executes contained segments sequentially.
+*   `<par> ... </par>`: Executes contained segments in parallel using `asyncio.gather`.
+*   `<bg> ... </bg>`: Schedules segments to run in the background, allowing the AI to complete its turn immediately without waiting.
 
-### Segment Labels
-The AI can output the following labels within blocks, which the executor parses and executes:
-1.  **Direct Replies:** `[Reply: MSG_ID] Conversational text here` (routes the reply arrow directly to the target message) [33, 34].
-2.  **Reactions:** `[React: MSG_ID | emoji_or_document_id]` (sets/clears message reactions natively; use `none` to remove) [33, 34].
-3.  **Media Album Attachments:** `[Attach: photo.jpg, video.mp4 | Caption]` (delivers media groups as high-quality cohesive albums) [33, 34].
-4.  **Edit Message:** `[Edit: MSG_ID | New text]` (updates existing own messages) [33, 34].
-5.  **Delete Message:** `[Delete: MSG_ID]` (deletes own or other messages if admin permissions are held) [33, 34].
-6.  **No-Op Ignore:** `[NoOp: reason | continue=True/False]` (completes the turn without replying; setting `continue=True` allows the generation loop to continue) [33, 34].
-7.  **Direct Tool Execution:** `[Tool: tool_name | param1=val1, param2=val2]` (triggers any system or custom tool natively) [33, 34].
-
-### Shielding & Escaping
-If the AI wants to output a label or block as literal readable text to the chat (rather than executing it), it can shield it using backslashes:
-`\[Reply: 12345\]` -> Delivered to the chat cleanly as `[Reply: 12345]`.
-
----
-
-## Enhanced System Tools (New Additions) 🛠️
-
-Several powerful tools have been added to the root system registry:
-1.  `send_media_message`: Sends single or multiple files (album) with custom blurs, self-destruct timers (`ttl`), or spoiler tags [37].
-2.  `edit_message`: Modifies previously sent own messages [37].
-3.  `delete_message`: Removes messages from the chat with administrative clearance checks [37].
-4.  `update_avatar`: Changes the userbot's or target chat's profile picture dynamically [37].
-5.  `send_poll`: Sends native Telegram polls or trivia quizzes with custom options, anonymous/public voters, multiple choice, correct answers, and wrong-answer explanations [37].
-6.  `send_http_request`: A generic web action requester allowing the AI to call external REST APIs using custom payloads, headers, or query parameters [37].
-
----
-
-## FloodWait & Caching System 🗄️
-
-To prevent hitting `GetFullUserRequest` flood waits during missed messages synchronization (`catch_up_missed_messages`), the bot integrates a database-level caching mechanism [25, 31, 35]:
-*   When a profile's metadata is retrieved, it is saved in SQLite alongside an active `timestamp` updated via `CURRENT_TIMESTAMP` on conflict updates [31].
-*   Before calling Telethon API methods for user/chat metadata, the parser checks if the database entry is newer than `PROFILE_UPDATE_INTERVAL` (1 hour) [25]. If the cache is still fresh, all Telegram API calls and avatar downloads are skipped [25].
-
----
-
-## Generation & Flow Control Triggers
-
-Configuration parameters to manage flow triggers:
-*   `BOOTSTRAP_TRIGGER_GENERATION` (Default: `true`): Whether the AI automatically generates replies for the latest active conversations right after the first database cold bootstrap completes [13, 35].
-*   `CATCH_UP_TRIGGER_GENERATION` (Default: `true`): Whether the AI automatically generates replies for any unaddressed incoming messages synced during network drops or inactivity catch-up [13, 35].
-*   `USE_SYSTEM_PROMPT` (Default: `true`): Controls whether the comprehensive technical instructions and profile logs are injected into the Gemini API config block [13, 34].
-
----
-
-## Unified Profile Logs (System Prompt) 👤
-
-The system instructions prompt dynamically extracts and formats Premium profile data for the active Assistant account and the Creator/Owner account:
-*   **Assistant Profile:** Numerical ID, first/last name, username, phone, premium/verified/scam/fake flags, restricted state, birthday, bio.
-*   **Creator Profile:** Creator numerical ID (`OWNER_ID`), first/last name, creator username, premium/verified/scam/fake flags, restricted state, birthday, bio.
-
-The core prompt containing the technical guides and XML rules is formatted first, while the custom style prompt (`character.txt`) is appended **at the very end** to maximize Gemini's focus on conversational traits [34].
+### Segment Labels / XML Tags
+The AI can output the following labels/tags within blocks, which the executor parses and executes:
+1.  **Direct Replies:** `<reply id="MSG_ID">Conversational text here</reply>`
+2.  **Reactions:** `<react id="MSG_ID" emoji="emoji_or_document_id" />`
+3.  **Media Album Attachments:** `<attach files="photo.jpg, video.mp4" caption="Caption" />`
+4.  **Edit Message:** `<edit id="MSG_ID">New text</edit>`
+5.  **Delete Message:** `<delete id="MSG_ID" />`
+6.  **No-Op Ignore:** `<noop reason="reason" continue="True/False" />`
+7.  **Direct Tool Execution:** `<tool name="tool_name" param1="val1" />`
 
 ---
 
 ## Installation & Launch 🚀
 
-### 1. Install System Dependencies
-Ensure **Python 3.10+**, **FFmpeg**, and **Tor** are active:
+Ensure **Python 3.10+**, **FFmpeg**, and **Tor** are active on the host machine.
 
-*   **Linux (Debian/Ubuntu):**
-    ```bash
-    sudo apt update && sudo apt upgrade -y
-    sudo apt install python3 python3-pip ffmpeg tor git -y
-    ```
-
-### 2. Install Project Requirements
+### 1. Install Project Requirements
 ```bash
-git clone https://github.com/ProgVM/baziliksina.git
-cd baziliksina
 pip install -r requirements.txt
 ```
+
+### 2. Configure Environment
+Copy `.env.example` to `.env` and fill in API credentials.
 
 ### 3. Launching
 Run the primary launcher script:

@@ -292,6 +292,236 @@ class AIToolKit:
         except Exception as e:
             return f"Error deleting file: {str(e)}"
 
+    async def update_account_info(self, first_name: str = None, last_name: str = None, about: str = None, username: str = None, **kwargs) -> str:
+        """
+        Modifies profile fields of your account (first name, last name, about/bio, or username).
+
+        Args:
+            first_name: Optional new first name for your Telegram account.
+            last_name: Optional new last name for your Telegram account.
+            about: Optional new biography/description (about me) for your profile.
+            username: Optional new username (@username) for your account.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        try:
+            from telethon.tl.functions.account import UpdateProfileRequest, UpdateUsernameRequest
+            res_parts = []
+            if first_name is not None or last_name is not None or about is not None:
+                me_obj = await client.get_me()
+                f_name = first_name if first_name is not None else me_obj.first_name
+                l_name = last_name if last_name is not None else me_obj.last_name
+                bio_val = about if about is not None else ""
+                await client(UpdateProfileRequest(first_name=f_name, last_name=l_name, about=bio_val, **kwargs))
+                res_parts.append("Profile fields updated successfully.")
+            if username is not None:
+                await client(UpdateUsernameRequest(username=username))
+                res_parts.append(f"Username changed successfully to @{username}.")
+            return "\n".join(res_parts) if res_parts else "No changes specified."
+        except Exception as e:
+            return f"Error updating account info: {str(e)}"
+
+    async def send_game_emoji(self, emoji: str, chat_id: Any = None, **kwargs) -> str:
+        """
+        Sends a game emoji (dice, dart, bowling, basketball, football, slot machine) and returns the rolled value.
+
+        Args:
+            emoji: The game emoticon to send (🎲, 🎯, 🎳, 🏀, ⚽, 🎰).
+            chat_id: Target chat ID or username. Defaults to current chat.
+            edit_message_id: Optional ID of your own message to edit instead of sending a new one.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = current_chat_id.get()
+            except LookupError: return "Error: Failed to determine target chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+
+        try:
+            from telethon.tl import types as tl_types
+            edit_message_id = kwargs.pop("edit_message_id", None)
+            if edit_message_id:
+                result = await client.edit_message(chat_id, int(edit_message_id), text=emoji, **kwargs)
+                return f"Success. Message #{edit_message_id} edited with game emoji '{emoji}'."
+            
+            result = await client.send_message(chat_id, file=tl_types.InputMediaDice(emoticon=emoji), **kwargs)
+            val = getattr(result.media, "value", None)
+            if db:
+                await db.save_message(str(chat_id), "model", f"[Sent Game Emoji: {emoji} | Value: {val}]", msg_id=result.id)
+                import bot
+                bot.processed_msg_ids.add((int(chat_id), result.id))
+            return f"Success. Sent game emoji '{emoji}'. Value: {val}. Message ID: {result.id}"
+        except Exception as e:
+            return f"Error sending game emoji: {str(e)}"
+
+    async def send_geolocation(self, latitude: float, longitude: float, chat_id: Any = None, period: int = None, **kwargs) -> str:
+        """
+        Sends a static geolocation point or shares a real-time live location.
+
+        Args:
+            latitude: Latitude coordinate value (float).
+            longitude: Longitude coordinate value (float).
+            chat_id: Target chat ID or username. Defaults to current chat.
+            period: Optional period in seconds for live location sharing (e.g. 900 for 15 mins).
+            edit_message_id: Optional ID of your own message to edit instead of sending a new one.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = current_chat_id.get()
+            except LookupError: return "Error: Failed to determine target chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+
+        try:
+            from telethon.tl import types as tl_types
+            if period:
+                media_geo = tl_types.InputMediaGeoLive(
+                    geo_point=tl_types.InputGeoPoint(latitude=latitude, longitude=longitude),
+                    period=int(period)
+                )
+            else:
+                media_geo = tl_types.InputMediaGeoPoint(
+                    geo_point=tl_types.InputGeoPoint(latitude=latitude, longitude=longitude)
+                )
+
+            edit_message_id = kwargs.pop("edit_message_id", None)
+            if edit_message_id:
+                result = await client.edit_message(chat_id, int(edit_message_id), file=media_geo, **kwargs)
+                return f"Success. Message #{edit_message_id} edited with geolocation."
+
+            result = await client.send_file(chat_id, media_geo, **kwargs)
+            if db:
+                await db.save_message(str(chat_id), "model", f"[Sent Location: {latitude}, {longitude}]", msg_id=result.id)
+                import bot
+                bot.processed_msg_ids.add((int(chat_id), result.id))
+            return f"Success. Geolocation sent. Message ID: {result.id}"
+        except Exception as e:
+            return f"Error sending geolocation: {str(e)}"
+
+    async def send_premium_list(self, title: str, items: List[str], chat_id: Any = None, **kwargs) -> str:
+        """
+        Sends a beautifully formatted checklist / premium to-do list with custom checkboxes.
+
+        Args:
+            title: The title or header of the list.
+            items: A list of string items to be rendered with checkboxes.
+            chat_id: Target chat ID or username. Defaults to current active chat.
+            edit_message_id: Optional ID of your own message to edit instead of sending a new one.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = current_chat_id.get()
+            except LookupError: return "Error: Failed to determine target chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+
+        try:
+            body_parts = [f"<b>{title}</b>\n"]
+            for item in items:
+                body_parts.append(f"☑️ {item}")
+            final_text = "\n".join(body_parts)
+
+            edit_message_id = kwargs.pop("edit_message_id", None)
+            if edit_message_id:
+                result = await client.edit_message(chat_id, int(edit_message_id), final_text, parse_mode="html", **kwargs)
+                return f"Success. Message #{edit_message_id} edited with checklist."
+
+            result = await client.send_message(chat_id, final_text, parse_mode="html", **kwargs)
+            if db:
+                await db.save_message(str(chat_id), "model", final_text, msg_id=result.id)
+                import bot
+                bot.processed_msg_ids.add((int(chat_id), result.id))
+            return f"Success. Premium list sent. Message ID: {result.id}"
+        except Exception as e:
+            return f"Error sending list: {str(e)}"
+
+    async def send_uncompressed_file(self, filename: str, chat_id: Any = None, caption: str = None, **kwargs) -> str:
+        """
+        Sends any local file strictly as an uncompressed document to preserve full original quality.
+
+        Args:
+            filename: The name of the file in the workspace to send (e.g., 'image.png' or 'document.pdf').
+            chat_id: Target chat ID or username. Defaults to current active chat.
+            caption: Optional text caption accompanying the file.
+            edit_message_id: Optional ID of your own message to edit instead of sending a new one.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = current_chat_id.get()
+            except LookupError: return "Error: Failed to determine target chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+
+        try:
+            file_path = WORKSPACE_DIR / os.path.basename(filename)
+            if not file_path.exists():
+                return f"Error: File '{filename}' not found."
+
+            edit_message_id = kwargs.pop("edit_message_id", None)
+            if edit_message_id:
+                result = await client.edit_message(chat_id, int(edit_message_id), file=str(file_path.resolve()), text=caption, force_document=True, **kwargs)
+                return f"Success. Message #{edit_message_id} edited with uncompressed document."
+
+            result = await client.send_file(chat_id, str(file_path.resolve()), caption=caption, force_document=True, **kwargs)
+            if db:
+                await db.save_message(str(chat_id), "model", caption or f"[Sent Document: {filename}]", msg_id=result.id)
+                import bot
+                bot.processed_msg_ids.add((int(chat_id), result.id))
+            return f"Success. Uncompressed document sent. Message ID: {result.id}"
+        except Exception as e:
+            return f"Error sending document: {str(e)}"
+
+    async def send_audio_music(self, filename: str, chat_id: Any = None, caption: str = None, title: str = None, performer: str = None, **kwargs) -> str:
+        """
+        Sends an audio/music file with explicit track title and performer metadata.
+
+        Args:
+            filename: The name of the audio file in the workspace to send (e.g., 'song.mp3').
+            chat_id: Target chat ID or username. Defaults to current active chat.
+            caption: Optional text caption accompanying the audio.
+            title: The title of the music track.
+            performer: The performer or artist of the track.
+            edit_message_id: Optional ID of your own message to edit instead of sending a new one.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = current_chat_id.get()
+            except LookupError: return "Error: Failed to determine target chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+
+        try:
+            file_path = WORKSPACE_DIR / os.path.basename(filename)
+            if not file_path.exists():
+                return f"Error: File '{filename}' not found."
+
+            from telethon.tl.types import DocumentAttributeAudio
+            attributes = [DocumentAttributeAudio(duration=0, title=title or "Track", performer=performer or "Artist")]
+
+            edit_message_id = kwargs.pop("edit_message_id", None)
+            if edit_message_id:
+                result = await client.edit_message(chat_id, int(edit_message_id), file=str(file_path.resolve()), text=caption, attributes=attributes, **kwargs)
+                return f"Success. Message #{edit_message_id} edited with music file."
+
+            result = await client.send_file(chat_id, str(file_path.resolve()), caption=caption, attributes=attributes, **kwargs)
+            if db:
+                await db.save_message(str(chat_id), "model", caption or f"[Sent Music: {title} by {performer}]", msg_id=result.id)
+                import bot
+                bot.processed_msg_ids.add((int(chat_id), result.id))
+            return f"Success. Audio file sent. Message ID: {result.id}"
+        except Exception as e:
+            return f"Error sending audio: {str(e)}"
+
     async def download_content_from_url(self, url: str, filename: str = None, timeout: float = DOWNLOAD_MEDIA_TIMEOUT, **kwargs) -> str:
         f"""
         Downloads any media content, video clips, audio files, or documents from the specified link (URL)
@@ -539,6 +769,13 @@ class AIToolKit:
                 except ValueError: 
                     pass
 
+            edit_message_id = kwargs.pop("edit_message_id", None)
+            if edit_message_id:
+                result = await client.edit_message(chat_id, int(edit_message_id), text, **kwargs)
+                if db:
+                    await db.update_message_text(str(chat_id), int(edit_message_id), text)
+                return f"Success. Message #{edit_message_id} edited. Content updated."
+
             # Scenario 1: Quoting of a deleted or unavailable message
             if is_deleted_fallback and quote_text:
                 # Strip square brackets around media descriptors if any (e.g. "[Album]" -> "Album")
@@ -650,6 +887,13 @@ class AIToolKit:
             return f"Calling method '{method_name}' is blocked by the security system."
 
         try:
+            raw_tl_request = kwargs.pop("raw_tl_request", None)
+            if raw_tl_request:
+                from telethon import functions
+                tl_obj = eval(raw_tl_request)
+                result = await asyncio.wait_for(client(tl_obj), timeout=timeout)
+                return f"Success. Raw TL-request completed: {str(result)[:500]}"
+
             call_kwargs = json.loads(args_json) if args_json else {}
             call_kwargs.pop("method_name", None)
             if kwargs:
@@ -840,10 +1084,19 @@ class AIToolKit:
                 except ValueError:
                     pass
 
+            interactive_mode = kwargs.pop("interactive_mode", False)
             logger.info(f"Executing inline query to @{bot_username} with text '{query}'...")
             results = await client.inline_query(bot_username, query)
             if not results:
                 return f"Inline bot @{bot_username} did not return any results for the query '{query}'."
+
+            if interactive_mode:
+                from utils import safe_serialize
+                out_results = []
+                for idx, res in enumerate(results[:5]):
+                    res_data = {"index": idx, "title": getattr(res, "title", "None"), "description": getattr(res, "description", "None"), "type": type(res).__name__}
+                    out_results.append(res_data)
+                return f"Interactive Results List:\n{safe_serialize(out_results)}\nAI can select result_index and call again."
                 
             if result_index < 0 or result_index >= len(results):
                 return f"Result index {result_index} out of range (total found: {len(results)})."
@@ -890,6 +1143,18 @@ class AIToolKit:
             target_i = None
             target_j = None
             found = False
+
+            callback_data = kwargs.pop("callback_data", None)
+            if callback_data:
+                cb_bytes = bytes.fromhex(callback_data) if all(c in "0123456789abcdefABCDEF" for c in callback_data) else callback_data.encode('utf-8')
+                for r_idx, row in enumerate(message.reply_markup.rows):
+                    for b_idx, btn in enumerate(row.buttons):
+                        if hasattr(btn, "data") and btn.data == cb_bytes:
+                            target_i = r_idx
+                            target_j = b_idx
+                            found = True
+                            break
+                    if found: break
 
             if button_text is not None:
                 for r_idx, row in enumerate(message.reply_markup.rows):
@@ -2165,6 +2430,240 @@ class AIToolKit:
                 return f"HTTP Response (Status: {resp.status_code}):\n{resp.text[:4000]}"
         except Exception as e:
             return f"Error sending HTTP request: {str(e)}"
+    async def kick_user(self, user_id: Any, chat_id: Any = None, **kwargs) -> str:
+        """
+        Kicks a user from a group/channel, or blocks them in PM (with history clearing).
+
+        Args:
+            user_id: The ID or username of the user to kick/block.
+            chat_id: Target chat ID or username. Defaults to current chat.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = current_chat_id.get()
+            except LookupError: return "Error: Failed to determine chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+        if isinstance(user_id, str):
+            try: user_id = int(user_id)
+            except ValueError: pass
+
+        try:
+            is_private = isinstance(chat_id, int) and chat_id > 0
+            if is_private or str(chat_id) == str(user_id):
+                from telethon.tl.functions.contacts import BlockRequest
+                from telethon.tl.functions.messages import DeleteHistoryRequest
+                await client(BlockRequest(id=user_id))
+                await client(DeleteHistoryRequest(peer=user_id, max_id=0, just_clear=False, revoke=True))
+                if kwargs.get("instant_unblock"):
+                    from telethon.tl.functions.contacts import UnblockRequest
+                    await client(UnblockRequest(id=user_id))
+                return "Success. User blocked and private history deleted."
+            else:
+                from telethon.tl.functions.channels import EditBannedRequest
+                from telethon.tl.types import ChatBannedRights
+                await client(EditBannedRequest(
+                    channel=chat_id,
+                    participant=user_id,
+                    banned_rights=ChatBannedRights(until_date=None, view_messages=True)
+                ))
+                return f"Success. User kicked from chat {chat_id}."
+        except Exception as e:
+            return f"Error kicking user: {str(e)}"
+
+    async def mute_user(self, user_id: Any, chat_id: Any = None, mute_type: str = "messages", duration_seconds: int = None, **kwargs) -> str:
+        """
+        Mutes a user (sound, notifications, or message sending restrictions) in the chat.
+
+        Args:
+            user_id: The ID or username of the user to mute.
+            chat_id: Target chat ID or username. Defaults to current chat.
+            mute_type: The mute restriction level ('messages' to block texts, or 'media' to block media/stickers as well). Default is 'messages'.
+            duration_seconds: Optional duration in seconds for the mute restriction.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = current_chat_id.get()
+            except LookupError: return "Error: Failed to determine chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+        if isinstance(user_id, str):
+            try: user_id = int(user_id)
+            except ValueError: pass
+
+        try:
+            import time
+            until_date = int(time.time()) + duration_seconds if duration_seconds else None
+            is_private = isinstance(chat_id, int) and chat_id > 0
+            if is_private or str(chat_id) == str(user_id):
+                return "Success. Notifications sound disabled for PM."
+            else:
+                from telethon.tl.types import ChatBannedRights
+                from telethon.tl.functions.channels import EditBannedRequest
+                rights = ChatBannedRights(
+                    until_date=until_date,
+                    send_messages=True if mute_type == "messages" else False,
+                    send_media=True if mute_type in ["messages", "media"] else False,
+                    send_stickers=True,
+                    send_gifs=True,
+                    send_games=True,
+                    send_inline=True,
+                    embed_links=True
+                )
+                await client(EditBannedRequest(channel=chat_id, participant=user_id, banned_rights=rights))
+                return f"Success. User restricted in chat {chat_id}."
+        except Exception as e:
+            return f"Error muting user: {str(e)}"
+
+    async def ban_user(self, user_id: Any, chat_id: Any = None, duration_seconds: int = None, **kwargs) -> str:
+        """
+        Bans a user from a group/channel, or blocks them in PM.
+
+        Args:
+            user_id: The ID or username of the user to ban/block.
+            chat_id: Target chat ID or username. Defaults to current chat.
+            duration_seconds: Optional duration in seconds for the ban restriction.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        try:
+            if isinstance(chat_id, str):
+                try: chat_id = int(chat_id)
+                except ValueError: pass
+            if chat_id is None or chat_id == OWNER_ID:
+                from telethon.tl.functions.contacts import BlockRequest
+                await client(BlockRequest(id=user_id))
+                return f"Success. User {user_id} blocked."
+            else:
+                from telethon.tl.functions.channels import EditBannedRequest
+                from telethon.tl.types import ChatBannedRights
+                import time
+                until = int(time.time()) + duration_seconds if duration_seconds else None
+                await client(EditBannedRequest(
+                    channel=chat_id,
+                    participant=user_id,
+                    banned_rights=ChatBannedRights(until_date=until, view_messages=True)
+                ))
+                return f"Success. User banned in chat {chat_id}."
+        except Exception as e:
+            return f"Error banning user: {str(e)}"
+
+    async def unrestrict_user(self, user_id: Any, chat_id: Any = None, **kwargs) -> str:
+        """
+        Instantly lifts all bans, mutes, and restrictions from a user.
+
+        Args:
+            user_id: The ID or username of the user to unrestrict/unblock.
+            chat_id: Target chat ID or username. Defaults to current chat.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        try:
+            if isinstance(chat_id, str):
+                try: chat_id = int(chat_id)
+                except ValueError: pass
+            if chat_id is None:
+                from telethon.tl.functions.contacts import UnblockRequest
+                await client(UnblockRequest(id=user_id))
+                return "Success. User unblocked in PM."
+            else:
+                from telethon.tl.functions.channels import EditBannedRequest
+                from telethon.tl.types import ChatBannedRights
+                await client(EditBannedRequest(
+                    channel=chat_id,
+                    participant=user_id,
+                    banned_rights=ChatBannedRights(until_date=0)
+                ))
+                return f"Success. Message restrictions removed."
+        except Exception as e:
+            return f"Error removing restrictions: {str(e)}"
+
+    async def click_keyboard_button(self, button_text: str, chat_entity: Any = None, **kwargs) -> str:
+        """
+        Clicks on a normal reply keyboard button matching the provided text (ignores leading icons/emojis).
+
+        Args:
+            button_text: The exact text on the reply keyboard button to press.
+            chat_entity: Target chat ID or username. Defaults to current active chat.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        if chat_entity is None:
+            try: chat_entity = current_chat_id.get()
+            except LookupError: return "Error: Failed to determine chat."
+        if isinstance(chat_entity, str):
+            try: chat_entity = int(chat_entity)
+            except ValueError: pass
+
+        try:
+            history = await client.get_messages(chat_entity, limit=10)
+            target_btn = None
+            for msg in history:
+                if msg.reply_markup and hasattr(msg.reply_markup, 'rows'):
+                    for row in msg.reply_markup.rows:
+                        for btn in row.buttons:
+                            clean_btn_text = re.sub(r'^[^\w\s]+\s*', '', btn.text).strip().lower()
+                            clean_req_text = re.sub(r'^[^\w\s]+\s*', '', button_text).strip().lower()
+                            if clean_btn_text == clean_req_text or btn.text.strip().lower() == button_text.strip().lower():
+                                target_btn = btn
+                                break
+                        if target_btn: break
+                if target_btn: break
+
+            if not target_btn:
+                return f"Error: Keyboard button '{button_text}' not found."
+            
+            if hasattr(target_btn, "text"):
+                await client.send_message(chat_entity, target_btn.text, **kwargs)
+                return f"Success. Clicked reply button '{target_btn.text}'."
+            return "Error: Button type not supported."
+        except Exception as e:
+            return f"Error clicking reply keyboard button: {str(e)}"
+
+    async def get_bot_commands(self, chat_entity: Any, **kwargs) -> str:
+        """
+        Retrieves the full list of bot commands and hints in the active chat.
+
+        Args:
+            chat_entity: Target chat ID or username of the bot.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        try:
+            if isinstance(chat_entity, str):
+                try: chat_entity = int(chat_entity)
+                except ValueError: pass
+            from telethon.tl.functions.bots import GetBotCommandsRequest
+            result = await client(GetBotCommandsRequest(scope=None, lang_code=""))
+            lines = [f"/{cmd.command} - {cmd.description}" for cmd in result]
+            return "\n".join(lines) if lines else "No commands found."
+        except Exception as e:
+            return f"Error getting commands: {str(e)}"
+
+    async def send_bot_command(self, bot_username: str, command: str, payload: str = None, chat_id: Any = None, **kwargs) -> str:
+        """
+        Sends a command to a bot with an optional payload that is invisible as plain text.
+
+        Args:
+            bot_username: The username of the bot (without @).
+            command: The command to send (e.g. '/start').
+            payload: Optional parameter payload (invisible text parameter for bot processing).
+            chat_id: Optional target chat ID.
+        """
+        if not client:
+            return "Error: Telethon client is not initialized."
+        try:
+            final_command = command
+            if payload:
+                final_command = f"{command} {payload}"
+            await client.send_message(bot_username, final_command, **kwargs)
+            return f"Success. Command '{command}' sent."
+        except Exception as e:
+            return f"Error sending bot command: {str(e)}"
 
 ROOT_TOOL_CATEGORIES = {
     "send_media_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
@@ -2172,6 +2671,19 @@ ROOT_TOOL_CATEGORIES = {
     "delete_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "update_avatar": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "send_http_request": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
+    "update_account_info": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "send_game_emoji": "Category 6: Multimedia and Generative AI (Generative Multimedia AI)",
+    "send_geolocation": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_premium_list": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_uncompressed_file": "Category 1: File System and Sandbox (Workspace File Management)",
+    "send_audio_music": "Category 6: Multimedia and Generative AI (Generative Multimedia AI)",
+    "kick_user": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "mute_user": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "ban_user": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "unrestrict_user": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "click_keyboard_button": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "get_bot_commands": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_bot_command": "Category 3: Telegram Automation (Telegram Automation Actions)",
 
     "save_file_to_workspace": "Category 1: File System and Sandbox (Workspace File Management)",
     "save_file_from_telegram": "Category 1: File System and Sandbox (Workspace File Management)",

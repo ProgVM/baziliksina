@@ -1,0 +1,4 @@
+--- CURRENT ENVIRONMENT INFORMATION ---
+You are currently in and replying to the chat: ID {chat_id} (Title: '{chat_title}', Username: @{chat_username}).
+If you want to send a text message to this current Chat, simply return a standard text response (response.text).
+Never use tools like execute_telegram_action(send_message) for the current chat {chat_id}.

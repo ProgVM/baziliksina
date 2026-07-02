@@ -127,3 +127,152 @@ def safe_telegram_html(text: str) -> str:
     parts.append(after_escaped)
     
     return ''.join(parts)
+
+def should_process_message_event(event, me, action_type="save") -> bool:
+    """
+    Evaluates whether an incoming or outgoing message event should be processed
+    (either 'save' to DB or 'generate' / trigger AI response) based on config.
+    """
+    import re
+    import config
+    from parser import get_media_type_description
+
+    if not event or not event.message:
+        return False
+
+    is_outgoing = event.sender_id == me.id
+
+    # 1. Base Save / Trigger Flags Checks
+    if action_type == "save":
+        if is_outgoing:
+            if not config.SAVE_OUTGOING_NEW_MESSAGES:
+                return False
+        else:
+            if not config.SAVE_INCOMING_MESSAGES:
+                return False
+    elif action_type == "trigger":
+        if is_outgoing:
+            if not config.TRIGGER_ON_OUTGOING_NEW_MESSAGES:
+                return False
+        else:
+            if not config.TRIGGER_ON_INCOMING:
+                return False
+
+    # 2. Check Allowed Message Types
+    m_type = get_media_type_description(event.message) or "text"
+    if m_type.lower() not in [t.lower() for t in config.ALLOWED_MESSAGE_TYPES]:
+        return False
+
+    # 3. Check Chat Whitelist / Blacklist Restrictions
+    chat_id = int(event.chat_id)
+    if config.CHAT_BLACKLIST and chat_id in config.CHAT_BLACKLIST:
+        return False
+    if config.CHAT_WHITELIST and chat_id not in config.CHAT_WHITELIST:
+        return False
+
+    # 4. Check Message Whitelist / Blacklist (Regex or Raw Values)
+    text_content = event.message.message or ""
+    
+    def matches_patterns(patterns, text) -> bool:
+        for pat in patterns:
+            try:
+                if re.search(pat, text, re.IGNORECASE):
+                    return True
+            except Exception:
+                if pat.lower() in text.lower():
+                    return True
+        return False
+
+    whitelist = config.MSG_SAVE_WHITELIST if action_type == "save" else config.MSG_GEN_WHITELIST
+    blacklist = config.MSG_SAVE_BLACKLIST if action_type == "save" else config.MSG_GEN_BLACKLIST
+
+    if config.FILTER_POLICY == "blacklist_first":
+        if blacklist and matches_patterns(blacklist, text_content):
+            return False
+        if whitelist and not matches_patterns(whitelist, text_content):
+            return False
+    else:
+        if whitelist and not matches_patterns(whitelist, text_content):
+            return False
+        if blacklist and matches_patterns(blacklist, text_content):
+            return False
+
+    # 5. Additional Generation Triggers check
+    if action_type == "trigger" and not is_outgoing:
+        is_private = event.is_private
+        is_group = event.is_group or (event.is_channel and getattr(event.chat, 'megagroup', False))
+        is_channel = event.is_channel and not getattr(event.chat, 'megagroup', False)
+
+        # Match AI_RESPONSE_MODE
+        if config.AI_RESPONSE_MODE == "private_only" and not is_private:
+            return False
+        elif config.AI_RESPONSE_MODE == "group_only" and not is_group:
+            return False
+        elif config.AI_RESPONSE_MODE == "channel_only" and not is_channel:
+            return False
+
+        # Match AI_RESPONSE_TRIGGERS
+        triggered = False
+        text_lower = text_content.lower()
+
+        if "name" in config.AI_RESPONSE_TRIGGERS:
+            me_name = (me.first_name or "").lower()
+            if me_name and me_name in text_lower:
+                triggered = True
+
+        if "username" in config.AI_RESPONSE_TRIGGERS and me.username:
+            if f"@{me.username.lower()}" in text_lower:
+                triggered = True
+
+        if "mentioned" in config.AI_RESPONSE_TRIGGERS and event.mentioned:
+            triggered = True
+
+        if "reply_to_me" in config.AI_RESPONSE_TRIGGERS and event.message.is_reply:
+            triggered = True
+
+        if config.AI_RESPONSE_TRIGGERS and not triggered:
+            return False
+
+    return True
+
+def should_process_reaction_event(emoji_or_id: str, actor_id: int, bot_id: int, is_add: bool) -> bool:
+    """
+    Evaluates whether a reaction update event should be logged or triggered
+    based on active whitelists, blacklists, and save/trigger settings.
+    """
+    import config
+    is_outgoing = actor_id == bot_id
+
+    # 1. Base Save / Trigger Flags
+    if is_outgoing:
+        if is_add and not config.SAVE_OUTGOING_REACTION_ADD: return False
+        if not is_add and not config.SAVE_OUTGOING_REACTION_REMOVE: return False
+    else:
+        if is_add and not config.SAVE_INCOMING_REACTION_ADD: return False
+        if not is_add and not config.SAVE_INCOMING_REACTION_REMOVE: return False
+
+    # 2. Match Reaction Whitelist / Blacklist
+    if config.REACTION_BLACKLIST and emoji_or_id in config.REACTION_BLACKLIST: return False
+    if config.REACTION_WHITELIST and emoji_or_id not in config.REACTION_WHITELIST: return False
+
+    return True
+
+def load_feedback_template(section_name: str, default_text: str) -> str:
+    """
+    Loads a specific notification section from config/feedback_prompt.txt dynamically.
+    """
+    import config
+    from pathlib import Path
+    import re
+    path = config.BASE_DIR / "config" / "feedback_prompt.txt"
+    if not path.exists():
+        return default_text
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+        match = re.search(r'\[{}\]\s*\n(.*?)(?=\n\[|\Z)'.format(re.escape(section_name)), content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+    except Exception:
+        pass
+    return default_text

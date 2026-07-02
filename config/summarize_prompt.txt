@@ -1,0 +1,1 @@
+Provide a brief summary of the following global chat history log of the AI. Highlight the key topics of discussion, current tasks, agreements, and context for each active user/group. Send only the summary in your response (this request was sent automatically by a script).

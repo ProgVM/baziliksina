@@ -6,6 +6,7 @@ import logging
 import base64
 import time
 from datetime import datetime, date
+from typing import Any
 from google.genai import types
 from config import SAFE_DB_DIR, MESSAGES_LIMIT, SUMMARIZATION_KEEP_LIMIT, CONTEXT_LOCAL_RATIO, CONTEXT_LOCAL_MIN_LIMIT, SQLITE_JOURNAL_MODE, DB_NAME
 
@@ -203,6 +204,14 @@ class DBManager:
                     code TEXT NOT NULL,
                     parameters_schema TEXT DEFAULT NULL,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 11. 2026 UPDATE: Dynamic parameters database config overrides table
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 )
             """)
 
@@ -592,6 +601,27 @@ class DBManager:
         await self.db.execute("DELETE FROM custom_tools WHERE name = ?", (name,))
         await self.db.commit()
         return True
+
+    # --- 2026 ADVANCED CONFIGURATION TABLE METHODS ---
+    async def get_all_settings(self) -> dict:
+        """Retrieves all configuration settings stored in the settings table."""
+        async with self.db.execute("SELECT key, value FROM settings") as cursor:
+            rows = await cursor.fetchall()
+            return {row[0]: row[1] for row in rows}
+
+    async def save_setting(self, key: str, value: Any):
+        """Saves or updates a dynamic setting parameter in the database."""
+        val_str = json.dumps(value) if not isinstance(value, str) else value
+        await self.db.execute("""
+            INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, (key, val_str))
+        await self.db.commit()
+
+    async def delete_setting(self, key: str):
+        """Removes a dynamic setting override from the database."""
+        await self.db.execute("DELETE FROM settings WHERE key = ?", (key,))
+        await self.db.commit()
 
     async def close(self):
         """Closes the active database connection."""

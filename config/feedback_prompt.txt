@@ -1,0 +1,19 @@
+[edit_notification]
+[System notification: Sender {sender_info} edited message {msg_id}]
+--- PREVIOUS STATE ---
+Text: '{prev_text}'
+Media: {prev_media}
+--- NEW STATE ---
+Text with metadata: '{reply_meta}{new_text}'
+{buttons_summary}
+
+[delete_notification]
+[System notification: Message #{msg_id} ('{orig_text_truncated}...') was deleted by the sender]
+
+[vm_notification]
+[System notification: Autonomous Python code {source_type} finished execution]
+Code:
+{code}
+
+Execution result:
+{p_result}

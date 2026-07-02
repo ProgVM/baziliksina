@@ -1,4 +1,4 @@
-# sandbox.py
+# core/sandbox.py
 import os
 import sys
 import asyncio
@@ -16,6 +16,7 @@ import gemini_manager
 import parser
 import services
 import tools
+from registry import registry
 
 logger = logging.getLogger("Sandbox")
 
@@ -66,6 +67,23 @@ class SandboxedClient:
         return self._original(*args, **kwargs)
 
 
+class SandboxedConfig:
+    """Secure proxy for config module that hides sensitive API keys and hashes from sandboxed code."""
+    def __init__(self, original_config):
+        self._original = original_config
+        self._redacted_keys = {
+            "API_HASH", "TELEGRAM_API_HASH", "GEMINI_API_KEYS", "GEMINI_KEYS", 
+            "POLLINATIONS_KEYS", "TOR_PASSWORD", "ALL_PROXY", "all_proxy",
+            "TELEGRAM_PROXIES", "GEMINI_PROXIES", "POLLINATIONS_PROXIES", "SCRAPER_PROXIES"
+        }
+
+    def __getattr__(self, name):
+        if name in self._redacted_keys:
+            return "[REDACTED_SECURITY_SENSITIVE_DATA]"
+        attr = getattr(self._original, name)
+        return attr
+
+
 class AsyncSandbox:
     """A universal isolated virtual machine for secure execution of asynchronous Python code."""
     def __init__(self, workspace_dir: Path, client_instance, db_instance, ai_manager_instance, chat_id=None, event=None):
@@ -75,6 +93,7 @@ class AsyncSandbox:
         self.ai_manager = ai_manager_instance
         self.chat_id = chat_id
         self.event = event
+        self.me = None
 
     def _sandboxed_open(self, file, mode='r', *args, **kwargs):
         """Protected override of the built-in open() function."""
@@ -97,22 +116,30 @@ class AsyncSandbox:
 
         import asyncio
         import telethon
+        
+        # Resolve own profile dynamically for the VM context
+        if self.me is None and self.client:
+            try:
+                self.me = await self.client.get_me()
+            except Exception:
+                pass
 
-        # Set up the environment variables of the virtual machine (VM)
+        # Set up the secure environment variables of the virtual machine (VM)
         local_vars = {
-            # Proxied core objects
             "client": SandboxedClient(self.client, self.workspace),
             "db": self.db,
             "ai_manager": self.ai_manager,
+            "registry": registry,
             "asyncio": asyncio,
             "WORKSPACE_DIR": str(self.workspace),
             "telethon": telethon,
             "chat_id": self.chat_id,
             "event": self.event,
+            "me": self.me,
             "result": None,
             "open": self._sandboxed_open,
             "bot": sys.modules.get("bot"),
-            "config": config,
+            "config": SandboxedConfig(config),
             "db_manager": db_manager,
             "key_manager": key_manager,
             "gemini_manager": gemini_manager,
@@ -121,11 +148,16 @@ class AsyncSandbox:
             "tools": tools
         }
 
+        # Dynamically inject all registered system and custom tools directly as VM functions
+        for tool in registry.get_all_tools():
+            local_vars[tool.name] = tool.callable
+
         # Wrap the code in an internal asynchronous function
         indented_code = "\n".join(f"    {line}" for line in code_string.splitlines())
         wrapper_code = f"async def __run_sandbox_code():\n{indented_code}"
 
         try:
+            # Isolated compilation and executing sequence (Crash-Recovery VM State)
             exec(wrapper_code, local_vars, local_vars)
             await local_vars["__run_sandbox_code"]()
             
@@ -134,4 +166,6 @@ class AsyncSandbox:
                 return "Code executed successfully. The 'result' variable was not set."
             return f"Code executed. Result of the 'result' variable:\n{str(res)[:3000]}"
         except Exception as e:
+            # VM state self-cleaning upon crash
+            local_vars.clear()
             return f"Error executing Python code: {str(e)}"

@@ -25,13 +25,16 @@ from config import (
     BOT_AVATAR_NAME, TELEGRAM_CONNECTION_RETRIES, TELEGRAM_RETRY_DELAY, 
     TELEGRAM_AUTO_RECONNECT, TELEGRAM_TIMEOUT
 )
+import config
 from db_manager import DBManager
 from gemini_manager import GeminiManager, entity_cache
 from parser import parse_message_payload, parse_reply_metadata, parse_sender_info, parse_and_cache_user_metadata, parse_and_cache_chat_metadata
 from downloader import download_and_cache_media
 from proxy_manager import proxy_rotator
+from server.server import start_web_server, stop_web_server
 import services
 import tools
+from utils import should_process_message_event, should_process_reaction_event, load_feedback_template
 
 # Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -79,11 +82,9 @@ async def run_and_log_sandbox_code(chat_id: int, code: str, source_type: str = "
     logger.info(f"--- VM background code execution result ({source_type}) ---\n{result}\n--------------------------------------------")
     
     p_result = result[:VM_STDOUT_NOTICE_LIMIT] + "..." if len(result) > VM_STDOUT_NOTICE_LIMIT else result
-    notice_text = (
-        f"[System notification: Autonomous Python code {source_type} finished execution]\n"
-        f"Code:\n{code}\n\n"
-        f"Execution result:\n{p_result}"
-    ).strip()
+    
+    template = load_feedback_template("vm_notification", "[System notification: Autonomous Python code {source_type} finished execution]\nCode:\n{code}\n\nExecution result:\n{p_result}")
+    notice_text = template.replace("{source_type}", source_type).replace("{code}", code).replace("{p_result}", p_result).strip()
     
     await db.save_message(str(chat_id), "user", notice_text)
 
@@ -214,6 +215,7 @@ async def run_pending_query(cid, entity, trigger_msg_id=None):
 # --- Universal background tracking of reactions on posts, channels, and PMs ---
 @client.on(events.Raw(types=[tl_types.UpdateMessageReactions, tl_types.UpdateBotMessageReaction, tl_types.UpdateBotMessageReactions]))
 async def on_raw_reaction(event):
+    global me
     peer = getattr(event, "peer", None)
     msg_id = getattr(event, "msg_id", None)
     if not peer or not msg_id:
@@ -234,6 +236,11 @@ async def on_raw_reaction(event):
     if not chat_id:
         return
         
+    # Resolve self ID if missing
+    if me is None:
+        try: me = await client.get_me()
+        except Exception: return
+
     rx_parts = []
     
     # 1. Case of UpdateMessageReactions / UpdateBotMessageReactions (contain ReactionCount)
@@ -243,28 +250,44 @@ async def on_raw_reaction(event):
         if results:
             for rc in results:
                 if hasattr(rc.reaction, 'emoticon'):
-                    rx_parts.append(f"'{rc.reaction.emoticon}' (x{rc.count})")
+                    emoji_val = rc.reaction.emoticon
+                    if should_process_reaction_event(emoji_val, me.id, me.id, True): # Default to pass for bulk stats
+                        rx_parts.append(f"'{emoji_val}' (x{rc.count})")
                 elif hasattr(rc.reaction, 'document_id'):
-                    rx_parts.append(f"[Custom emoji ID {rc.reaction.document_id}] (x{rc.count})")
+                    emoji_val = str(rc.reaction.document_id)
+                    if should_process_reaction_event(emoji_val, me.id, me.id, True):
+                        rx_parts.append(f"[Custom emoji ID {emoji_val}] (x{rc.count})")
         elif isinstance(reactions_obj, list):
             for rc in reactions_obj:
                 if hasattr(rc.reaction, 'emoticon'):
-                    rx_parts.append(f"'{rc.reaction.emoticon}' (x{rc.count})")
+                    emoji_val = rc.reaction.emoticon
+                    if should_process_reaction_event(emoji_val, me.id, me.id, True):
+                        rx_parts.append(f"'{emoji_val}' (x{rc.count})")
                 elif hasattr(rc.reaction, 'document_id'):
-                    rx_parts.append(f"[Custom emoji ID {rc.reaction.document_id}] (x{rc.count})")
+                    emoji_val = str(rc.reaction.document_id)
+                    if should_process_reaction_event(emoji_val, me.id, me.id, True):
+                        rx_parts.append(f"[Custom emoji ID {emoji_val}] (x{rc.count})")
                     
     # 2. Case of UpdateBotMessageReaction (contains a list of new reactions)
     new_reactions = getattr(event, "new_reactions", None)
     if new_reactions and isinstance(new_reactions, list):
         counts = {}
         for r in new_reactions:
+            actor_id = getattr(event, "actor_id", me.id)
             if hasattr(r, 'emoticon'):
-                counts[r.emoticon] = counts.get(r.emoticon, 0) + 1
+                emoji_val = r.emoticon
+                if should_process_reaction_event(emoji_val, actor_id, me.id, True):
+                    counts[emoji_val] = counts.get(emoji_val, 0) + 1
             elif hasattr(r, 'document_id'):
-                key = f"Custom emoji ID {r.document_id}"
-                counts[key] = counts.get(key, 0) + 1
+                emoji_val = str(r.document_id)
+                if should_process_reaction_event(emoji_val, actor_id, me.id, True):
+                    key = f"Custom emoji ID {emoji_val}"
+                    counts[key] = counts.get(key, 0) + 1
         for k, v in counts.items():
             rx_parts.append(f"'{k}' (x{v})" if not k.startswith("Custom") else f"[{k}] (x{v})")
+
+    if not rx_parts:
+        return # Dropped by whitelists/blacklists
 
     reactions_str = ""
     if rx_parts:
@@ -321,6 +344,10 @@ async def on_new_message(event):
     input_chat_entity = await event.get_input_chat()
     entity_cache[chat_id] = input_chat_entity
 
+    # Global filter check: should we save this message event?
+    if not should_process_message_event(event, me, "save"):
+        return
+
     # Auto-read incoming messages (only if PM or mentioned)
     if is_private or mentioned:
         try:
@@ -348,15 +375,27 @@ async def on_new_message(event):
     sender = await event.get_sender()
     if sender and getattr(sender, "id", None):
         s_id = int(sender.id)
-        if s_id not in last_profile_updates or (now_ts - last_profile_updates[s_id]) > PROFILE_UPDATE_INTERVAL:
-            last_profile_updates[s_id] = now_ts
-            asyncio.create_task(parse_and_cache_user_metadata(client, db, sender))
+        if config.SAVE_USER_METADATA:
+            allowed_user = True
+            if config.USER_CACHE_BLACKLIST and s_id in config.USER_CACHE_BLACKLIST:
+                allowed_user = False
+            if config.USER_CACHE_WHITELIST and s_id not in config.USER_CACHE_WHITELIST:
+                allowed_user = False
+            if allowed_user and (s_id not in last_profile_updates or (now_ts - last_profile_updates[s_id]) > PROFILE_UPDATE_INTERVAL):
+                last_profile_updates[s_id] = now_ts
+                asyncio.create_task(parse_and_cache_user_metadata(client, db, sender))
             
     c_id = int(chat_id)
-    if c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > PROFILE_UPDATE_INTERVAL:
-        last_chat_updates[c_id] = now_ts
-        chat_ent = await event.get_chat()
-        asyncio.create_task(parse_and_cache_chat_metadata(client, db, chat_ent))
+    if config.SAVE_CHAT_METADATA:
+        allowed_chat = True
+        if config.CHAT_CACHE_BLACKLIST and c_id in config.CHAT_CACHE_BLACKLIST:
+            allowed_chat = False
+        if config.CHAT_CACHE_WHITELIST and c_id not in config.CHAT_CACHE_WHITELIST:
+            allowed_chat = False
+        if allowed_chat and (c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > PROFILE_UPDATE_INTERVAL):
+            last_chat_updates[c_id] = now_ts
+            chat_ent = await event.get_chat()
+            asyncio.create_task(parse_and_cache_chat_metadata(client, db, chat_ent))
 
     # 3. Synchronous management of buffering timers (STRICTLY BEFORE ANY AWAIT)
     global debounce_counter
@@ -406,6 +445,10 @@ async def on_new_message(event):
     await db.save_message(str(chat_id), "user", full_prompt_text, media_info, msg_id)
 
     if await check_and_run_triggers(chat_id, text, input_chat_entity, event):
+        return
+
+    # Global filter check: should we trigger AI generation on this message?
+    if not should_process_message_event(event, me, "trigger"):
         return
 
     # Start Debounce generation of AI response in all chats during activity lull
@@ -532,21 +575,16 @@ async def on_message_edited(event):
                 elif hasattr(btn, 'url') and btn.url:
                     btn_info += f" (url: '{btn.url}')"
                 row_btns.append(btn_info)
-            buttons_text.append(" | ".join(row_btns))
-        if buttons_text:
-            buttons_summary = "\n[Inline buttons in this message]:\n" + "\n".join(buttons_text)
+            if buttons_text:
+                buttons_summary = "\n[Inline buttons in this message]:\n" + "\n".join(buttons_text)
 
-    notice_text = (
-        f"[System notification: Sender {sender_info} edited message {msg_id}]\n"
-        f"--- PREVIOUS STATE ---\n"
-        f"Text: '{prev_text}'\n"
-        f"Media: {prev_media}\n"
-        f"--- NEW STATE ---\n"
-        f"Text with metadata: '{reply_meta}{new_text}'\n"
-        f"{buttons_summary}"
-    ).strip()
+            template = load_feedback_template(
+                "edit_notification", 
+                "[System notification: Sender {sender_info} edited message {msg_id}]\n--- PREVIOUS STATE ---\nText: '{prev_text}'\nMedia: {prev_media}\n--- NEW STATE ---\nText with metadata: '{reply_meta}{new_text}'\n{buttons_summary}"
+            )
+            notice_text = template.replace("{sender_info}", sender_info).replace("{msg_id}", str(msg_id)).replace("{prev_text}", prev_text).replace("{prev_media}", prev_media).replace("{reply_meta}", reply_meta).replace("{new_text}", new_text).replace("{buttons_summary}", buttons_summary).strip()
 
-    await db.save_message(str(chat_id), "user", notice_text, media_info)
+            await db.save_message(str(chat_id), "user", notice_text, media_info)
 
 # Message deletion handler
 @client.on(events.MessageDeleted)
@@ -594,7 +632,9 @@ async def on_message_deleted(event):
                     logger.info(f"Message deletion detected {msg_id} in chat {cid_int}. Text: '{orig_text[:50]}...'")
                     await db.update_message_text(str(cid_int), msg_id, f"[Message deleted by user]: {orig_text}")
                     
-                    notice_text = f"[System notification: Message #{msg_id} ('{orig_text[:50]}...') was deleted by the sender]"
+                    template = load_feedback_template("delete_notification", "[System notification: Message #{msg_id} ('{orig_text_truncated}...') was deleted by the sender]")
+                    orig_text_truncated = orig_text[:50] if orig_text else "None"
+                    notice_text = template.replace("{msg_id}", str(msg_id)).replace("{orig_text_truncated}", orig_text_truncated).strip()
                     await db.save_message(str(cid_int), "user", notice_text)
                     
                     is_private_chat = cid_int > 0
@@ -622,51 +662,78 @@ async def main():
     logger.info("Connecting to asynchronous database...")
     await db.connect()
     
-    # Initialization of cross-references for the tools module
-    tools.client = client
-    tools.db = db
-    tools.ai_manager = ai_manager
-    tools.key_manager = ai_manager.key_manager
-    tools.pollinations_key_manager = ai_manager.pollinations_key_manager
-    tools.bot_callback_fn = ai_manager.handle_query
-    
-    # Register system tools in the global registry at startup
-    tools.register_system_tools()
-    
-    # Sync custom tools from the SQLite database
-    from registry import sync_custom_tools_with_db
-    await sync_custom_tools_with_db(db)
-    
-    # Asynchronously read and restore the saved working key from SQLite DB
-    await ai_manager.key_manager.load_saved_index()
-    await ai_manager.pollinations_key_manager.load_saved_index()
-    
-    logger.info("Starting Telegram userbot...")
-    await client.start()
-    logger.info("Userbot successfully authorized!")
-    
-    me = await client.get_me()
-    
-    # [FIRST RUN]: Bootstrap AI dialogue history if allowed by the BOOTSTRAP_DATABASE setting
-    if BOOTSTRAP_DATABASE:
-        await services.bootstrap_database_if_empty(client, db, run_pending_query_fn=schedule_debounce_query)
-    
-    # Download AI's own avatar for autonomous analysis at startup
     try:
-        photos = await client.get_profile_photos(me, limit=1)
-        if photos:
-            logger.info("Downloading AI's own account avatar to bot_workspace...")
-            await client.download_media(photos[0], file=str(WORKSPACE_DIR / BOT_AVATAR_NAME))
-    except Exception as e:
-        logger.error(f"Failed to download AI avatar: {str(e)}")
-    
-    # Start infinite background processes
-    asyncio.create_task(services.keep_alive_online(client))
-    asyncio.create_task(services.connection_monitor(client, db, WORKSPACE_DIR, processed_msg_ids, entity_cache, schedule_debounce_query))
-    asyncio.create_task(run_timers_loop())
-    try:
+        # Tier 4 config override from SQLite settings table
+        from config import reload_config_from_db
+        await reload_config_from_db(db)
+        
+        # Initialization of cross-references for the tools module
+        tools.client = client
+        tools.db = db
+        tools.ai_manager = ai_manager
+        tools.key_manager = ai_manager.key_manager
+        tools.pollinations_key_manager = ai_manager.pollinations_key_manager
+        tools.bot_callback_fn = ai_manager.handle_query
+        
+        # Register system tools in the global registry at startup
+        tools.register_system_tools()
+        
+        # Sync custom tools from the SQLite database
+        from registry import sync_custom_tools_with_db
+        await sync_custom_tools_with_db(db)
+        
+        # Asynchronously read and restore the saved working key from SQLite DB
+        await ai_manager.key_manager.load_saved_index()
+        await ai_manager.pollinations_key_manager.load_saved_index()
+        
+        logger.info("Starting Telegram userbot...")
+        await client.start()
+        logger.info("Userbot successfully authorized!")
+        
+        me = await client.get_me()
+        
+        # [FIRST RUN]: Bootstrap AI dialogue history if allowed by the BOOTSTRAP_DATABASE setting
+        if BOOTSTRAP_DATABASE:
+            await services.bootstrap_database_if_empty(client, db, run_pending_query_fn=schedule_debounce_query)
+        
+        # Download AI's own avatar for autonomous analysis at startup
+        try:
+            photos = await client.get_profile_photos(me, limit=1)
+            if photos:
+                logger.info("Downloading AI's own account avatar to bot_workspace...")
+                await client.download_media(photos[0], file=str(WORKSPACE_DIR / BOT_AVATAR_NAME))
+        except Exception as e:
+            logger.error(f"Failed to download AI avatar: {str(e)}")
+        
+        # Start infinite background processes
+        asyncio.create_task(services.keep_alive_online(client))
+        asyncio.create_task(services.connection_monitor(client, db, WORKSPACE_DIR, processed_msg_ids, entity_cache, schedule_debounce_query))
+        asyncio.create_task(run_timers_loop())
+        asyncio.create_task(start_web_server(client, db, ai_manager))
+        
         await client.run_until_disconnected()
     finally:
+        # Cancel all background tasks to prevent loop from hanging
+        try:
+            pending = asyncio.all_tasks()
+            current = asyncio.current_task()
+            for task in pending:
+                if task is not current:
+                    task.cancel()
+            if pending:
+                await asyncio.gather(*[t for t in pending if t is not current], return_exceptions=True)
+        except Exception:
+            pass
+        # Cleanly shutdown the Web Server
+        try:
+            await stop_web_server()
+        except Exception:
+            pass
+        # Cleanly disconnect Telethon client
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
         await db.close()
 
 if __name__ == "__main__":
