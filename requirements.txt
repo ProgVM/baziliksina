@@ -8,6 +8,7 @@ pillow>=10.3.0
 yt-dlp>=2025.1.1
 aiosqlite>=0.20.0
 python-dotenv>=1.0.1
+aiohttp>=3.9.0
 socksio
 pysocks
 python-socks[asyncio]
