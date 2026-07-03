@@ -708,6 +708,74 @@ class AIToolKitTelegram:
         except Exception as e:
             return f"Error sending bot command: {str(e)}"
 
+    async def join_telegram_chat(self, link_or_username: str, **kwargs) -> str:
+        """
+        Enables the userbot to join any public group, subscribe to a channel, 
+        or send a join request to a private group/channel requiring admin approval.
+        Handles both public links/usernames and private invite hashes automatically.
+
+        Args:
+        link_or_username: The t.me link, private invite link, hash, or public username (e.g., '@my_group', 'https://t.me/+AbCd123', 'joinchat/AAAAAF...').
+        """
+        if not tools.client:
+        return "Error: Telethon client is not initialized."
+        import re
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+        from telethon.errors import (
+        InviteHashExpiredError, InviteHashInvalidError, 
+        UserAlreadyParticipantError
+        )
+        clean_input = link_or_username.strip()
+        hash_match = re.search(r'(?:t\.me|telegram\.me)/(?:joinchat/|\+)([a-zA-Z0-9_-]+)', clean_input, re.IGNORECASE)
+        is_private_invite = False
+        invite_hash = ""
+        if hash_match:
+        is_private_invite = True
+        invite_hash = hash_match.group(1)
+        elif clean_input.startswith("+") and len(clean_input) > 2:
+        is_private_invite = True
+        invite_hash = clean_input[1:]
+        elif "joinchat/" in clean_input:
+        is_private_invite = True
+        invite_hash = clean_input.split("joinchat/")[-1].strip()
+        elif not clean_input.startswith("@") and not "/" in clean_input and len(clean_input) >= 10 and clean_input.isalnum():
+        is_private_invite = True
+        invite_hash = clean_input
+        try:
+        if is_private_invite:
+            logger.info(f"Private invite detected. Attempting ImportChatInviteRequest with hash: {invite_hash}...")
+            try:
+                result = await tools.client(ImportChatInviteRequest(hash=invite_hash))
+                chat_title = "Private Chat"
+                if hasattr(result, "chats") and result.chats:
+                    chat_title = getattr(result.chats[0], "title", "Private Group/Channel")
+                return f"Success! Successfully joined the private chat/channel '{chat_title}' using the invite link."
+            except UserAlreadyParticipantError:
+                return "Info: You are already a participant of this private chat or channel."
+            except InviteHashExpiredError:
+                return "Error: The invite link has expired or is no longer valid."
+            except InviteHashInvalidError:
+                return "Error: The provided invite link or hash is malformed or invalid."
+            except Exception as ex_join:
+                ex_str = str(ex_join).lower()
+                if "request" in ex_str and "sent" in ex_str or "approval" in ex_str:
+                    return "Success! A request to join this private group has been successfully sent to the administrators. You will join as soon as they approve it."
+                raise ex_join
+        else:
+            username = clean_input
+            if "t.me/" in username:
+                username = username.split("t.me/")[-1].split("?")[0].split("/")[0].strip()
+            if not username.startswith("@") and not username.isdigit():
+                username = f"@{username}"
+            logger.info(f"Public entity detected. Attempting JoinChannelRequest for: {username}...")
+            entity = await tools.client.get_entity(username)
+            await tools.client(JoinChannelRequest(channel=entity))
+            chat_title = getattr(entity, "title", username)
+            return f"Success! Successfully joined the public chat/channel '{chat_title}' (@{getattr(entity, 'username', '') or username})."
+        except Exception as e:
+        return f"Error joining Telegram chat/channel: {str(e)}"
+
     async def send_game_emoji(self, emoji: str, chat_id: str = None, **kwargs) -> str:
         """Sends a game emoji (dice, dart, bowling, basketball, football, slot machine)."""
         if not tools.client: return "Error: Telethon client is not initialized."

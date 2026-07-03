@@ -92,7 +92,19 @@ class GeminiManager:
         else:
             env_template = "You are in chat {chat_id}."
             
+        is_admin = False
+        if chat_entity and not isinstance(chat_entity, (int, str)):
+            is_group = getattr(chat_entity, "megagroup", False) or getattr(chat_entity, "broadcast", False) or type(chat_entity).__name__ == "Chat"
+            if is_group:
+                try:
+                    participant = await self.client.get_permissions(chat_entity, "me")
+                    is_admin = getattr(participant, "is_admin", False) or getattr(participant, "is_creator", False)
+                except Exception as e:
+                    logger.debug(f"Failed to check admin rights: {str(e)}")
+        admin_status = "Admin/Owner (You have administrative privileges to delete, pin, restrict, mute, ban, etc.)" if is_admin else "Regular member (You have standard member privileges, no administrative powers)"
+
         env_prompt = env_template.replace("{chat_id}", str(chat_id)).replace("{chat_title}", chat_title).replace("{chat_username}", chat_username)
+        env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}"
         dynamic_prompt = f"{system_prompt}\n\n{env_prompt}"
 
         if not chat_entity or isinstance(chat_entity, (int, str)):

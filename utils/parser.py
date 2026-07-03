@@ -420,10 +420,12 @@ def parse_sender_info(sender, message) -> str:
         
     elif p_type == "Channel":
         is_group = getattr(sender, 'megagroup', False) or getattr(sender, 'gigagroup', False)
+        is_anonymous = not getattr(message, 'post', False) and (getattr(message, 'is_group', False) or (hasattr(message, 'peer_id') and isinstance(message.peer_id, tl_types.PeerChannel)))
         entity_kind = "Supergroup" if is_group else "Channel"
-        title = getattr(sender, 'title', 'Channel')
         post_author = getattr(message, 'post_author', None)
         author_sig = f" (author signature: '{post_author}')" if post_author else ""
+        anonymous_label = " [ANONYMOUS SENDER - this is a user writing anonymously on behalf of this group/channel]" if is_anonymous else ""
+        return f"{entity_kind} '{title}'{user_ref}{phone_ref if 'phone_ref' in locals() else ''}{anonymous_label} [ID: {sender.id}]{badges_str}{author_sig}"
         return f"{entity_kind} '{title}'{user_ref} [ID: {sender.id}]{badges_str}{author_sig}"
         
     elif p_type == "Chat":

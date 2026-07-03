@@ -30,7 +30,7 @@ class AIResponseExecutor:
         cleaned_text = text
 
         # 1. Clean technical cross-chat prefixes [Chat: ... | Message ID: ...] and leaked thoughts headers
-        prefix_pattern = re.compile(r'\[Chat:\s*-?\d+\s*\|\s*Message ID:\s*(?:\d+|unknown)\]\s*\n?', re.IGNORECASE)
+        prefix_pattern = re.compile(r'\[Chat:\s*-?\d+\s*\|\s*Message ID:\s*(?:\d+|unknown)(?:\s*\|\s*Date:[^\]]+)?\]\s*\n?', re.IGNORECASE)
         cleaned_text = prefix_pattern.sub("", cleaned_text).strip()
         
         thought_pattern = re.compile(r'^(?:thought|thinking|thoughts)(?:\s*:\s*|\s*\n+)?', re.IGNORECASE)
