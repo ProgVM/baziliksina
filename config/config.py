@@ -381,7 +381,7 @@ RE_REACT_TAG = os.getenv("RE_REACT_TAG", r"(?<!\\)\[React:\s*(\d+)\s*\|\s*(.*?)\
 RE_ATTACH_TAG = os.getenv("RE_ATTACH_TAG", r"(?<!\\)\[Attach:\s*([^|\]]+?)\s*(?:\|\s*(.*?))?\s*\]")
 RE_EDIT_TAG = os.getenv("RE_EDIT_TAG", r"(?<!\\)\[Edit:\s*(\d+)\s*\|\s*(.*?)\s*\]")
 RE_DELETE_TAG = os.getenv("RE_DELETE_TAG", r"(?<!\\)\[Delete:\s*(\d+)\s*\]")
-RE_NOOP_TAG = os.getenv("RE_NOOP_TAG", r"(?<!\\)\[NoOp:\s*([^|\]]+?)\s*(?:\|\s*continue\s*=\s*(true|false))?\s*\]")
+RE_NOOP_TAG = os.getenv("RE_NOOP_TAG", r"(?<!\\)\[(?:NoOp|No_Op_Ignore|NoOpIgnore):\s*([^|\]]+?)\s*(?:\|\s*continue\s*=\s*(true|false))?\s*\]")
 RE_TOOL_TAG = os.getenv("RE_TOOL_TAG", r"(?<!\\)\[Tool:\s*([a-zA-Z0-9_]+)\s*\|\s*(.*?)\s*\]")
 
 # =====================================================================
