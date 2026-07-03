@@ -83,7 +83,10 @@ ROOT_TOOL_CATEGORIES = {
 }
 
 class ModularToolKit:
-    pass
+    def __getattr__(self, name):
+        if name in globals():
+            return globals()[name]
+        raise AttributeError(f"'ModularToolKit' object has no attribute '{name}'")
 
 toolkit = ModularToolKit()
 
