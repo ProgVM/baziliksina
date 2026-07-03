@@ -889,6 +889,163 @@ class AIToolKitTelegram:
         except Exception as e:
             return f"Error sending audio: {str(e)}"
 
+    async def get_group_members(self, chat_id: str = None, only_admins: bool = False, limit: int = 100, **kwargs) -> str:
+        """
+        Retrieves the list of active members of the specified group or channel.
+        Identifies if a member is an admin, owner, or regular participant, 
+        along with their custom member tags (titles) if set.
+
+        Args:
+            chat_id: Target group/channel username or ID. Defaults to the current active chat.
+            only_admins: If True, retrieves only administrative members. Default is False.
+            limit: Maximum number of members to fetch. Default is 100.
+        """
+        if not tools.client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = tools.current_chat_id.get()
+            except LookupError: return "Error: Could not resolve target chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+        try:
+            from telethon.tl.types import ChannelParticipantsAdmins, ChannelParticipantsRecent
+            entity = await tools.client.get_input_entity(chat_id)
+            p_filter = ChannelParticipantsAdmins() if only_admins else ChannelParticipantsRecent()
+            logger.info(f"Fetching up to {limit} participants for chat {chat_id}...")
+            participants = await tools.client.get_participants(entity, limit=limit, filter=p_filter)
+            if not participants:
+                return "No participants found or member list is restricted by the group settings."
+            lines = []
+            for p in participants:
+                name = f"{getattr(p, 'first_name', '') or ''} {getattr(p, 'last_name', '') or ''}".strip() or "User"
+                username_ref = f" (@{p.username})" if getattr(p, "username", None) else ""
+                custom_title = "None"
+                p_role = "Member"
+                try:
+                    permissions = await tools.client.get_permissions(chat_id, p)
+                    if getattr(permissions, "is_admin", False): p_role = "Admin"
+                    if getattr(permissions, "is_creator", False): p_role = "Owner/Creator"
+                    custom_title = getattr(p, "rank", None) or "None"
+                    if custom_title == "None":
+                        from telethon.tl.functions.channels import GetParticipantRequest
+                        res = await tools.client(GetParticipantRequest(channel=chat_id, participant=p))
+                        custom_title = getattr(res.participant, "rank", None) or "None"
+                except Exception:
+                    pass
+                lines.append(f"- ID: {p.id} | Name: '{name}'{username_ref} | Role: {p_role} | Member Tag/Title: '{custom_title}'")
+            header_status = "Administrators List" if only_admins else "Recent Members List"
+            return f"=== {header_status} (Count: {len(lines)}) ===\n" + "\n".join(lines)
+        except Exception as e:
+            return f"Error retrieving group members: {str(e)}"
+
+    async def edit_chat_participant_settings(self, chat_id: str = None, user_id: str = "me", custom_title: str = None, is_anonymous: bool = None, **kwargs) -> str:
+        """
+        Modifies a participant's administrative settings (permissions, custom title/member tag, 
+        or anonymity) in the specified chat or channel. Defaults to own account and current active chat.
+
+        Args:
+            chat_id: Target group/channel username or ID. Defaults to the current active chat.
+            user_id: The username or numerical ID of the target user to modify. Defaults to 'me' (own userbot account).
+            custom_title: The new custom title / member tag to set (max 16 characters).
+            is_anonymous: If True, hides the administrator in the member list and posts anonymously. Only applicable to admins.
+        """
+        if not tools.client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = tools.current_chat_id.get()
+            except LookupError: return "Error: Could not resolve target chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+        if isinstance(user_id, str):
+            try: user_id = int(user_id)
+            except ValueError: pass
+        try:
+            from telethon.tl.functions.channels import EditAdminRequest
+            from telethon.tl.types import ChatAdminRights
+            target_user = "me" if str(user_id).lower() == "me" else user_id
+            user_entity = await tools.client.get_input_entity(target_user)
+            permissions = await tools.client.get_permissions(chat_id, user_entity)
+            anon_val = is_anonymous if is_anonymous is not None else getattr(permissions, "anonymous", False)
+            rights = ChatAdminRights(
+                change_info=getattr(permissions, "change_info", True),
+                post_messages=getattr(permissions, "post_messages", True),
+                edit_messages=getattr(permissions, "edit_messages", True),
+                delete_messages=getattr(permissions, "delete_messages", True),
+                ban_users=getattr(permissions, "ban_users", True),
+                invite_users=getattr(permissions, "invite_users", True),
+                pin_messages=getattr(permissions, "pin_messages", True),
+                add_admins=getattr(permissions, "add_admins", False),
+                anonymous=anon_val,
+                manage_call=getattr(permissions, "manage_call", True)
+            )
+            title_val = custom_title if custom_title is not None else getattr(permissions, "custom_title", "") or ""
+            logger.info(f"Modifying participant settings for user {user_id} in chat {chat_id}...")
+            await tools.client(EditAdminRequest(channel=chat_id, user_id=user_entity, admin_rights=rights, rank=title_val))
+            return f"Success! Participant settings for '{user_id}' in chat {chat_id} updated. Custom Title: '{title_val}', Anonymous: {anon_val}."
+        except Exception as e:
+            return f"Error modifying chat participant settings: {str(e)}"
+
+    async def get_chat_participant_info(self, chat_id: str = None, user_id: str = "me", **kwargs) -> str:
+        """
+        Retrieves detailed participant information, rights, and membership status 
+        of a user relative to a specific chat or channel. Defaults to own account and current active chat.
+
+        Args:
+            chat_id: Target group/channel username or ID. Defaults to the current active chat.
+            user_id: The username or numerical ID of the target user. Defaults to 'me' (own account).
+        """
+        if not tools.client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = tools.current_chat_id.get()
+            except LookupError: return "Error: Could not resolve target chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+        if isinstance(user_id, str):
+            try: user_id = int(user_id)
+            except ValueError: pass
+        try:
+            target_user = "me" if str(user_id).lower() == "me" else user_id
+            user_entity = await tools.client.get_input_entity(target_user)
+            logger.info(f"Retrieving participant permissions for user {user_id} in chat {chat_id}...")
+            permissions = await tools.client.get_permissions(chat_id, user_entity)
+            from telethon.tl.functions.channels import GetParticipantRequest
+            res = await tools.client(GetParticipantRequest(channel=chat_id, participant=user_entity))
+            raw_participant = res.participant
+            custom_title = getattr(raw_participant, "rank", None) or "None"
+            status_list = []
+            if getattr(permissions, "is_creator", False): status_list.append("Creator/Owner")
+            if getattr(permissions, "is_admin", False): status_list.append("Administrator")
+            if getattr(permissions, "participant", False): status_list.append("Regular Member")
+            status_str = " | ".join(status_list) if status_list else "Not a participant (Left / Banned / External)"
+            details = [
+                f"Chat Participant Info for '{user_id}' in chat {chat_id}:",
+                f"- Status: {status_str}",
+                f"- Member Tag / Custom Title: '{custom_title}'"
+            ]
+            if getattr(permissions, "is_admin", False) or getattr(permissions, "is_creator", False):
+                details.append("- Administrative Rights:")
+                details.append(f"  * Can delete messages: {getattr(permissions, 'delete_messages', False)}")
+                details.append(f"  * Can ban/restrict users: {getattr(permissions, 'ban_users', False)}")
+                details.append(f"  * Can pin messages: {getattr(permissions, 'pin_messages', False)}")
+                details.append(f"  * Can invite users: {getattr(permissions, 'invite_users', False)}")
+                details.append(f"  * Can change group info: {getattr(permissions, 'change_info', False)}")
+                details.append(f"  * Can manage voice calls: {getattr(permissions, 'manage_call', False)}")
+                details.append(f"  * Posts anonymously: {getattr(permissions, 'anonymous', False)}")
+            if getattr(permissions, "banned_rights", None):
+                br = permissions.banned_rights
+                details.append("- Restricted / Banned Rights (Member Restrictions):")
+                details.append(f"  * Can send messages: {not getattr(br, 'send_messages', False)}")
+                details.append(f"  * Can send media: {not getattr(br, 'send_media', False)}")
+                details.append(f"  * Can send stickers/gifs: {not getattr(br, 'send_stickers', False)}")
+                details.append(f"  * Can embed links: {not getattr(br, 'embed_links', False)}")
+            return "\n".join(details)
+        except Exception as e:
+            return f"Error retrieving chat participant info: {str(e)}"
+
 # Export methods to module level
 toolkit_tg = AIToolKitTelegram()
 for attr in dir(toolkit_tg):

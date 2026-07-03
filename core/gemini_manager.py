@@ -101,7 +101,10 @@ class GeminiManager:
                 try:
                     participant = await self.client.get_permissions(chat_entity, "me")
                     is_admin = getattr(participant, "is_admin", False) or getattr(participant, "is_creator", False)
-                    custom_title = getattr(participant, "custom_title", None)
+                    from telethon.tl.functions.channels import GetParticipantRequest
+                    res = await self.client(GetParticipantRequest(channel=chat_entity, participant="me"))
+                    raw_participant = res.participant
+                    custom_title = getattr(raw_participant, "rank", None)
                     if custom_title:
                         custom_title_status = f"'{custom_title}'"
                     if is_admin:
@@ -122,15 +125,8 @@ class GeminiManager:
         admin_status = "\n".join(admin_details) if admin_details else "Regular member / Private Chat partner"
 
         env_prompt = env_template.replace("{chat_id}", str(chat_id)).replace("{chat_title}", chat_title).replace("{chat_username}", chat_username)
-        env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}"
-        
-        # Dynamically inject the active custom title straight into her profile block
-        system_prompt_injected = re.sub(
-            r"(- Your description \(about me\): [^\n]+)",
-            rf"\1\n- Your custom Member Tag (тег) in this active chat: {custom_title_status}",
-            system_prompt
-        )
-        dynamic_prompt = f"{system_prompt_injected}\n\n{env_prompt}"
+        env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}\nYour custom Member Tag / Custom Title (тег) in this chat: {custom_title_status}"
+        dynamic_prompt = f"{system_prompt}\n\n{env_prompt}"
 
         if not chat_entity or isinstance(chat_entity, (int, str)):
             chat_entity = tools.entity_cache.get(int(chat_id))
