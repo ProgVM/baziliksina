@@ -107,7 +107,6 @@ class AIResponseExecutor:
                 (re.compile(r'(?<!\\)<reply\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</reply>', re.IGNORECASE | re.DOTALL), "reply_msg"),
                 (re.compile(r'(?<!\\)<react\s+(?:msg_)?id=["\'](\d+)["\']\s+emoji=["\']([^"\']*)["\']\s*/?>', re.IGNORECASE), "react"),
                 (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/?>', re.IGNORECASE), "attach"),
-                (re.compile(r'(?<!\\)</span>', re.IGNORECASE), "noop"), # dummy safe replace
                 (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', re.IGNORECASE | re.DOTALL), "attach_tag"),
                 (re.compile(r'(?<!\\)<edit\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</edit>', re.IGNORECASE | re.DOTALL), "edit"),
                 (re.compile(r'(?<!\\)<delete\s+(?:msg_)?id=["\'](\d+)["\']\s*/?>', re.IGNORECASE), "delete"),

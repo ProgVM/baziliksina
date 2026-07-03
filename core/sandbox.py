@@ -138,7 +138,7 @@ class AsyncSandbox:
             "me": self.me,
             "result": None,
             "open": self._sandboxed_open,
-            "bot": sys.modules.get("bot"),
+            "bot": sys.modules.get("bot") or sys.modules.get("core.bot"),
             "config": SandboxedConfig(config),
             "db_manager": db_manager,
             "key_manager": key_manager,
