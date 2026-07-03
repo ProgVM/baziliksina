@@ -161,6 +161,7 @@ async def get_interpolated_prompt(client, character_file_name, use_system_prompt
     for k, v in replacements.items():
         char_prompt = char_prompt.replace(k, v)
 
-    full_technical = core_prompt
+    full_technical = f"{char_prompt}\n\n{core_prompt}"
     if rules_prompt:
         full_technical = f"{full_technical}\n\n--- SECTION 9: ACTIVE RULES OF BEHAVIOR ---\n{rules_prompt}"
+    return full_technical
