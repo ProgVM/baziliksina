@@ -32,6 +32,9 @@ class AIToolKitTelegram:
 
         if tools.ai_manager and hasattr(tools.ai_manager, "executor"):
             text = await tools.ai_manager.executor.parse_execute_and_strip_tags(text, chat_id, reply_to_msg_id or tools.current_reply_to_id.get(), str(chat_id))
+        from utils import matches_filter
+        if not matches_filter(text, config.KEYBOARD_BUTTON_WHITELIST, config.KEYBOARD_BUTTON_BLACKLIST):
+            return "Error: Outgoing message text is blocked by keyboard button configuration."
 
         edit_message_id = kwargs.pop("edit_message_id", None)
         if edit_message_id:
@@ -344,6 +347,14 @@ class AIToolKitTelegram:
                 if not found: return f"Button index {button_index} out of range."
             else:
                 return "Specify button_index or button_text."
+            # Resolve raw callback_data string of the button
+            btn_cb_str = ""
+            if target_btn and hasattr(target_btn, "data") and target_btn.data:
+                try: btn_cb_str = target_btn.data.decode('utf-8')
+                except Exception: btn_cb_str = target_btn.data.hex()
+            from utils import matches_filter
+            if btn_cb_str and not matches_filter(btn_cb_str, config.INLINE_CALLBACK_WHITELIST, config.INLINE_CALLBACK_BLACKLIST):
+                return f"Error: Inline button callback_data '{btn_cb_str}' is blocked by configuration."
             await asyncio.wait_for(message.click(i=target_i, j=target_j, **kwargs), timeout=timeout)
             return f"Button successfully clicked at row {target_i}, col {target_j}."
         except Exception as e:
@@ -425,6 +436,11 @@ class AIToolKitTelegram:
 
     async def send_telegram_media(self, chat_id: str, media_id: str, access_hash: str, file_reference_hex: str, media_type: str, caption: str = None, reply_to_msg_id: int = None, **kwargs) -> str:
         """Sends any cached Telegram media using raw MTProto identification metadata."""
+        from utils import matches_filter
+        if not matches_filter(media_id, config.OUTGOING_FILE_WHITELIST, config.OUTGOING_FILE_BLACKLIST):
+            return f"Error: Media ID '{media_id}' is blocked by configuration."
+        if not matches_filter(file_reference_hex, config.OUTGOING_FILE_WHITELIST, config.OUTGOING_FILE_BLACKLIST):
+            return f"Error: Media reference is blocked by configuration."
         if not tools.client:
             return "Error: Telethon client is not initialized."
         try:
@@ -656,8 +672,8 @@ class AIToolKitTelegram:
     async def click_keyboard_button(self, button_text: str, chat_entity: str = None, **kwargs) -> str:
         """Clicks on a normal reply keyboard button matching the provided text."""
         from utils import matches_filter
-        if not matches_filter(button_text, config.GAME_EMOJI_WHITELIST, config.GAME_EMOJI_BLACKLIST): # Dummy placeholder for keyboard button filter
-            return "Error: This keyboard button is blocked by configuration."
+        if not matches_filter(button_text, config.KEYBOARD_BUTTON_WHITELIST, config.KEYBOARD_BUTTON_BLACKLIST):
+            return f"Error: Keyboard button '{button_text}' is blocked by configuration."
         if not tools.client:
             return "Error: Telethon client is not initialized."
         if chat_entity is None:
@@ -790,6 +806,9 @@ class AIToolKitTelegram:
 
     async def send_game_emoji(self, emoji: str, chat_id: str = None, **kwargs) -> str:
         """Sends a game emoji (dice, dart, bowling, basketball, football, slot machine)."""
+        from utils import matches_filter
+        if not matches_filter(emoji, config.GAME_EMOJI_WHITELIST, config.GAME_EMOJI_BLACKLIST):
+            return f"Error: Game emoji '{emoji}' is blocked by configuration."
         if not tools.client: return "Error: Telethon client is not initialized."
         if chat_id is None:
             try: chat_id = tools.current_chat_id.get()
