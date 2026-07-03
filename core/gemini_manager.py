@@ -73,6 +73,7 @@ class GeminiManager:
         
         # Load system instructions dynamically via PromptInterpolator
         system_prompt = await get_interpolated_prompt(self.client, CHARACTER_FILE, use_system_prompt=USE_SYSTEM_PROMPT)
+        logger.info(f"Loaded system prompt from disk: {len(system_prompt)} characters.")
 
         try:
             chat_title = getattr(chat_entity, "title", None) or "Private Chat"
@@ -127,6 +128,7 @@ class GeminiManager:
         env_prompt = env_template.replace("{chat_id}", str(chat_id)).replace("{chat_title}", chat_title).replace("{chat_username}", chat_username)
         env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}\nYour custom Member Tag / Custom Title in this chat: {custom_title_status}"
         dynamic_prompt = f"{system_prompt}\n\n{env_prompt}"
+        logger.info(f"Full dynamic system_instruction passed to Gemini: {len(dynamic_prompt)} characters.")
 
         if not chat_entity or isinstance(chat_entity, (int, str)):
             chat_entity = tools.entity_cache.get(int(chat_id))
