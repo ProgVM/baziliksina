@@ -414,7 +414,17 @@ async def on_new_message(event):
     media_info = await download_and_cache_media(client, event.message, is_private, mentioned)
 
     meta_prefix = f"[Message ID: {msg_id}]\n"
-    sender_info = parse_sender_info(sender, event.message)
+    sender_role = "Member"
+    if event.is_group and sender:
+        try:
+            permissions = await client.get_permissions(event.chat_id, sender)
+            if getattr(permissions, 'is_creator', False):
+                sender_role = "Owner/Creator"
+            elif getattr(permissions, 'is_admin', False):
+                sender_role = "Admin"
+        except Exception:
+            pass
+    sender_info = f"{parse_sender_info(sender, event.message)} | Group Role: {sender_role}"
 
     is_channel_pm = False
     if isinstance(event.message.peer_id, tl_types.PeerChannel) and not event.is_group and not event.message.post:
@@ -558,6 +568,17 @@ async def on_message_edited(event):
         reply_meta = await parse_reply_metadata(event.message, chat_id, client, db)
 
     sender_info = parse_sender_info(sender, event.message)
+    sender_role = "Member"
+    if event.is_group and sender:
+        try:
+            permissions = await client.get_permissions(event.chat_id, sender)
+            if getattr(permissions, 'is_creator', False):
+                sender_role = "Owner/Creator"
+            elif getattr(permissions, 'is_admin', False):
+                sender_role = "Admin"
+        except Exception:
+            pass
+    sender_info = f"{parse_sender_info(sender, event.message)} | Group Role: {sender_role}"
     # Parse reply and inline markup on change
     from parser import parse_reply_markup
     buttons_summary = parse_reply_markup(event.message.reply_markup)

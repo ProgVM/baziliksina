@@ -94,12 +94,16 @@ class GeminiManager:
             
         is_admin = False
         admin_details = []
+        custom_title_status = "None"
         if chat_entity and not isinstance(chat_entity, (int, str)):
             is_group = getattr(chat_entity, "megagroup", False) or getattr(chat_entity, "broadcast", False) or type(chat_entity).__name__ == "Chat"
             if is_group:
                 try:
                     participant = await self.client.get_permissions(chat_entity, "me")
                     is_admin = getattr(participant, "is_admin", False) or getattr(participant, "is_creator", False)
+                    custom_title = getattr(participant, "custom_title", None)
+                    if custom_title:
+                        custom_title_status = f"'{custom_title}'"
                     if is_admin:
                         admin_details.append("Admin/Owner (You have administrative powers!)")
                         rights = []
@@ -111,9 +115,6 @@ class GeminiManager:
                         if getattr(participant, "anonymous", False): rights.append("post anonymously")
                         if rights:
                             admin_details.append(f"  * Your permissions: can {', '.join(rights)}.")
-                        custom_title = getattr(participant, "custom_title", None)
-                        if custom_title:
-                            admin_details.append(f"  * Your custom Member Tag / Title: '{custom_title}'.")
                     else:
                         admin_details.append("Regular member (No administrative powers)")
                 except Exception as e:
@@ -121,7 +122,7 @@ class GeminiManager:
         admin_status = "\n".join(admin_details) if admin_details else "Regular member / Private Chat partner"
 
         env_prompt = env_template.replace("{chat_id}", str(chat_id)).replace("{chat_title}", chat_title).replace("{chat_username}", chat_username)
-        env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}"
+        env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}\nYour custom Member Tag / Custom Title (тег) in this chat: {custom_title_status}"
         dynamic_prompt = f"{system_prompt}\n\n{env_prompt}"
 
         if not chat_entity or isinstance(chat_entity, (int, str)):
