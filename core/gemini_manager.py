@@ -125,7 +125,7 @@ class GeminiManager:
         admin_status = "\n".join(admin_details) if admin_details else "Regular member / Private Chat partner"
 
         env_prompt = env_template.replace("{chat_id}", str(chat_id)).replace("{chat_title}", chat_title).replace("{chat_username}", chat_username)
-        env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}\nYour custom Member Tag / Custom Title (тег) in this chat: {custom_title_status}"
+        env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}\nYour custom Member Tag / Custom Title in this chat: {custom_title_status}"
         dynamic_prompt = f"{system_prompt}\n\n{env_prompt}"
 
         if not chat_entity or isinstance(chat_entity, (int, str)):
@@ -205,6 +205,16 @@ class GeminiManager:
             for turn in range(max_turns):
                 # 1. Load aligned history context chronologically via ContextManager
                 contents = await self.context_mgr.get_aligned_history(chat_id, gemini_client)
+
+                # Inject dynamic custom title and admin rights directly into the active chat header
+                for content in contents:
+                    if content.parts and content.parts[0].text and "[System notification: Active conversation thread" in content.parts[0].text:
+                        content.parts[0].text = (
+                            f"{content.parts[0].text}\n"
+                            f"- Your custom Member Tag in this active chat: {custom_title_status}\n"
+                            f"- Your administrative privileges: {admin_status}"
+                        )
+                        break
 
                 # 2. High-precision token counting and context-limit checks
                 try:

@@ -415,6 +415,7 @@ async def on_new_message(event):
 
     meta_prefix = f"[Message ID: {msg_id}]\n"
     sender_role = "Member"
+    custom_tag = "None"
     if event.is_group and sender:
         try:
             permissions = await client.get_permissions(event.chat_id, sender)
@@ -422,9 +423,13 @@ async def on_new_message(event):
                 sender_role = "Owner/Creator"
             elif getattr(permissions, 'is_admin', False):
                 sender_role = "Admin"
+            from telethon.tl.functions.channels import GetParticipantRequest
+            res = await client(GetParticipantRequest(channel=event.chat_id, participant=sender))
+            custom_tag = getattr(res.participant, "rank", None) or "None"
         except Exception:
             pass
-    sender_info = f"{parse_sender_info(sender, event.message)} | Group Role: {sender_role}"
+    tag_info = f" | Member Tag: '{custom_tag}'" if custom_tag != "None" else ""
+    sender_info = f"{parse_sender_info(sender, event.message)} | Group Role: {sender_role}{tag_info}"
 
     is_channel_pm = False
     if isinstance(event.message.peer_id, tl_types.PeerChannel) and not event.is_group and not event.message.post:
@@ -569,6 +574,7 @@ async def on_message_edited(event):
 
     sender_info = parse_sender_info(sender, event.message)
     sender_role = "Member"
+    custom_tag = "None"
     if event.is_group and sender:
         try:
             permissions = await client.get_permissions(event.chat_id, sender)
@@ -576,9 +582,13 @@ async def on_message_edited(event):
                 sender_role = "Owner/Creator"
             elif getattr(permissions, 'is_admin', False):
                 sender_role = "Admin"
+            from telethon.tl.functions.channels import GetParticipantRequest
+            res = await client(GetParticipantRequest(channel=event.chat_id, participant=sender))
+            custom_tag = getattr(res.participant, "rank", None) or "None"
         except Exception:
             pass
-    sender_info = f"{parse_sender_info(sender, event.message)} | Group Role: {sender_role}"
+    tag_info = f" | Member Tag: '{custom_tag}'" if custom_tag != "None" else ""
+    sender_info = f"{parse_sender_info(sender, event.message)} | Group Role: {sender_role}{tag_info}"
     # Parse reply and inline markup on change
     from parser import parse_reply_markup
     buttons_summary = parse_reply_markup(event.message.reply_markup)
