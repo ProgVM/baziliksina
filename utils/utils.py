@@ -6,6 +6,40 @@ from pathlib import Path
 
 logger = logging.getLogger("Utils")
 
+def matches_filter(val: str, whitelist: list, blacklist: list, default_allow: bool = True) -> bool:
+    """
+    Universal checker for whitelists and blacklists.
+    Supports regex patterns, substrings, and exact matches.
+    """
+    import re
+    if not val:
+        return default_allow
+    def check_match(patterns, target_val):
+        for pattern in patterns:
+            if not pattern:
+                continue
+            if pattern.strip().lower() == "all":
+                return True
+            try:
+                if re.search(pattern, target_val, re.IGNORECASE):
+                    return True
+            except Exception:
+                if pattern.lower() in target_val.lower():
+                    return True
+        return False
+    w_list = [w.strip() for w in whitelist if w.strip()] if whitelist else []
+    b_list = [b.strip() for b in blacklist if b.strip()] if blacklist else []
+    if not w_list and not b_list:
+        return True
+    if b_list and check_match(b_list, val):
+        return False
+    if w_list:
+        if "all" in [w.lower() for w in w_list]:
+            return True
+        if not check_match(w_list, val):
+            return False
+    return True
+
 class TelegramJSONEncoder(json.JSONEncoder):
     """A custom JSON encoder that converts any Telegram data types into a serializable format."""
     def default(self, obj):
@@ -186,15 +220,16 @@ def should_process_message_event(event, me, action_type="save") -> bool:
     whitelist = config.MSG_SAVE_WHITELIST if action_type == "save" else config.MSG_GEN_WHITELIST
     blacklist = config.MSG_SAVE_BLACKLIST if action_type == "save" else config.MSG_GEN_BLACKLIST
 
-    if config.FILTER_POLICY == "blacklist_first":
-        if blacklist and matches_patterns(blacklist, text_content):
-            return False
-        if whitelist and not matches_patterns(whitelist, text_content):
-            return False
-    else:
-        if whitelist and not matches_patterns(whitelist, text_content):
-            return False
-        if blacklist and matches_patterns(blacklist, text_content):
+    if not matches_filter(text_content, whitelist, blacklist, default_allow=True):
+        return False
+
+    if event.message.media:
+        file_id = "unknown"
+        if hasattr(event.message.media, "document") and event.message.media.document:
+            file_id = str(event.message.media.document.id)
+        elif hasattr(event.message.media, "photo") and event.message.media.photo:
+            file_id = str(event.message.media.photo.id)
+        if not matches_filter(file_id, config.INCOMING_FILE_WHITELIST, config.INCOMING_FILE_BLACKLIST):
             return False
 
     # 5. Additional Generation Triggers check

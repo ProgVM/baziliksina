@@ -71,14 +71,13 @@ class SandboxedConfig:
     """Secure proxy for config module that hides sensitive API keys and hashes from sandboxed code."""
     def __init__(self, original_config):
         self._original = original_config
-        self._redacted_keys = {
-            "API_HASH", "TELEGRAM_API_HASH", "GEMINI_API_KEYS", "GEMINI_KEYS", 
-            "POLLINATIONS_KEYS", "TOR_PASSWORD", "ALL_PROXY", "all_proxy",
-            "TELEGRAM_PROXIES", "GEMINI_PROXIES", "POLLINATIONS_PROXIES", "SCRAPER_PROXIES"
-        }
 
     def __getattr__(self, name):
-        if name in self._redacted_keys:
+        from utils import matches_filter
+        import config
+        whitelist = getattr(config, "SANDBOX_CONFIG_WHITELIST", [])
+        blacklist = getattr(config, "SANDBOX_CONFIG_BLACKLIST", [])
+        if not matches_filter(name, whitelist, blacklist, default_allow=True):
             return "[REDACTED_SECURITY_SENSITIVE_DATA]"
         attr = getattr(self._original, name)
         return attr

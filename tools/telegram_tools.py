@@ -108,6 +108,9 @@ class AIToolKitTelegram:
 
     async def execute_telegram_action(self, method_name: str, args_json: str, timeout: float = 60.0, wait_response_seconds: float = BOT_RESPONSE_TIMEOUT, **kwargs) -> str:
         """Calls helper asynchronous Telethon client methods or sends raw Telegram API requests."""
+        from utils import matches_filter
+        if not matches_filter(method_name, config.TELEGRAM_ACTION_WHITELIST, config.TELEGRAM_ACTION_BLACKLIST):
+            return f"Calling method '{method_name}' is blocked by the security system."
         if not tools.client:
             return "Error: Telethon client is not initialized."
         if any(x in method_name.lower() for x in TELEGRAM_METHOD_BLACKLIST):
@@ -457,7 +460,10 @@ class AIToolKitTelegram:
             except ValueError: pass
         try:
             resolved_files = []
+            from utils import matches_filter
             for f in files:
+                if not matches_filter(f, config.OUTGOING_FILE_WHITELIST, config.OUTGOING_FILE_BLACKLIST):
+                    return f"Error: File '{f}' is blocked by configuration."
                 f_path = WORKSPACE_DIR / os.path.basename(f)
                 if f_path.exists(): resolved_files.append(str(f_path.resolve()))
                 else: return f"Error: File '{f}' not found."
@@ -649,6 +655,9 @@ class AIToolKitTelegram:
 
     async def click_keyboard_button(self, button_text: str, chat_entity: str = None, **kwargs) -> str:
         """Clicks on a normal reply keyboard button matching the provided text."""
+        from utils import matches_filter
+        if not matches_filter(button_text, config.GAME_EMOJI_WHITELIST, config.GAME_EMOJI_BLACKLIST): # Dummy placeholder for keyboard button filter
+            return "Error: This keyboard button is blocked by configuration."
         if not tools.client:
             return "Error: Telethon client is not initialized."
         if chat_entity is None:
@@ -697,6 +706,9 @@ class AIToolKitTelegram:
 
     async def send_bot_command(self, bot_username: str, command: str, payload: str = None, chat_id: str = None, **kwargs) -> str:
         """Sends a command to a bot with an optional payload."""
+        from utils import matches_filter
+        if not matches_filter(command, config.BOT_COMMAND_WHITELIST, config.BOT_COMMAND_BLACKLIST):
+            return "Error: This bot command is blocked by configuration."
         if not tools.client:
             return "Error: Telethon client is not initialized."
         try:

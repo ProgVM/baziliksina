@@ -406,6 +406,30 @@ PACIFIC_DAYLIGHT_TIME_OFFSET = int(os.getenv("PACIFIC_DAYLIGHT_TIME_OFFSET", -7)
 GEMINI_MIN_COOLDOWN_SECONDS = int(os.getenv("GEMINI_MIN_COOLDOWN_SECONDS", 5))
 GEMINI_DAILY_LIMIT_COOLDOWN = int(os.getenv("GEMINI_DAILY_LIMIT_COOLDOWN", 86400))
 
+SANDBOX_CONFIG_WHITELIST = _parse_list("SANDBOX_CONFIG_WHITELIST", ["all"])
+SANDBOX_CONFIG_BLACKLIST = _parse_list("SANDBOX_CONFIG_BLACKLIST", ["API_HASH", "TELEGRAM_API_HASH", "GEMINI_API_KEYS", "GEMINI_KEYS", "POLLINATIONS_KEYS", "TOR_PASSWORD", "ALL_PROXY", "all_proxy", "TELEGRAM_PROXIES", "GEMINI_PROXIES", "POLLINATIONS_PROXIES", "SCRAPER_PROXIES"])
+
+GAME_EMOJI_WHITELIST = _parse_list("GAME_EMOJI_WHITELIST", ["🎲", "🎯", "🎳", "🏀", "⚽", "🎰"])
+GAME_EMOJI_BLACKLIST = _parse_list("GAME_EMOJI_BLACKLIST", [])
+
+SANDBOX_COMMAND_WHITELIST = _parse_list("SANDBOX_COMMAND_WHITELIST", ["all"])
+SANDBOX_COMMAND_BLACKLIST = _parse_list("SANDBOX_COMMAND_BLACKLIST", ["rm", "sudo", "reboot", "shutdown", "init", "passwd", "chown", "chmod", "dd", "mkfs", "parted", "fdisk", "mkswap", "killall", "pkill", "kill", "mv", "systemctl", "service"])
+
+BOT_COMMAND_WHITELIST = _parse_list("BOT_COMMAND_WHITELIST", ["all"])
+BOT_COMMAND_BLACKLIST = _parse_list("BOT_COMMAND_BLACKLIST", [])
+
+OUTGOING_FILE_WHITELIST = _parse_list("OUTGOING_FILE_WHITELIST", ["all"])
+OUTGOING_FILE_BLACKLIST = _parse_list("OUTGOING_FILE_BLACKLIST", [])
+
+TELEGRAM_ACTION_WHITELIST = _parse_list("TELEGRAM_ACTION_WHITELIST", ["all"])
+TELEGRAM_ACTION_BLACKLIST = _parse_list("TELEGRAM_ACTION_BLACKLIST", ["log_out", "delete_account", "disconnect", "sign_in", "send_code_request", "switch_account"])
+
+SANDBOX_PYTHON_WHITELIST = _parse_list("SANDBOX_PYTHON_WHITELIST", ["all"])
+SANDBOX_PYTHON_BLACKLIST = _parse_list("SANDBOX_PYTHON_BLACKLIST", ["os.system", "os.popen", "subprocess", "shutil.rmtree", "eval", "exec"])
+
+INCOMING_FILE_WHITELIST = _parse_list("INCOMING_FILE_WHITELIST", ["all"])
+INCOMING_FILE_BLACKLIST = _parse_list("INCOMING_FILE_BLACKLIST", [])
+
 _api_keys_raw = os.getenv("WEB_SERVER_API_KEYS", "")
 if _api_keys_raw:
     try:

@@ -116,6 +116,9 @@ async def call_pollinations_api(url: str, params: dict, timeout: float) -> httpx
 class AIToolKitSystem:
     async def execute_python_code(self, code: str, **kwargs) -> str:
         """Executes asynchronous Python code in a safe isolated sandbox VM and returns the result."""
+        from utils import matches_filter
+        if not matches_filter(code, config.SANDBOX_PYTHON_WHITELIST, config.SANDBOX_PYTHON_BLACKLIST):
+            return "Security error: This Python code is blocked by the sandbox policy."
         from sandbox import AsyncSandbox
         try:
             cid = tools.current_chat_id.get()
@@ -159,7 +162,8 @@ class AIToolKitSystem:
 
     async def run_sandboxed_command(self, command: str, **kwargs) -> str:
         """Runs a standard system bash/shell command securely in the sandbox."""
-        if FORBIDDEN_SHELL_REGEX.search(command):
+        from utils import matches_filter
+        if not matches_filter(command, config.SANDBOX_COMMAND_WHITELIST, config.SANDBOX_COMMAND_BLACKLIST):
             return "Security error: This shell command contains blocked terms."
         try:
             proc = await asyncio.create_subprocess_shell(
