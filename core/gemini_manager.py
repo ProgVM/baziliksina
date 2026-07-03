@@ -93,15 +93,32 @@ class GeminiManager:
             env_template = "You are in chat {chat_id}."
             
         is_admin = False
+        admin_details = []
         if chat_entity and not isinstance(chat_entity, (int, str)):
             is_group = getattr(chat_entity, "megagroup", False) or getattr(chat_entity, "broadcast", False) or type(chat_entity).__name__ == "Chat"
             if is_group:
                 try:
                     participant = await self.client.get_permissions(chat_entity, "me")
                     is_admin = getattr(participant, "is_admin", False) or getattr(participant, "is_creator", False)
+                    if is_admin:
+                        admin_details.append("Admin/Owner (You have administrative powers!)")
+                        rights = []
+                        if getattr(participant, "delete_messages", False): rights.append("delete messages")
+                        if getattr(participant, "ban_users", False): rights.append("ban/restrict users")
+                        if getattr(participant, "pin_messages", False): rights.append("pin messages")
+                        if getattr(participant, "invite_users", False): rights.append("invite users")
+                        if getattr(participant, "change_info", False): rights.append("change group info")
+                        if getattr(participant, "anonymous", False): rights.append("post anonymously")
+                        if rights:
+                            admin_details.append(f"  * Your permissions: can {', '.join(rights)}.")
+                        custom_title = getattr(participant, "custom_title", None)
+                        if custom_title:
+                            admin_details.append(f"  * Your custom Member Tag / Title: '{custom_title}'.")
+                    else:
+                        admin_details.append("Regular member (No administrative powers)")
                 except Exception as e:
                     logger.debug(f"Failed to check admin rights: {str(e)}")
-        admin_status = "Admin/Owner (You have administrative privileges to delete, pin, restrict, mute, ban, etc.)" if is_admin else "Regular member (You have standard member privileges, no administrative powers)"
+        admin_status = "\n".join(admin_details) if admin_details else "Regular member / Private Chat partner"
 
         env_prompt = env_template.replace("{chat_id}", str(chat_id)).replace("{chat_title}", chat_title).replace("{chat_username}", chat_username)
         env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}"
