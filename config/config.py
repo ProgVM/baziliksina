@@ -436,6 +436,12 @@ INLINE_CALLBACK_BLACKLIST = _parse_list("INLINE_CALLBACK_BLACKLIST", [])
 KEYBOARD_BUTTON_WHITELIST = _parse_list("KEYBOARD_BUTTON_WHITELIST", ["all"])
 KEYBOARD_BUTTON_BLACKLIST = _parse_list("KEYBOARD_BUTTON_BLACKLIST", [])
 
+AI_TAG_WHITELIST = _parse_list("AI_TAG_WHITELIST", ["all"])
+AI_TAG_BLACKLIST = _parse_list("AI_TAG_BLACKLIST", [])
+
+AI_BLOCK_WHITELIST = _parse_list("AI_BLOCK_WHITELIST", ["all"])
+AI_BLOCK_BLACKLIST = _parse_list("AI_BLOCK_BLACKLIST", [])
+
 _api_keys_raw = os.getenv("WEB_SERVER_API_KEYS", "")
 if _api_keys_raw:
     try:

@@ -206,9 +206,24 @@ class DBManager:
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-
             # 11. Settings overrides table for multi-tier dynamic config
             await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+
+            # 12. Storage of code and metadata of dynamic custom tags and blocks
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS custom_tags_blocks (
+                    name TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,             -- 'tag' or 'block'
+                    description TEXT DEFAULT NULL,
+                    code TEXT NOT NULL,             -- Python handler code
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -622,6 +637,45 @@ class DBManager:
         """Removes a dynamic setting override from the database."""
         await self.db.execute("DELETE FROM settings WHERE key = ?", (key,))
         await self.db.commit()
+
+    # --- Managing custom dynamic tags and blocks in the DB ---
+    async def save_custom_tag_block(self, name: str, type_str: str, description: str, code: str):
+        """Saves or updates a custom tag or block in the database."""
+        await self.db.execute("""
+            INSERT INTO custom_tags_blocks (name, type, description, code)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                type = excluded.type,
+                description = excluded.description,
+                code = excluded.code
+        """, (name, type_str, description, code))
+        await self.db.commit()
+
+    async def get_custom_tag_block(self, name: str) -> dict:
+        """Returns metadata and code of a specific custom tag/block."""
+        async with self.db.execute("SELECT * FROM custom_tags_blocks WHERE name = ?", (name,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+
+    async def get_all_custom_tags_blocks(self) -> list:
+        """Returns a list of all registered custom tags and blocks."""
+        async with self.db.execute("SELECT * FROM custom_tags_blocks") as cursor:
+            rows = await cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in rows]
+
+    async def delete_custom_tag_block(self, name: str) -> bool:
+        """Deletes a custom tag or block from the database."""
+        async with self.db.execute("SELECT 1 FROM custom_tags_blocks WHERE name = ?", (name,)) as cursor:
+            exists = await cursor.fetchone()
+        if not exists:
+            return False
+        await self.db.execute("DELETE FROM custom_tags_blocks WHERE name = ?", (name,))
+        await self.db.commit()
+        return True
 
     async def close(self):
         """Closes the active database connection."""

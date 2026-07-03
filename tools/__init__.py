@@ -22,6 +22,7 @@ from tools.web_tools import *
 from tools.telegram_tools import *
 from tools.scheduler_tools import *
 from tools.media_tools import *
+from tools.tag_block_tools import *
 
 ROOT_TOOL_CATEGORIES = {
     "send_media_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
@@ -107,6 +108,10 @@ def register_system_tools():
                 is_custom=False
             )
     logger.info(f"Automatic registration completed. Successfully imported system tools: {len(ROOT_TOOL_CATEGORIES)}")
+    
+    # Register system tags and blocks
+    from tools.tag_block_tools import register_system_tags_blocks
+    register_system_tags_blocks()
 
 # Export dynamically for top-level access
 for attr_name in list(globals().keys()):

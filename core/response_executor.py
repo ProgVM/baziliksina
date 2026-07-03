@@ -175,82 +175,27 @@ class AIResponseExecutor:
                 nonlocal should_ignore
                 s_type, s_data = segment
                 
-                if s_type == "msg":
-                    raw_text = s_data["text"]
-                    unescaped_text = raw_text.replace(r'\[', '[').replace(r'\]', ']')
-                    unescaped_text = unescaped_text.replace(r'\<', '<').replace(r'\>', '>')
-                    formatted_html = safe_telegram_html(unescaped_text)
+                from utils import matches_filter
+                from registry import tag_block_registry
+                if not matches_filter(s_type, config.AI_TAG_WHITELIST, config.AI_TAG_BLACKLIST):
+                    logger.warning(f"AI tag '{s_type}' is blocked by configuration. Skipping.")
+                    return
+                handler_meta = tag_block_registry.get(s_type)
+                if handler_meta:
                     try:
-                        result = await self.client.send_message(chat_entity, formatted_html, reply_to=reply_to_id, parse_mode="html")
-                        await self.db.save_message(str(chat_id), "model", unescaped_text, msg_id=result.id)
-                        import bot
-                        bot.processed_msg_ids.add((int(chat_id), result.id))
-                    except Exception as tg_err:
-                        logger.error(f"Failed to deliver msg: {str(tg_err)}")
-                    
-                elif s_type == "reply_msg":
-                    raw_text = s_data["text"]
-                    unescaped_text = raw_text.replace(r'\[', '[').replace(r'\]', ']')
-                    unescaped_text = unescaped_text.replace(r'\<', '<').replace(r'\>', '>')
-                    formatted_html = safe_telegram_html(unescaped_text)
-                    try:
-                        result = await self.client.send_message(chat_entity, formatted_html, reply_to=int(s_data["msg_id"]), parse_mode="html")
-                        await self.db.save_message(str(chat_id), "model", unescaped_text, msg_id=result.id)
-                        import bot
-                        bot.processed_msg_ids.add((int(chat_id), result.id))
-                    except Exception as tg_err:
-                        logger.error(f"Failed to deliver reply msg: {str(tg_err)}")
-                    
-                elif s_type == "react":
-                    emoji = s_data["emoji"]
-                    is_add = emoji.lower() != "none"
-                    await tools.toolkit.set_message_reaction(chat_entity, s_data["msg_id"], reaction_emoji=emoji if is_add else None, is_add=is_add)
-                    
-                elif s_type == "attach":
-                    await tools.toolkit.send_media_message(chat_id=chat_entity, files=s_data["files"], caption=s_data["caption"])
-                    
-                elif s_type == "edit":
-                    await tools.toolkit.edit_message(chat_entity, s_data["msg_id"], s_data["text"])
-                    
-                elif s_type == "delete":
-                    await tools.toolkit.delete_message(chat_entity, s_data["msg_id"])
-                    
-                elif s_type == "noop":
-                    tools.toolkit.no_op_ignore(s_data["reason"], continue_loop=s_data["continue"])
-                    if not s_data["continue"]:
-                        should_ignore = True
-                        
-                elif s_type == "tool":
-                    t_name = s_data["tool_name"]
-                    t_args_str = s_data["args_str"]
-                    t_args = {}
-                    try:
-                        t_args = json.loads(t_args_str)
-                    except Exception:
-                        pairs = re.findall(r'(\w+)=["\']([^"\']*)["\']', t_args_str)
-                        if pairs:
-                            t_args = {k: v for k, v in pairs}
-                        else:
-                            import ast
-                            try:
-                                tree = ast.parse(f"f({t_args_str})")
-                                for kw in tree.body[0].value.keywords:
-                                    t_args[kw.arg] = ast.literal_eval(kw.value)
-                            except Exception:
-                                t_args = {"query": t_args_str, "text": t_args_str}
-                            
-                    tool_meta = registry.get(t_name)
-                    if tool_meta:
-                        try:
-                            if inspect.iscoroutinefunction(tool_meta.callable):
-                                tool_res = await tool_meta.callable(**t_args)
-                            else:
-                                tool_res = tool_meta.callable(**t_args)
-                            await self.db.save_message(str(chat_id), "user", f"[System: Tool '{t_name}' executed. Result: {tool_res}]")
-                        except Exception as terr:
-                            logger.error(f"Error executing tool label {t_name}: {str(terr)}")
+                        await handler_meta.callable(s_data, chat_entity, reply_to_id, chat_id, self.client, self.db)
+                        if s_type in ["noop", "no_op_ignore"] and not s_data.get("continue", False):
+                            should_ignore = True
+                    except Exception as err:
+                        logger.error(f"Error executing tag '{s_type}': {str(err)}")
+                else:
+                    logger.warning(f"Tag handler '{s_type}' is not registered.")
 
             # Block Execution Scheduling (Sequential / Parallel / Background tasks)
+            from utils import matches_filter
+            if not matches_filter(b_type, config.AI_BLOCK_WHITELIST, config.AI_BLOCK_BLACKLIST):
+                logger.warning(f"AI block '{b_type}' is blocked by configuration. Falling back to 'seq'.")
+                b_type = "seq"
             if b_type == "seq":
                 for segment in merged_segments:
                     await execute_segment(segment)
@@ -360,42 +305,16 @@ class AIResponseExecutor:
             
             async def execute_segment(segment):
                 s_type, s_data = segment
-                if s_type == "react":
-                    emoji = s_data["emoji"]
-                    is_add = emoji.lower() != "none"
-                    await tools.toolkit.set_message_reaction(chat_entity, s_data["msg_id"], reaction_emoji=emoji if is_add else None, is_add=is_add)
-                elif s_type == "attach":
-                    await tools.toolkit.send_media_message(chat_id=chat_entity, files=s_data["files"], caption=s_data["caption"])
-                elif s_type == "edit":
-                    await tools.toolkit.edit_message(chat_entity, s_data["msg_id"], s_data["text"])
-                elif s_type == "delete":
-                    await tools.toolkit.delete_message(chat_entity, s_data["msg_id"])
-                elif s_type == "noop":
-                    tools.toolkit.no_op_ignore(s_data["reason"], continue_loop=s_data["continue"])
-                elif s_type == "tool":
-                    t_name = s_data["tool_name"]
-                    t_args_str = s_data["args_str"]
-                    t_args = {}
+                from utils import matches_filter
+                from registry import tag_block_registry
+                if not matches_filter(s_type, config.AI_TAG_WHITELIST, config.AI_TAG_BLACKLIST):
+                    return
+                handler_meta = tag_block_registry.get(s_type)
+                if handler_meta:
                     try:
-                        t_args = json.loads(t_args_str)
+                        await handler_meta.callable(s_data, chat_entity, reply_to_id, chat_id, self.client, self.db)
                     except Exception:
-                        pairs = re.findall(r'(\w+)=["\']([^"\']*)["\']', t_args_str)
-                        if pairs: t_args = {k: v for k, v in pairs}
-                        else:
-                            import ast
-                            try:
-                                tree = ast.parse(f"f({t_args_str})")
-                                for kw in tree.body[0].value.keywords:
-                                    t_args[kw.arg] = ast.literal_eval(kw.value)
-                            except Exception: t_args = {"query": t_args_str, "text": t_args_str}
-                    tool_meta = registry.get(t_name)
-                    if tool_meta:
-                        try:
-                            if inspect.iscoroutinefunction(tool_meta.callable):
-                                asyncio.create_task(tool_meta.callable(**t_args))
-                            else:
-                                tool_meta.callable(**t_args)
-                        except Exception: pass
+                        pass
 
             if b_type == "seq":
                 for segment in segments: await execute_segment(segment)

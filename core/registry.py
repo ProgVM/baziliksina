@@ -77,6 +77,49 @@ class FunctionRegistry:
         logger.info(f"Cleared custom tools from the active registry: {len(custom_names)}")
 
 
+class TagBlockMetadata:
+    """Metadata class for storing complete information about registered tags, labels, and blocks."""
+    def __init__(self, name: str, type_str: str, callable_func: callable, description: str = None, is_custom: bool = False, code: str = None):
+        self.name = name
+        self.type = type_str  # 'tag' or 'block'
+        self.callable = callable_func
+        self.description = description or getattr(callable_func, "__doc__", "") or "No description."
+        self.is_custom = is_custom
+        self.code = code
+
+class TagBlockRegistry:
+    """Thread-safe singleton registry of all available AI system/custom tags and blocks."""
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if not cls._instance:
+            cls._instance = super().__new__(cls)
+            cls._instance._registry = {} # {name_str: TagBlockMetadata}
+        return cls._instance
+
+    def register(self, name: str, type_str: str, callable_func: callable, description: str = None, is_custom: bool = False, code: str = None):
+        self._registry[name] = TagBlockMetadata(name, type_str, callable_func, description, is_custom, code)
+        logger.debug(f"Tag/Block '{name}' [{'custom' if is_custom else 'system'}] successfully registered.")
+
+    def unregister(self, name: str) -> bool:
+        if name in self._registry:
+            del self._registry[name]
+            return True
+        return False
+
+    def get(self, name: str) -> TagBlockMetadata:
+        return self._registry.get(name)
+
+    def get_all(self) -> list:
+        return list(self._registry.values())
+
+    def clear_custom(self):
+        custom_names = [name for name, item in self._registry.items() if item.is_custom]
+        for name in custom_names:
+            del self._registry[name]
+
+tag_block_registry = TagBlockRegistry()
+
 # Global registry singleton object
 registry = FunctionRegistry()
 
