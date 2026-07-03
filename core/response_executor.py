@@ -15,6 +15,19 @@ import tools
 
 logger = logging.getLogger("ResponseExecutor")
 
+METADATA_CLEAN_PATTERNS = [
+    re.compile(r'(?<!\\)\[Chat:\s*-?\d+\s*\|\s*Message ID:\s*(?:\d+|unknown)(?:\s*\|\s*Date:[^\]]+)?\]\s*\n?', re.IGNORECASE),
+    re.compile(r'(?<!\\)\[Original\s+text\s+\([^)]+\):\s*.*?\]\s*\n?', re.IGNORECASE),
+    re.compile(r'(?<!\\)\[Reply\s+to\s+message\s+#?\d+(?:\s+in\s+[^\]]+)?\]\s*\n?', re.IGNORECASE),
+    re.compile(r'(?<!\\)\[Selected\s+fragment\s+/\s+Quote\]:\s*[\'"].*?[\'"]\s*\n?', re.IGNORECASE),
+    re.compile(r'(?<!\\)\[Selected\s+fragment\s+/\s+Quote\]:\s*[^\n]+\s*\n?', re.IGNORECASE),
+    re.compile(r'(?<!\\)\[Reactions\s+on\s+message\]:\s*[^\n]+\s*\n?', re.IGNORECASE),
+    re.compile(r'(?<!\\)\[System\s+notification:\s*[^\]]+\]\s*\n?', re.IGNORECASE),
+    re.compile(r'(?<!\\)\[Inline\s+buttons\s+[^\]]+\]:\s*[^\n]+\s*\n?', re.IGNORECASE),
+    re.compile(r'(?<!\\)\[Reply\s+Keyboard\s+buttons\s+[^\]]+\]:\s*[^\n]+\s*\n?', re.IGNORECASE),
+    re.compile(r'(?<!\\)\[Attached\s+Media\s+-\s*[^\]]+\]\s*\n?', re.IGNORECASE)
+]
+
 
 class AIResponseExecutor:
     def __init__(self, telegram_client, db_manager):
@@ -30,8 +43,8 @@ class AIResponseExecutor:
         cleaned_text = text
 
         # 1. Clean technical cross-chat prefixes [Chat: ... | Message ID: ...] and leaked thoughts headers
-        prefix_pattern = re.compile(r'\[Chat:\s*-?\d+\s*\|\s*Message ID:\s*(?:\d+|unknown)(?:\s*\|\s*Date:[^\]]+)?\]\s*\n?', re.IGNORECASE)
-        cleaned_text = prefix_pattern.sub("", cleaned_text).strip()
+        for pattern in METADATA_CLEAN_PATTERNS:
+            cleaned_text = pattern.sub("", cleaned_text)
         
         thought_pattern = re.compile(r'^(?:thought|thinking|thoughts)(?:\s*:\s*|\s*\n+)?', re.IGNORECASE)
         cleaned_text = thought_pattern.sub("", cleaned_text).strip()
@@ -91,14 +104,15 @@ class AIResponseExecutor:
                     all_matches.append((match.start(), match.end(), name, data))
                     
             xml_regexes_compiled = [
-                (re.compile(r'<reply\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</reply>', re.IGNORECASE | re.DOTALL), "reply_msg"),
-                (re.compile(r'<react\s+(?:msg_)?id=["\'](\d+)["\']\s+emoji=["\']([^"\']*)["\']\s*/?>', re.IGNORECASE), "react"),
-                (re.compile(r'<attach\s+files=["\']([^"\']*)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/?>', re.IGNORECASE), "attach"),
-                (re.compile(r'<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', re.IGNORECASE | re.DOTALL), "attach_tag"),
-                (re.compile(r'<edit\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</edit>', re.IGNORECASE | re.DOTALL), "edit"),
-                (re.compile(r'<delete\s+(?:msg_)?id=["\'](\d+)["\']\s*/?>', re.IGNORECASE), "delete"),
-                (re.compile(r'<noop\s+reason=["\']([^"\']*)["\'](?:\s+continue=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "noop"),
-                (re.compile(r'<tool\s+name=["\']([a-zA-Z0-9_]+)["\']\s*([^>]*)\s*/?>', re.IGNORECASE), "tool")
+                (re.compile(r'(?<!\\)<reply\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</reply>', re.IGNORECASE | re.DOTALL), "reply_msg"),
+                (re.compile(r'(?<!\\)<react\s+(?:msg_)?id=["\'](\d+)["\']\s+emoji=["\']([^"\']*)["\']\s*/?>', re.IGNORECASE), "react"),
+                (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/?>', re.IGNORECASE), "attach"),
+                (re.compile(r'(?<!\\)</span>', re.IGNORECASE), "noop"), # dummy safe replace
+                (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', re.IGNORECASE | re.DOTALL), "attach_tag"),
+                (re.compile(r'(?<!\\)<edit\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</edit>', re.IGNORECASE | re.DOTALL), "edit"),
+                (re.compile(r'(?<!\\)<delete\s+(?:msg_)?id=["\'](\d+)["\']\s*/?>', re.IGNORECASE), "delete"),
+                (re.compile(r'(?<!\\)<noop\s+reason=["\']([^"\']*)["\'](?:\s+continue=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "noop"),
+                (re.compile(r'(?<!\\)<tool\s+name=["\']([a-zA-Z0-9_]+)["\']\s*([^>]*)\s*/?>', re.IGNORECASE), "tool")
             ]
             
             for regex, name in xml_regexes_compiled:
@@ -165,6 +179,7 @@ class AIResponseExecutor:
                 if s_type == "msg":
                     raw_text = s_data["text"]
                     unescaped_text = raw_text.replace(r'\[', '[').replace(r'\]', ']')
+                    unescaped_text = unescaped_text.replace(r'\<', '<').replace(r'\>', '>')
                     formatted_html = safe_telegram_html(unescaped_text)
                     try:
                         result = await self.client.send_message(chat_entity, formatted_html, reply_to=reply_to_id, parse_mode="html")
@@ -177,6 +192,7 @@ class AIResponseExecutor:
                 elif s_type == "reply_msg":
                     raw_text = s_data["text"]
                     unescaped_text = raw_text.replace(r'\[', '[').replace(r'\]', ']')
+                    unescaped_text = unescaped_text.replace(r'\<', '<').replace(r'\>', '>')
                     formatted_html = safe_telegram_html(unescaped_text)
                     try:
                         result = await self.client.send_message(chat_entity, formatted_html, reply_to=int(s_data["msg_id"]), parse_mode="html")
@@ -257,8 +273,8 @@ class AIResponseExecutor:
             return text
         
         # 1. Clean technical prefixes and thought logs
-        prefix_pattern = re.compile(r'\[Chat:\s*-?\d+\s*\|\s*Message ID:\s*(?:\d+|unknown)\]\s*\n?', re.IGNORECASE)
-        cleaned_text = prefix_pattern.sub("", text).strip()
+        for pattern in METADATA_CLEAN_PATTERNS:
+            cleaned_text = pattern.sub("", cleaned_text)
         
         thought_pattern = re.compile(r'^(?:thought|thinking|thoughts)(?:\s*:\s*|\s*\n+)?', re.IGNORECASE)
         cleaned_text = thought_pattern.sub("", cleaned_text).strip()
@@ -313,14 +329,14 @@ class AIResponseExecutor:
                     all_matches.append((match.start(), match.end(), name, data))
                     
             xml_regexes_compiled = [
-                (re.compile(r'<reply\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</reply>', re.IGNORECASE | re.DOTALL), "reply_msg"),
-                (re.compile(r'<react\s+(?:msg_)?id=["\'](\d+)["\']\s+emoji=["\']([^"\']*)["\']\s*/?>', re.IGNORECASE), "react"),
-                (re.compile(r'<attach\s+files=["\']([^"\']*)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/?>', re.IGNORECASE), "attach"),
-                (re.compile(r'<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', re.IGNORECASE | re.DOTALL), "attach_tag"),
-                (re.compile(r'<edit\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</edit>', re.IGNORECASE | re.DOTALL), "edit"),
-                (re.compile(r'<delete\s+(?:msg_)?id=["\'](\d+)["\']\s*/?>', re.IGNORECASE), "delete"),
-                (re.compile(r'<noop\s+reason=["\']([^"\']*)["\'](?:\s+continue=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "noop"),
-                (re.compile(r'<tool\s+name=["\']([a-zA-Z0-9_]+)["\']\s*([^>]*)\s*/?>', re.IGNORECASE), "tool")
+                (re.compile(r'(?<!\\)<reply\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</reply>', re.IGNORECASE | re.DOTALL), "reply_msg"),
+                (re.compile(r'(?<!\\)<react\s+(?:msg_)?id=["\'](\d+)["\']\s+emoji=["\']([^"\']*)["\']\s*/?>', re.IGNORECASE), "react"),
+                (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/?>', re.IGNORECASE), "attach"),
+                (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', re.IGNORECASE | re.DOTALL), "attach_tag"),
+                (re.compile(r'(?<!\\)<edit\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</edit>', re.IGNORECASE | re.DOTALL), "edit"),
+                (re.compile(r'(?<!\\)<delete\s+(?:msg_)?id=["\'](\d+)["\']\s*/?>', re.IGNORECASE), "delete"),
+                (re.compile(r'(?<!\\)<noop\s+reason=["\']([^"\']*)["\'](?:\s+continue=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "noop"),
+                (re.compile(r'(?<!\\)<tool\s+name=["\']([a-zA-Z0-9_]+)["\']\s*([^>]*)\s*/?>', re.IGNORECASE), "tool")
             ]
             
             for regex, name in xml_regexes_compiled:
@@ -420,5 +436,7 @@ class AIResponseExecutor:
             clean_parts.append(cleaned_text[last_idx:start])
             last_idx = end
         clean_parts.append(cleaned_text[last_idx:])
-        
-        return "".join(clean_parts).strip()
+        final_stripped = "".join(clean_parts).strip()
+        final_stripped = final_stripped.replace(r'\[', '[').replace(r'\]', ']')
+        final_stripped = final_stripped.replace(r'\<', '<').replace(r'\>', '>')
+        return final_stripped
