@@ -4,13 +4,82 @@ from telethon.tl import types as tl_types
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
-
 from downloader import get_cached_premium_emoji, get_cached_avatar, get_cached_gift_animation
 from utils import safe_serialize, safe_deserialize
 
 logger = logging.getLogger("Parser")
 
+def parse_reply_markup(markup) -> str:
+    """Parses both inline and reply keyboard buttons to log them inside metadata."""
+    if not markup:
+        return ""
+    
+    markup_name = type(markup).__name__
+    buttons_text = []
+    
+    if hasattr(markup, 'rows'):
+        for row in markup.rows:
+            row_btns = []
+            for btn in row.buttons:
+                btn_type = type(btn).__name__
+                btn_info = f"'{btn.text}'"
+                if btn_type == "KeyboardButtonCallback":
+                    if hasattr(btn, 'data') and btn.data:
+                        try:
+                            btn_info += f" (callback_data: '{btn.data.decode('utf-8')}')"
+                        except Exception:
+                            btn_info += f" (callback_hex: '{btn.data.hex()}')"
+                elif btn_type == "KeyboardButtonUrl":
+                    if hasattr(btn, 'url') and btn.url:
+                        btn_info += f" (url: '{btn.url}')"
+                elif btn_type == "KeyboardButtonRequestPhone":
+                    btn_info += " (requests phone)"
+                elif btn_type == "KeyboardButtonRequestGeo":
+                    btn_info += " (requests location)"
+                elif btn_type == "KeyboardButtonRequestPoll":
+                    btn_info += " (requests poll)"
+                elif btn_type == "KeyboardButtonSwitchInline":
+                    btn_info += f" (switch_inline: '{getattr(btn, 'query', '')}')"
+                row_btns.append(btn_info)
+            if row_btns:
+                buttons_text.append(" | ".join(row_btns))
+                
+    if not buttons_text:
+        return ""
+        
+    kind = "Inline buttons" if "inline" in markup_name.lower() or "callback" in str(buttons_text).lower() or "url" in str(buttons_text).lower() else "Reply Keyboard buttons"
+    return f"[{kind} in this message]:\\n" + "\\n".join(buttons_text)
 
+def get_phone_region(phone: str) -> str:
+    """Extracts country/region name from a phone prefix."""
+    if not phone:
+        return "Unknown"
+    p = phone.strip("+")
+    if p.startswith("1"):
+        return "United States / Canada"
+    elif p.startswith("7"):
+        return "Russia / Kazakhstan"
+    elif p.startswith("380"):
+        return "Ukraine"
+    elif p.startswith("375"):
+        return "Belarus"
+    elif p.startswith("44"):
+        return "United Kingdom"
+    elif p.startswith("49"):
+        return "Germany"
+    elif p.startswith("33"):
+        return "France"
+    elif p.startswith("86"):
+        return "China"
+    elif p.startswith("91"):
+        return "India"
+    elif p.startswith("994"):
+        return "Azerbaijan"
+    elif p.startswith("996"):
+        return "Kyrgyzstan"
+    elif p.startswith("998"):
+        return "Uzbekistan"
+    return "International Prefix"
 def get_media_type_description(message) -> str:
     """
     Analyzes the message media and returns a clean, plain English string 
@@ -180,6 +249,16 @@ async def parse_and_cache_user_metadata(client, db, user) -> dict:
     except Exception as e:
         logger.debug(f"Failed to get full GetFullUserRequest data for {user_id}: {str(e)}")
 
+    phone_region = get_phone_region(phone) if phone else "Unknown"
+    restrictions_list = []
+    if getattr(user, "restriction_reason", None):
+        for r in user.restriction_reason:
+            restrictions_list.append({
+                "platform": getattr(r, "platform", "all"),
+                "reason": getattr(r, "reason", "restricted"),
+                "text": getattr(r, "text", "")
+            })
+
     try:
         has_video = getattr(user, "photo", None) and getattr(user.photo, "has_video", False)
         avatar_path = await get_cached_avatar(client, user, is_video=has_video)
@@ -192,7 +271,9 @@ async def parse_and_cache_user_metadata(client, db, user) -> dict:
         "background_emoji_id": getattr(user, "color", None).background_emoji_id if getattr(user, "color", None) else None,
         "profile_color_index": getattr(user, "profile_color", None).color if getattr(user, "profile_color", None) else None,
         "personal_channel_link": personal_channel,
-        "business_address": business_address
+        "business_address": business_address,
+        "phone_region": phone_region,
+        "restrictions": restrictions_list
     }
 
     meta_dict = {
@@ -327,13 +408,15 @@ def parse_sender_info(sender, message) -> str:
     badges_str = f" [{' | '.join(badges)}]" if badges else ""
     username = getattr(sender, 'username', None)
     user_ref = f" (@{username})" if username else ""
+    phone_val = getattr(sender, 'phone', None)
+    phone_ref = f" (Phone: +{phone_val})" if phone_val else ""
     
     if p_type == "User":
         entity_kind = "Bot" if getattr(sender, 'bot', False) else "User"
         first_name = getattr(sender, 'first_name', '') or ''
         last_name = getattr(sender, 'last_name', '') or ''
         name = f"{first_name} {last_name}".strip() or "User"
-        return f"{entity_kind} '{name}'{user_ref} [ID: {sender.id}]{badges_str}"
+        return f"{entity_kind} '{name}'{user_ref}{phone_ref if 'phone_ref' in locals() else ''} [ID: {sender.id}]{badges_str}"
         
     elif p_type == "Channel":
         is_group = getattr(sender, 'megagroup', False) or getattr(sender, 'gigagroup', False)
@@ -378,12 +461,12 @@ async def parse_message_payload(client, db, message) -> str:
             meta_parts.append("\n".join(emoji_refs))
 
     
-    # 1.1 Parsing and extracting rich formatting entities (2026 update)
+    # 1.1 Parsing and extracting rich formatting entities
     if message.entities:
         formatting_refs = []
         for ent in message.entities:
             ent_type = type(ent).__name__
-            if ent_type in ["MessageEntitySubscript", "MessageEntitySuperscript", "MessageEntityMarked", "MessageEntityBlockquote"]:
+            if ent_type in ["MessageEntitySubscript", "MessageEntitySuperscript", "MessageEntityMarked", "MessageEntityBlockquote", "MessageEntityStrike", "MessageEntityUnderline"]:
                 offset = ent.offset
                 length = ent.length
                 plain_text = message.message or ""
@@ -396,6 +479,12 @@ async def parse_message_payload(client, db, message) -> str:
                     pass
         if formatting_refs:
             meta_parts.append("\n".join(formatting_refs))
+            
+    # 1.2 Extract Reply or Inline Markup buttons if present (keyboard structures)
+    if message.reply_markup:
+        markup_text = parse_reply_markup(message.reply_markup)
+        if markup_text:
+            meta_parts.append(markup_text)
 
     # 2. Parsing Star Gifts with animations
     if message.media and type(message.media).__name__ == "MessageMediaGift":

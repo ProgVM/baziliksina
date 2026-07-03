@@ -19,10 +19,10 @@ from registry import registry
 
 logger = logging.getLogger("WebServer")
 
-active_runner = None
-
 # Setup startup timestamp for uptime calculations
 START_TIME = int(time.time())
+active_runner = None
+
 
 @web.middleware
 async def ip_acl_middleware(request, handler):
@@ -70,16 +70,35 @@ class BaziliksinaWebServer:
         # 2. Private endpoints (Bearer token authorization required)
         self.app.router.add_get("/api/keys", self.api_get_keys)
         self.app.router.add_post("/api/keys/add", self.api_add_key)
+        self.app.router.add_delete("/api/keys/delete", self.api_delete_key)
         self.app.router.add_post("/api/keys/rotate", self.api_rotate_key)
+        
+        self.app.router.add_get("/api/db/stats", self.api_db_stats)
         self.app.router.add_post("/api/db/query", self.api_db_query)
         self.app.router.add_get("/api/db/export", self.api_db_export)
+        self.app.router.add_get("/api/db/history/{chat_id}", self.api_get_chat_history)
+        
+        self.app.router.add_get("/api/meta/users", self.api_get_meta_users)
+        self.app.router.add_get("/api/meta/chats", self.api_get_meta_chats)
+        
+        self.app.router.add_get("/api/timers", self.api_get_timers)
+        self.app.router.add_post("/api/timers/add", self.api_add_timer)
+        self.app.router.add_delete("/api/timers/{id}", self.api_delete_timer)
+        
+        self.app.router.add_get("/api/triggers/{chat_id}", self.api_get_triggers)
+        self.app.router.add_post("/api/triggers/add", self.api_add_trigger)
+        self.app.router.add_delete("/api/triggers/{id}", self.api_delete_trigger)
+        
         self.app.router.add_get("/api/config", self.api_get_config)
         self.app.router.add_put("/api/config/update", self.api_update_config)
+        
         self.app.router.add_get("/api/prompts/{filename}", self.api_get_prompt)
         self.app.router.add_put("/api/prompts/{filename}", self.api_update_prompt)
+        
         self.app.router.add_get("/api/tools", self.api_get_tools)
         self.app.router.add_delete("/api/tools/{name}", self.api_delete_tool)
         self.app.router.add_post("/api/sandbox/execute", self.api_sandbox_execute)
+        
         self.app.router.add_get("/api/system/stats", self.api_system_stats)
         self.app.router.add_get("/api/system/logs", self.api_system_logs)
         self.app.router.add_post("/api/system/restart", self.api_system_restart)
@@ -88,7 +107,6 @@ class BaziliksinaWebServer:
     # PUBLIC ENDPOINT HANDLERS
     # =====================================================================
     async def handle_index(self, request):
-        """Serves an informative system overview landing page."""
         uptime = int(time.time()) - START_TIME
         bot_username = "unknown"
         if self.client:
@@ -126,7 +144,6 @@ class BaziliksinaWebServer:
         return web.Response(text=html_content, content_type="text/html")
 
     async def handle_health(self, request):
-        """Monitors Telegram network connection and SQLite DB availability."""
         telegram_active = self.client.is_connected() if self.client else False
         db_active = self.db.db is not None if self.db else False
         
@@ -145,7 +162,6 @@ class BaziliksinaWebServer:
     # =====================================================================
     @auth_required
     async def api_get_keys(self, request):
-        """Returns metadata of all API keys and their active status."""
         gemini_keys = await self.db.get_keys_by_provider("gemini")
         pollinations_keys = await self.db.get_keys_by_provider("pollinations")
         return web.json_response({
@@ -157,11 +173,10 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_add_key(self, request):
-        """Adds a new key to the SQLite rotation pools."""
         try:
             data = await request.json()
             key_val = data.get("key")
-            provider = data.get("provider")  # 'gemini' or 'pollinations'
+            provider = data.get("provider")
             if not key_val or provider not in ["gemini", "pollinations"]:
                 return web.json_response({"status": "error", "message": "Missing 'key' or invalid 'provider'."}, status=400)
             
@@ -171,8 +186,20 @@ class BaziliksinaWebServer:
             return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     @auth_required
+    async def api_delete_key(self, request):
+        try:
+            data = await request.json()
+            key_val = data.get("key")
+            if not key_val:
+                return web.json_response({"status": "error", "message": "Missing 'key' parameter."}, status=400)
+            await self.db.db.execute("DELETE FROM api_keys WHERE key_value = ?", (key_val,))
+            await self.db.db.commit()
+            return web.json_response({"status": "success", "message": "API key deleted from database."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
     async def api_rotate_key(self, request):
-        """Forces an instant dynamic rotation of the active Gemini/Pollinations keys."""
         try:
             data = await request.json()
             provider = data.get("provider")
@@ -188,8 +215,32 @@ class BaziliksinaWebServer:
             return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     @auth_required
+    async def api_db_stats(self, request):
+        """Asynchronously returns SQLite DB structure, size, and table row counts dynamically."""
+        try:
+            db_path = config.SAFE_DB_DIR / config.DB_NAME
+            db_size = db_path.stat().st_size if db_path.exists() else 0
+            
+            table_stats = {}
+            async with self.db.db.execute("SELECT name FROM sqlite_master WHERE type='table'") as cursor:
+                tables = await cursor.fetchall()
+                
+            for (table_name,) in tables:
+                async with self.db.db.execute(f"SELECT COUNT(*) FROM {table_name}") as size_cursor:
+                    row_count = await size_cursor.fetchone()
+                    table_stats[table_name] = row_count[0] if row_count else 0
+                    
+            return web.json_response({
+                "status": "success",
+                "database_size_bytes": db_size,
+                "tables_count": len(table_stats),
+                "statistics": table_stats
+            })
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
     async def api_db_query(self, request):
-        """Executes a custom raw SQL statement securely."""
         try:
             data = await request.json()
             sql = data.get("sql")
@@ -200,7 +251,8 @@ class BaziliksinaWebServer:
                 if cursor.description is not None:
                     rows = await cursor.fetchall()
                     cols = [d[0] for d in cursor.description]
-                    results = [dict(zip(cols, row)) for row in rows[:100]]
+                    limit = int(request.query.get("limit", config.SQL_SELECT_LIMIT))
+                    results = [dict(zip(cols, row)) for row in rows[:limit]]
                     return web.json_response({"status": "success", "type": "SELECT", "rows_count": len(results), "data": results})
                 else:
                     await self.db.db.commit()
@@ -210,15 +262,124 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_db_export(self, request):
-        """Downloads the complete binary DB file."""
         db_path = config.SAFE_DB_DIR / config.DB_NAME
         if not db_path.exists():
             return web.json_response({"status": "error", "message": "DB file not found."}, status=404)
         return web.FileResponse(path=db_path, filename=config.DB_NAME)
 
     @auth_required
+    async def api_get_chat_history(self, request):
+        """Asynchronously exports dialog history with optional limits and offsets."""
+        try:
+            chat_id = request.match_info["chat_id"]
+            limit = int(request.query.get("limit", 100))
+            offset = int(request.query.get("offset", 0))
+            
+            async with self.db.db.execute(
+                "SELECT role, text, media_info, timestamp FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+                (chat_id, limit, offset)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                results = [{"role": r[0], "text": r[1], "media": r[2], "timestamp": r[3]} for r in rows]
+                return web.json_response({"chat_id": chat_id, "messages_count": len(results), "messages": results})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_get_meta_users(self, request):
+        """Returns cached metadata of Telegram users from the users_meta table."""
+        try:
+            limit = int(request.query.get("limit", config.WEB_SERVER_DEFAULT_META_LIMIT))
+            async with self.db.db.execute("SELECT id, username, first_name, last_name, premium, verified FROM users_meta LIMIT ?", (limit,)) as cursor:
+                rows = await cursor.fetchall()
+                results = [{"id": r[0], "username": r[1], "first_name": r[2], "last_name": r[3], "premium": bool(r[4]), "verified": bool(r[5])} for r in rows]
+                return web.json_response({"count": len(results), "users": results})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_get_meta_chats(self, request):
+        """Returns cached metadata of Telegram chats/channels from the chats_meta table."""
+        try:
+            limit = int(request.query.get("limit", config.WEB_SERVER_DEFAULT_META_LIMIT))
+            async with self.db.db.execute("SELECT id, title, username, type FROM chats_meta LIMIT ?", (limit,)) as cursor:
+                rows = await cursor.fetchall()
+                results = [{"id": r[0], "title": r[1], "username": r[2], "type": r[3]} for r in rows]
+                return web.json_response({"count": len(results), "chats": results})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_get_timers(self, request):
+        """Lists all pending persistent timers."""
+        try:
+            timers = await self.db.get_pending_timers()
+            results = [{"id": t[0], "chat_id": t[1], "execute_at": t[2], "action": t[3], "code": bool(t[4])} for t in timers]
+            return web.json_response({"count": len(results), "timers": results})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_add_timer(self, request):
+        try:
+            data = await request.json()
+            chat_id = data.get("chat_id")
+            delay = int(data.get("delay", config.WEB_SERVER_DEFAULT_TIMER_DELAY))
+            action = data.get("action", "Scheduled API Task")
+            code = data.get("code")
+            if not chat_id:
+                return web.json_response({"status": "error", "message": "Missing 'chat_id'."}, status=400)
+            await self.db.add_timer(str(chat_id), delay, action, code)
+            return web.json_response({"status": "success", "message": "Timer set successfully."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_delete_timer(self, request):
+        try:
+            timer_id = int(request.match_info["id"])
+            await self.db.delete_timer(timer_id)
+            return web.json_response({"status": "success", "message": f"Timer {timer_id} cancelled."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_get_triggers(self, request):
+        try:
+            chat_id = request.match_info["chat_id"]
+            triggers = await self.db.get_active_triggers(chat_id)
+            results = [{"id": t[0], "type": t[1], "value": t[2], "action": t[3], "code": bool(t[4])} for t in triggers]
+            return web.json_response({"chat_id": chat_id, "count": len(results), "triggers": results})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_add_trigger(self, request):
+        try:
+            data = await request.json()
+            chat_id = data.get("chat_id")
+            t_type = data.get("type", "word")
+            t_val = data.get("value")
+            t_action = data.get("action", "Auto Trigger Task")
+            code = data.get("code")
+            if not chat_id or not t_val:
+                return web.json_response({"status": "error", "message": "Missing 'chat_id' or 'value'."}, status=400)
+            await self.db.add_trigger(str(chat_id), t_type, t_val, t_action, code)
+            return web.json_response({"status": "success", "message": "Trigger added successfully."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_delete_trigger(self, request):
+        try:
+            trigger_id = int(request.match_info["id"])
+            await self.db.delete_trigger(trigger_id)
+            return web.json_response({"status": "success", "message": f"Trigger {trigger_id} deleted."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
     async def api_get_config(self, request):
-        """Returns the active configuration parameters."""
         serialized_config = {
             k: str(v) for k, v in vars(config).items() if not k.startswith("_") and k.isupper()
         }
@@ -226,7 +387,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_update_config(self, request):
-        """Modifies a configuration parameter inside RAM and records it to DB."""
         try:
             data = await request.json()
             for k, v in data.items():
@@ -239,7 +399,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_get_prompt(self, request):
-        """Reads a prompt template file."""
         filename = request.match_info["filename"]
         # Security sanity check
         if not filename.endswith(".txt") or "/" in filename or "\\" in filename:
@@ -255,7 +414,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_update_prompt(self, request):
-        """Saves updated templates to config/ directory."""
         try:
             filename = request.match_info["filename"]
             if not filename.endswith(".txt") or "/" in filename or "\\" in filename:
@@ -275,7 +433,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_get_tools(self, request):
-        """Lists all registered tools."""
         tools_list = []
         for tool in registry.get_all_tools():
             tools_list.append({
@@ -288,7 +445,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_delete_tool(self, request):
-        """Removes a custom dynamic tool."""
         name = request.match_info["name"]
         deleted = await self.db.delete_custom_tool(name)
         if deleted:
@@ -298,7 +454,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_sandbox_execute(self, request):
-        """Runs custom sandboxed code directly from the Web-panel."""
         try:
             data = await request.json()
             code = data.get("code")
@@ -314,7 +469,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_system_stats(self, request):
-        """Returns deep telemetry data."""
         uptime = int(time.time()) - START_TIME
         import resource
         mem_usage = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
@@ -327,24 +481,23 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_system_logs(self, request):
-        """Reads the latest logs from file."""
         log_path = Path(config.WEB_SERVER_LOG_PATH)
         if not log_path.exists():
             return web.json_response({"status": "error", "message": "Log file not found on disk."}, status=404)
         
+        limit = int(request.query.get("limit", config.WEB_SERVER_DEFAULT_LOG_LIMIT))
         with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
-        return web.json_response({"logs": lines[-100:]}) # Return latest 100 lines
+        return web.json_response({"logs": lines[-limit:]})
 
     @auth_required
     async def api_system_restart(self, request):
-        """Triggers a clean dynamic reboot of the system."""
         logger.warning("Dynamic reboot requested via secure Web-API...")
         asyncio.create_task(self._reboot_sequence())
         return web.json_response({"status": "success", "message": "Reboot sequence initiated."})
 
     async def _reboot_sequence(self):
-        await asyncio.sleep(2.0)
+        await asyncio.sleep(config.WEB_SERVER_REBOOT_DELAY)
         if self.db:
             await self.db.close()
         os.execv(sys.executable, ['python'] + sys.argv)
@@ -357,13 +510,32 @@ async def start_web_server(telegram_client, db_manager, ai_manager):
         logger.info("Built-in Web Server is disabled by config.")
         return
 
+    host = config.WEB_SERVER_HOST
+    if not host or host == "0.0.0.0":
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((config.WEB_SERVER_IP_DETECTION_HOST, config.WEB_SERVER_IP_DETECTION_PORT))
+            host = s.getsockname()[0]
+            s.close()
+        except Exception:
+            host = "127.0.0.1"
+        logger.info(f"WEB_SERVER_HOST not specified. Auto-detected IP address: {host}")
+
     server_obj = BaziliksinaWebServer(telegram_client, db_manager, ai_manager)
     runner = web.AppRunner(server_obj.app)
     await runner.setup()
     active_runner = runner
-    site = web.TCPSite(runner, config.WEB_SERVER_HOST, config.WEB_SERVER_PORT)
+    site = web.TCPSite(runner, host, config.WEB_SERVER_PORT)
     await site.start()
-    logger.info(f"Built-in Secure Web Server successfully started on http://{config.WEB_SERVER_HOST}:{config.WEB_SERVER_PORT}")
+    
+    # Dynamic host resolution (supports empty subdomains seamlessly)
+    if config.WEB_SERVER_SUBDOMAIN:
+        host_str = f"http://{config.WEB_SERVER_SUBDOMAIN}.{host}:{config.WEB_SERVER_PORT}"
+    else:
+        host_str = f"http://{host}:{config.WEB_SERVER_PORT}"
+        
+    logger.info(f"Built-in Secure Web Server successfully started on {host_str}")
 
 async def stop_web_server():
     """Cleanly shuts down the web server runner and releases sockets."""

@@ -50,13 +50,17 @@ async def get_interpolated_prompt(client, character_file_name, use_system_prompt
         creator_id = creator.id
         creator_first = creator.first_name or "Bazilevs"
         creator_last = creator.last_name or ""
-        creator_user = creator.username or "mcpeorakul"
+        creator_user = creator.username or "no"
         creator_premium = "yes" if getattr(creator, 'premium', False) else "no"
         creator_verified = "yes" if getattr(creator, 'verified', False) else "no"
         creator_scam = "yes" if getattr(creator, 'scam', False) else "no"
         creator_fake = "yes" if getattr(creator, 'fake', False) else "no"
         creator_bot = "yes" if getattr(creator, 'bot', False) else "no"
-        
+        creator_phone = getattr(creator, 'phone', 'hidden') or "hidden"
+        creator_restricted = "yes" if getattr(creator, 'restricted', False) else "no"
+
+        full_creator = await client(GetFullUserRequest(creator))
+        creator_bio = getattr(full_creator.full_user, 'about', None) or "description missing"
         full_creator = await client(GetFullUserRequest(creator))
         creator_bio = getattr(full_creator.full_user, 'about', None) or "description missing"
         
@@ -120,6 +124,8 @@ async def get_interpolated_prompt(client, character_file_name, use_system_prompt
         "{creator_scam}": creator_scam,
         "{creator_fake}": creator_fake,
         "{creator_bot}": creator_bot,
+        "{creator_phone}": creator_phone,
+        "{creator_restricted}": creator_restricted,
         "{creator_birthday}": creator_birthday,
         "{creator_bio}": creator_bio,
         "{me_first}": me_first,

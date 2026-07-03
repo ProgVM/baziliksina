@@ -6,6 +6,8 @@ import logging
 import hashlib
 import inspect
 import re
+import time
+import config
 from google.genai import types
 from google.genai.errors import APIError
 
@@ -73,8 +75,8 @@ class GeminiManager:
         system_prompt = await get_interpolated_prompt(self.client, CHARACTER_FILE, use_system_prompt=USE_SYSTEM_PROMPT)
 
         try:
-            chat_title = getattr(chat_entity, "title", "Private Chat")
-            chat_username = getattr(chat_entity, "username", "no")
+            chat_title = getattr(chat_entity, "title", None) or "Private Chat"
+            chat_username = getattr(chat_entity, "username", None) or "no"
         except Exception:
             chat_title, chat_username = "Chat", "no"
 
@@ -125,9 +127,26 @@ class GeminiManager:
             types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=get_safety_threshold(SAFETY_DANGEROUS_CONTENT)),
         ]
 
+        # Filter allowed tools based on config matrix
+        allowed_callables = []
+        for tool in registry.get_all_tools():
+            is_blocked = False
+            if not tool.is_custom:
+                if config.AI_BLOCKED_ROOT_TOOLS and tool.name in config.AI_BLOCKED_ROOT_TOOLS:
+                    is_blocked = True
+                if config.AI_ALLOWED_ROOT_TOOLS and "all" not in config.AI_ALLOWED_ROOT_TOOLS and tool.name not in config.AI_ALLOWED_ROOT_TOOLS:
+                    is_blocked = True
+            else:
+                if config.AI_BLOCKED_CUSTOM_TOOLS and tool.name in config.AI_BLOCKED_CUSTOM_TOOLS:
+                    is_blocked = True
+                if config.AI_ALLOWED_CUSTOM_TOOLS and "all" not in config.AI_ALLOWED_CUSTOM_TOOLS and tool.name not in config.AI_ALLOWED_CUSTOM_TOOLS:
+                    is_blocked = True
+            if not is_blocked:
+                allowed_callables.append(tool.callable)
+
         config_obj = types.GenerateContentConfig(
             system_instruction=dynamic_prompt if USE_SYSTEM_PROMPT else None,
-            tools=registry.get_all_callables(),
+            tools=allowed_callables,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             safety_settings=safety_settings,
             temperature=TEMPERATURE,
@@ -201,8 +220,8 @@ class GeminiManager:
                         active_key = self.key_manager.keys[self.key_manager.current_key_index]
                         logger.warning(f"Gemini API 429 encountered on key: '{active_key[:10]}...'. Rotating pools...")
                         await asyncio.sleep(RATE_LIMIT_SLEEP)
-                        await self.key_manager.mark_key_exhausted()
-                        gemini_client = await self.key_manager.rotate_key_async()
+                        await self.key_manager.handle_error_exhausted(str(e))
+                        gemini_client = await self.key_manager.rotate_key_async(str(e))
                         continue
                     elif e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
                         logger.warning("Gemini API 403 error caught during generation. Healing context...")

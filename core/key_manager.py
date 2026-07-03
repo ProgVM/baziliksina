@@ -7,6 +7,67 @@ from google import genai
 from config import GEMINI_KEYS, POLLINATIONS_KEYS, GEMINI_MODELS, INPUT_TOKEN_LIMIT, OUTPUT_LENGTH, KEY_INFO_TIMEOUT, GEMINI_FREE_RECOVERY_TIME, GEMINI_PRO_RECOVERY_TIME, POLLINATIONS_KEY_RECOVERY_TIME
 logger = logging.getLogger("KeyManager")
 
+def get_seconds_until_pacific_midnight() -> int:
+    """Calculates the exact number of seconds remaining until midnight Pacific Time (US/Pacific)."""
+    import datetime
+    try:
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        is_pdt = False
+        if 3 < now_utc.month < 11:
+            is_pdt = True
+        elif now_utc.month == 3 and now_utc.day >= 14:
+            is_pdt = True
+        elif now_utc.month == 11 and now_utc.day < 7:
+            is_pdt = True
+        offset_hours = config.PACIFIC_DAYLIGHT_TIME_OFFSET if is_pdt else config.PACIFIC_STANDARD_TIME_OFFSET
+        pacific_now = now_utc + datetime.timedelta(hours=offset_hours)
+        tomorrow_pacific = datetime.datetime(
+            year=pacific_now.year,
+            month=pacific_now.month,
+            day=pacific_now.day,
+            hour=0,
+            minute=0,
+            second=0
+        ) + datetime.timedelta(days=1)
+        return max(config.GEMINI_MIN_COOLDOWN_SECONDS * 60, int((tomorrow_pacific - pacific_now).total_seconds()))
+    except Exception as e:
+        logger.warning(f"Failed to calculate Pacific midnight: {str(e)}")
+    return config.GEMINI_DAILY_LIMIT_COOLDOWN
+
+def parse_gemini_error_cooldown(ex_str: str, default_cooldown: int = 18000) -> int:
+    """
+    Parses the JSON error string of Gemini API to find the optimal dynamic cooldown.
+    Returns the cooldown duration in seconds.
+    """
+    try:
+        import json
+        import re
+        json_match = re.search(r'(\{.*\})', ex_str, re.DOTALL)
+        if not json_match:
+            return default_cooldown
+        data = json.loads(json_match.group(1))
+        error_node = data.get("error", {})
+        details = error_node.get("details", [])
+        for detail in details:
+            if isinstance(detail, dict):
+                if "retryDelay" in detail:
+                    try:
+                        delay_str = str(detail["retryDelay"]).strip()
+                        val = int(re.sub(r'[^\d]', '', delay_str))
+                        return max(config.GEMINI_MIN_COOLDOWN_SECONDS, val)
+                    except Exception:
+                        pass
+                if "@type" in detail and "QuotaFailure" in detail["@type"]:
+                    violations = detail.get("violations", [])
+                    if "PerDay" in str(v.get("quotaId", "")):
+                        cooldown = get_seconds_until_pacific_midnight()
+                        logger.warning(f"Gemini Daily limit exceeded. Applying Pacific midnight cooldown: {cooldown}s.")
+                        return cooldown
+    except Exception:
+        return default_cooldown if 'default_cooldown' in locals() else 18000
+        pass
+    return default_cooldown
+
 
 class GeminiKeyManager:
     def __init__(self, db_manager=None):
@@ -58,8 +119,20 @@ class GeminiKeyManager:
             
             if meta and meta.get("status") == "exhausted":
                 ex_at = meta.get("exhausted_at") or 0
-                if (now - ex_at) >= recovery_time:
-                    logger.info(f"Gemini key limits {key[:10]}... for model '{current_model}' updated by time ({recovery_time // 3600}h). Resetting status to active.")
+                
+                # Retrieve dynamic cooldown if saved in raw_info_json
+                cooldown = recovery_time
+                raw_info_raw = meta.get("raw_info_json")
+                if raw_info_raw:
+                    try:
+                        raw_info = json.loads(raw_info_raw)
+                        if raw_info.get("cooldown_duration"):
+                            cooldown = int(raw_info["cooldown_duration"])
+                    except Exception:
+                        pass
+                
+                if (now - ex_at) >= cooldown:
+                    logger.info(f"Gemini key limits {key[:10]}... updated (cooldown of {cooldown}s expired). Resetting status to active.")
                     await self.db.save_key_meta(key, "gemini", status="active", exhausted_at=None)
                     active_key = key
                     self.current_key_index = idx
@@ -99,20 +172,33 @@ class GeminiKeyManager:
     def get_client(self):
         return self._client
 
+    async def handle_error_exhausted(self, error_msg: str):
+        """Marks the current key as exhausted with dynamic Pacific midnight cooldown."""
+        cooldown_duration = parse_gemini_error_cooldown(error_msg)
+        if self.db:
+            active_key = self.keys[self.current_key_index]
+            raw_info = {"cooldown_duration": cooldown_duration}
+            await self.db.save_key_meta(active_key, "gemini", status="exhausted", exhausted_at=int(time.time()), raw_info_json=json.dumps(raw_info))
+
     def get_model(self) -> str:
         if not self.models:
             return "gemini-3.1-flash-lite"
         return self.models[self.current_model_index]
 
-    async def mark_key_exhausted(self):
+    async def mark_key_exhausted(self, error_msg: str = None):
         """Marks the current key as exhausted in the DB."""
         if self.db:
             active_key = self.keys[self.current_key_index]
-            await self.db.save_key_meta(active_key, "gemini", status="exhausted", exhausted_at=int(time.time()))
+            raw_info = {"error": error_msg} if error_msg else None
+            await self.db.save_key_meta(active_key, "gemini", status="exhausted", exhausted_at=int(time.time()), raw_info_json=json.dumps(raw_info) if raw_info else None)
 
-    async def rotate_key_async(self):
+    async def rotate_key_async(self, error_msg: str = None):
         """First rotates the model, and after a full cycle switches the key."""
-        await self.mark_key_exhausted() # Mark the current key as exhausted before rotation
+        cooldown_duration = parse_gemini_error_cooldown(error_msg) if error_msg else None
+        if self.db:
+            active_key = self.keys[self.current_key_index]
+            raw_info = {"cooldown_duration": cooldown_duration} if cooldown_duration else {}
+            await self.db.save_key_meta(active_key, "gemini", status="exhausted", exhausted_at=int(time.time()), raw_info_json=json.dumps(raw_info))
         
         if len(self.models) > 1:
             self.current_model_index = (self.current_model_index + 1) % len(self.models)

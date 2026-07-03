@@ -558,33 +558,17 @@ async def on_message_edited(event):
         reply_meta = await parse_reply_metadata(event.message, chat_id, client, db)
 
     sender_info = parse_sender_info(sender, event.message)
-    
-    # Parse inline buttons on change
-    buttons_summary = ""
-    if event.message.reply_markup and hasattr(event.message.reply_markup, 'rows'):
-        buttons_text = []
-        for row in event.message.reply_markup.rows:
-            row_btns = []
-            for btn in row.buttons:
-                btn_info = f"'{btn.text}'"
-                if hasattr(btn, 'data') and btn.data:
-                    try:
-                        btn_info += f" (callback_data: '{btn.data.decode('utf-8')}')"
-                    except Exception:
-                        btn_info += f" (callback_hex: '{btn.data.hex()}')"
-                elif hasattr(btn, 'url') and btn.url:
-                    btn_info += f" (url: '{btn.url}')"
-                row_btns.append(btn_info)
-            if buttons_text:
-                buttons_summary = "\n[Inline buttons in this message]:\n" + "\n".join(buttons_text)
+    # Parse reply and inline markup on change
+    from parser import parse_reply_markup
+    buttons_summary = parse_reply_markup(event.message.reply_markup)
 
-            template = load_feedback_template(
-                "edit_notification", 
-                "[System notification: Sender {sender_info} edited message {msg_id}]\n--- PREVIOUS STATE ---\nText: '{prev_text}'\nMedia: {prev_media}\n--- NEW STATE ---\nText with metadata: '{reply_meta}{new_text}'\n{buttons_summary}"
-            )
-            notice_text = template.replace("{sender_info}", sender_info).replace("{msg_id}", str(msg_id)).replace("{prev_text}", prev_text).replace("{prev_media}", prev_media).replace("{reply_meta}", reply_meta).replace("{new_text}", new_text).replace("{buttons_summary}", buttons_summary).strip()
+    template = load_feedback_template(
+        "edit_notification",
+        "[System notification: Sender {sender_info} edited message {msg_id}]\n--- PREVIOUS STATE ---\nText: '{prev_text}'\nMedia: {prev_media}\n--- NEW STATE ---\nText with metadata: '{reply_meta}{new_text}'\n{buttons_summary}"
+    )
+    notice_text = template.replace("{sender_info}", sender_info).replace("{msg_id}", str(msg_id)).replace("{prev_text}", prev_text).replace("{prev_media}", prev_media).replace("{reply_meta}", reply_meta).replace("{new_text}", new_text).replace("{buttons_summary}", buttons_summary).strip()
 
-            await db.save_message(str(chat_id), "user", notice_text, media_info)
+    await db.save_message(str(chat_id), "user", notice_text, media_info)
 
 # Message deletion handler
 @client.on(events.MessageDeleted)

@@ -2,6 +2,7 @@
 import os
 import json
 import logging
+import re
 import hashlib
 import asyncio
 from pathlib import Path

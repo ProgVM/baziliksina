@@ -212,26 +212,24 @@ def should_process_message_event(event, me, action_type="save") -> bool:
             return False
 
         # Match AI_RESPONSE_TRIGGERS
-        triggered = False
-        text_lower = text_content.lower()
-
-        if "name" in config.AI_RESPONSE_TRIGGERS:
-            me_name = (me.first_name or "").lower()
-            if me_name and me_name in text_lower:
-                triggered = True
-
-        if "username" in config.AI_RESPONSE_TRIGGERS and me.username:
-            if f"@{me.username.lower()}" in text_lower:
-                triggered = True
-
-        if "mentioned" in config.AI_RESPONSE_TRIGGERS and event.mentioned:
+        if is_private:
             triggered = True
-
-        if "reply_to_me" in config.AI_RESPONSE_TRIGGERS and event.message.is_reply:
-            triggered = True
-
-        if config.AI_RESPONSE_TRIGGERS and not triggered:
-            return False
+        else:
+            triggered = False
+            text_lower = text_content.lower()
+            if "name" in config.AI_RESPONSE_TRIGGERS:
+                me_name = (me.first_name or "").lower()
+                if me_name and me_name in text_lower:
+                    triggered = True
+            if "username" in config.AI_RESPONSE_TRIGGERS and me.username:
+                if f"@{me.username.lower()}" in text_lower:
+                    triggered = True
+            if "mentioned" in config.AI_RESPONSE_TRIGGERS and event.mentioned:
+                triggered = True
+            if "reply_to_me" in config.AI_RESPONSE_TRIGGERS and event.message.is_reply:
+                triggered = True
+            if config.AI_RESPONSE_TRIGGERS and not triggered:
+                return False
 
     return True
 

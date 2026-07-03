@@ -207,7 +207,7 @@ class DBManager:
                 )
             """)
 
-            # 11. 2026 UPDATE: Dynamic parameters database config overrides table
+            # 11. Settings overrides table for multi-tier dynamic config
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -300,11 +300,11 @@ class DBManager:
 
         # Determine limits based on config ratio
         local_limit = max(CONTEXT_LOCAL_MIN_LIMIT, int(limit * CONTEXT_LOCAL_RATIO))
-        global_limit = limit - local_limit
+        global_limit = max(0, limit - local_limit)
 
         # 1. Fetch recent messages specifically from the active chat (ordered DESC for DB slice)
         async with self.db.execute("""
-            SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, m.id, m.chat_id
+            SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, m.id, m.chat_id, m.timestamp
             FROM messages m
             LEFT JOIN msgs_meta meta ON m.chat_id = meta.chat_id AND m.msg_id = meta.msg_id
             WHERE m.chat_id = ?
@@ -314,7 +314,7 @@ class DBManager:
 
         # 2. Fetch recent messages globally from OTHER chats (ordered DESC for DB slice)
         async with self.db.execute("""
-            SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, m.id, m.chat_id
+            SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, m.id, m.chat_id, m.timestamp
             FROM messages m
             LEFT JOIN msgs_meta meta ON m.chat_id = meta.chat_id AND m.msg_id = meta.msg_id
             WHERE m.chat_id != ?
@@ -334,8 +334,8 @@ class DBManager:
             )
             history.append((header_content, None))
             
-            for role, text, raw_json, media_info, meta_text, msg_db_id, m_chat_id in other_rows:
-                prefix = f"[Chat: {m_chat_id} | Message ID: {msg_db_id or 'unknown'}]\n"
+            for role, text, raw_json, media_info, meta_text, msg_db_id, m_chat_id, msg_timestamp in other_rows:
+                prefix = f"[Chat: {m_chat_id} | Message ID: {msg_db_id or 'unknown'} | Date: {msg_timestamp}]\n"
                 if meta_text:
                     prefix += f"{meta_text}\n"
                 full_text = f"{prefix}{text or ''}".strip()
@@ -364,8 +364,8 @@ class DBManager:
             )
             history.append((header_content, None))
             
-            for role, text, raw_json, media_info, meta_text, msg_db_id, m_chat_id in local_rows:
-                prefix = f"[Chat: {m_chat_id} | Message ID: {msg_db_id or 'unknown'}]\n"
+            for role, text, raw_json, media_info, meta_text, msg_db_id, m_chat_id, msg_timestamp in local_rows:
+                prefix = f"[Chat: {m_chat_id} | Message ID: {msg_db_id or 'unknown'} | Date: {msg_timestamp}]\n"
                 if meta_text:
                     prefix += f"{meta_text}\n"
                 full_text = f"{prefix}{text or ''}".strip()
