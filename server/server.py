@@ -39,7 +39,8 @@ async def ip_acl_middleware(request, handler):
 
 def auth_required(func):
     """Decorator to enforce secure Authorization: Bearer token verification with privileges validation."""
-    async def wrapper(request):
+    async def wrapper(*args, **kwargs):
+        request = args[-1]
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
             return web.json_response({"status": "error", "message": "Unauthorized. Bearer token missing."}, status=401)
@@ -49,7 +50,7 @@ def auth_required(func):
             return web.json_response({"status": "error", "message": "Forbidden. Invalid access token."}, status=403)
         
         request["client_scope"] = config.WEB_SERVER_API_KEYS[token]
-        return await func(request)
+        return await func(*args, **kwargs)
     return wrapper
 
 

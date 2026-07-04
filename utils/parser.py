@@ -1,5 +1,6 @@
 # parser.py
 import logging
+import config
 from telethon.tl import types as tl_types
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.channels import GetFullChannelRequest
@@ -528,10 +529,50 @@ async def parse_message_payload(client, db, message) -> str:
 
 async def parse_reply_metadata(message, current_chat_id: str, client_instance, db_instance) -> str:
     """
-    Resolves cross-chat replies and selected quote fragments with full integration into secondary metadata.
+    Resolves cross-chat replies and selected quote fragments, recursively traversing 
+    the reply chain up to the configured level to maintain the complete conversational context.
     """
     if not message.reply_to:
         return ""
+
+    meta_lines = []
+    
+    async def traverse_chain(msg_id, chat_id, level=1):
+        if level > config.RECURSIVE_REPLY_DEPTH_LIMIT:
+            return
+        role = None
+        text = None
+        try:
+            async with db_instance.db.execute(
+                "SELECT role, text FROM messages WHERE chat_id = ? AND msg_id = ? LIMIT 1",
+                (str(chat_id), int(msg_id))
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    role, text = row
+        except Exception:
+            pass
+        if not text:
+            try:
+                orig_msg = await client_instance.get_messages(chat_id, ids=int(msg_id))
+                if orig_msg:
+                    text = orig_msg.message or ""
+                    role = "model" if orig_msg.sender_id == (await client_instance.get_me()).id else "user"
+                    await db_instance.save_message(str(chat_id), role, text, None, orig_msg.id)
+            except Exception:
+                pass
+        if text:
+            sender_label = "AI" if role == "model" else "User"
+            meta_lines.append("  " * (level - 1) + f"└─ [Parent Message #{msg_id} ({sender_label})]: '{text}'")
+            parent_reply_to_id = None
+            try:
+                orig_msg = await client_instance.get_messages(chat_id, ids=int(msg_id))
+                if orig_msg and orig_msg.reply_to:
+                    parent_reply_to_id = orig_msg.reply_to.reply_to_msg_id
+            except Exception:
+                pass
+            if parent_reply_to_id:
+                await traverse_chain(parent_reply_to_id, chat_id, level + 1)
 
     header = message.reply_to
     reply_to_id = header.reply_to_msg_id
@@ -554,32 +595,14 @@ async def parse_reply_metadata(message, current_chat_id: str, client_instance, d
             if not target_chat_id.startswith("-"):
                 target_chat_id = f"-100{target_chat_id}"
 
-    original_text = None
-    orig_sender = "User"
-    
-    try:
-        async with db_instance.db.execute(
-            "SELECT role, text FROM messages WHERE chat_id = ? AND msg_id = ? LIMIT 1",
-            (target_chat_id, reply_to_id)
-        ) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                orig_role, orig_text = row
-                orig_sender = "AI" if orig_role == "model" else "User"
-                original_text = orig_text
-    except Exception:
-        pass
-
-    meta_lines = []
     if is_cross_chat:
         meta_lines.append(f"[Reply to message #{reply_to_id} in {chat_name_ref}]")
     else:
         meta_lines.append(f"[Reply to message #{reply_to_id}]")
 
-    if original_text:
-        meta_lines.append(f"[Original text ({orig_sender}): {original_text}]")
+    await traverse_chain(reply_to_id, target_chat_id, level=1)
 
     if quote_text:
-        meta_lines.append(f"[Selected fragment / Quote]: '{quote_text}'")
+        meta_lines.append(f"[Selected quote / Quote fragment]: '{quote_text}'")
 
     return "\n".join(meta_lines) + "\n"

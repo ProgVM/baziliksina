@@ -1077,6 +1077,129 @@ class AIToolKitTelegram:
         except Exception as e:
             return f"Error retrieving chat participant info: {str(e)}"
 
+    async def update_account_info(self, first_name: str = None, last_name: str = None, about: str = None, username: str = None, avatar_filename: str = None, **kwargs) -> str:
+        """
+        Modifies any profile settings of the userbot account, including first name, 
+        last name, biography (about), username, or profile picture (avatar).
+
+        Args:
+            first_name: Optional new first name for your Telegram account.
+            last_name: Optional new last name for your Telegram account.
+            about: Optional new biography/description (about me) for your profile.
+            username: Optional new username (@username) for your account.
+            avatar_filename: Optional local filename in the workspace to set as your profile avatar.
+        """
+        if not tools.client:
+            return "Error: Telethon client is not initialized."
+        from utils import matches_filter
+        val_to_check = f"{first_name or ''} {last_name or ''} {username or ''} {avatar_filename or ''}".strip()
+        if not matches_filter(val_to_check, config.ACCOUNT_SETTINGS_WHITELIST, config.ACCOUNT_SETTINGS_BLACKLIST):
+            return "Error: Modifying account settings is blocked by configuration."
+        try:
+            from telethon.tl.functions.account import UpdateProfileRequest, UpdateUsernameRequest
+            res_parts = []
+            if first_name is not None or last_name is not None or about is not None:
+                me_obj = await tools.client.get_me()
+                f_name = first_name if first_name is not None else me_obj.first_name
+                l_name = last_name if last_name is not None else me_obj.last_name
+                bio_val = about if about is not None else ""
+                await tools.client(UpdateProfileRequest(first_name=f_name, last_name=l_name, about=bio_val, **kwargs))
+                res_parts.append("Profile fields updated successfully.")
+            if username is not None:
+                await tools.client(UpdateUsernameRequest(username=username))
+                res_parts.append(f"Username changed successfully to @{username}.")
+            if avatar_filename is not None:
+                avatar_res = await self.update_avatar(chat_id="me", filename=avatar_filename)
+                res_parts.append(avatar_res)
+            return "\n".join(res_parts) if res_parts else "No changes specified."
+        except Exception as e:
+            return f"Error updating account info: {str(e)}"
+
+    async def edit_chat_settings(self, chat_id: str = None, title: str = None, description: str = None, **kwargs) -> str:
+        """
+        Modifies general settings (title, description/about) of the specified group, megagroup, or channel.
+        Requires administrative permissions in the target chat.
+
+        Args:
+            chat_id: Target group/channel username or ID. Defaults to the current active chat.
+            title: The new title for the group or channel.
+            description: The new description/about text.
+        """
+        if not tools.client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = tools.current_chat_id.get()
+            except LookupError: return "Error: Could not resolve target chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+        try:
+            from utils import matches_filter
+            if title and not matches_filter(title, config.GROUP_SETTINGS_WHITELIST, config.GROUP_SETTINGS_BLACKLIST):
+                return "Error: Group title is blocked by configuration."
+            if description and not matches_filter(description, config.GROUP_SETTINGS_WHITELIST, config.GROUP_SETTINGS_BLACKLIST):
+                return "Error: Group description is blocked by configuration."
+                
+            from telethon.tl.functions.channels import EditChatTitleRequest, EditChatAboutRequest
+            if title:
+                await tools.client(EditChatTitleRequest(channel=chat_id, title=title))
+            if description:
+                await tools.client(EditChatAboutRequest(peer=chat_id, about=description))
+            return f"Success! Group settings updated. Title: {title}, Description: {description}."
+        except Exception as e:
+            return f"Error editing group settings: {str(e)}"
+
+    async def manage_contact(self, action: str, phone: str = None, first_name: str = None, last_name: str = None, user_id: str = None, **kwargs) -> str:
+        """
+        Enables adding, editing, or deleting a contact in the userbot's contact list.
+
+        Args:
+            action: The action to perform ('add', 'edit', or 'delete').
+            phone: The phone number of the contact (required for 'add' or 'edit' if user_id is missing).
+            first_name: The first name of the contact.
+            last_name: Optional last name of the contact.
+            user_id: The numerical ID or username of the Telegram user (required for 'delete' or 'edit').
+        """
+        if not tools.client:
+            return "Error: Telethon client is not initialized."
+        from utils import matches_filter
+        val_to_check = phone or user_id or first_name or ""
+        if not matches_filter(str(val_to_check), config.CONTACTS_MANAGE_WHITELIST, config.CONTACTS_MANAGE_BLACKLIST):
+            return "Error: Contact management action is blocked by configuration."
+        try:
+            from telethon.tl.functions.contacts import ImportContactsRequest, DeleteContactsRequest
+            from telethon.tl.types import InputPhoneContact
+            act = str(action).strip().lower()
+            if act == "add" or (act == "edit" and not user_id):
+                if not phone or not first_name:
+                    return "Error: 'phone' and 'first_name' are required to add/edit a contact."
+                clean_phone = phone.strip("+")
+                contact_obj = InputPhoneContact(client_id=0, phone=clean_phone, first_name=first_name, last_name=last_name or "")
+                result = await tools.client(ImportContactsRequest(contacts=[contact_obj]))
+                if result.imported:
+                    imported_user = result.users[0]
+                    return f"Success! Contact '{first_name} {last_name or ''}' (ID: {imported_user.id}) successfully imported/saved."
+                return "Error: Failed to import contact."
+            elif act == "delete":
+                if not user_id:
+                    return "Error: 'user_id' is required to delete a contact."
+                entity = await tools.client.get_input_entity(user_id)
+                await tools.client(DeleteContactsRequest(id=[entity]))
+                return f"Success! Contact '{user_id}' successfully deleted."
+            elif act == "edit" and user_id:
+                if not first_name:
+                    return "Error: 'first_name' is required to edit a contact."
+                user_obj = await tools.client.get_entity(user_id)
+                target_phone = phone.strip("+") if phone else getattr(user_obj, "phone", "")
+                if not target_phone:
+                    return "Error: An existing contact's phone number must be specified."
+                contact_obj = InputPhoneContact(client_id=0, phone=target_phone, first_name=first_name, last_name=last_name or "")
+                await tools.client(ImportContactsRequest(contacts=[contact_obj]))
+                return f"Success! Contact details for '{first_name} {last_name or ''}' updated."
+            return f"Error: Invalid action '{action}'. Choose from 'add', 'edit', or 'delete'."
+        except Exception as e:
+            return f"Error managing contact: {str(e)}"
+
 # Export methods to module level
 toolkit_tg = AIToolKitTelegram()
 for attr in dir(toolkit_tg):

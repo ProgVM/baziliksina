@@ -325,9 +325,132 @@ class AIToolKitSystem:
             from registry import compile_custom_tool, registry
             compiled_func = compile_custom_tool(name, code)
             registry.register(name=name, callable_func=compiled_func, category=category, description=description, is_custom=True)
-            return f"Success. Custom tool '{name}' created/updated."
+            return f"Error: Custom tool '{name}' completely deleted."
         except Exception as e:
             return f"Error: {str(e)}"
+
+    async def create_or_update_custom_tag_block(self, name: str, type_str: str, description: str, code: str, **kwargs) -> str:
+        """
+        Creates a new or updates an existing custom dynamic XML tag/label or scheduling block at runtime.
+        The tag/block is saved to SQLite database and instantly registered in memory, 
+        making it immediately available for you to execute across dialogue blocks.
+
+        Args:
+            name: A unique snake_case name of the tag/block (e.g., 'custom_reaction').
+            type_str: The type of the element, either 'tag' (for inline segments) or 'block' (for schedules).
+            description: Detailed description explaining how and when the parser should trigger this element.
+            code: Full source code of the handler. MUST define a function named after the tag/block.
+        """
+        if not tools.db:
+            return "Error: Database is not initialized."
+        t_type = str(type_str).strip().lower()
+        if t_type not in ["tag", "block"]:
+            return "Error: 'type_str' must be either 'tag' or 'block'."
+        from tools.tag_block_tools import ROOT_TAGS_BLOCKS
+        if name in ROOT_TAGS_BLOCKS:
+            return f"Error: Tag/Block '{name}' is a system root element and cannot be modified."
+        from utils import matches_filter
+        if not matches_filter(code, config.SANDBOX_PYTHON_WHITELIST, config.SANDBOX_PYTHON_BLACKLIST) or \
+           not matches_filter(code, config.CUSTOM_TAG_BLOCK_CODE_WHITELIST, config.CUSTOM_TAG_BLOCK_CODE_BLACKLIST):
+            return "Security error: This Python code is blocked by the custom tag/block security policy."
+        try:
+            await tools.db.save_custom_tag_block(name, t_type, description, code)
+            from registry import compile_custom_tool, tag_block_registry
+            compiled_func = compile_custom_tool(name, code)
+            tag_block_registry.register(name=name, type_str=t_type, callable_func=compiled_func, description=description, is_custom=True)
+            return f"Success! Custom tag/block '{name}' created/updated and compiled in memory."
+        except Exception as e:
+            return f"Error creating/compiling custom tag/block '{name}': {str(e)}"
+
+    async def delete_custom_tag_block(self, name: str, **kwargs) -> str:
+        """
+        Deletes a previously created custom dynamic tag or block from both database and active memory.
+
+        Args:
+            name: Unique name of the custom tag/block to delete.
+        """
+        if not tools.db:
+            return "Error: Database is not initialized."
+        from tools.tag_block_tools import ROOT_TAGS_BLOCKS
+        if name in ROOT_TAGS_BLOCKS:
+            return f"Error: Tag/Block '{name}' is a system root element and cannot be deleted."
+        try:
+            await tools.db.db.execute("DELETE FROM custom_tags_blocks WHERE name = ?", (name,))
+            await tools.db.db.commit()
+            from registry import tag_block_registry
+            unregistered = tag_block_registry.unregister(name)
+            if unregistered:
+                return f"Success! Custom tag/block '{name}' completely deleted."
+            return f"Error: Custom tag/block '{name}' not found."
+        except Exception as e:
+            return f"Error deleting custom tag/block: {str(e)}"
+
+    async def list_custom_tags_blocks(self, **kwargs) -> str:
+        """Returns a formatted list of all registered custom tags and blocks currently loaded in the system."""
+        from registry import tag_block_registry
+        tags_blocks = tag_block_registry.get_all()
+        custom_elements = [tb for tb in tags_blocks if tb.is_custom]
+        if not custom_elements:
+            return "No custom tags or blocks registered."
+        lines = [f"- Name: <{tb.name}> | Type: {tb.type} | Description: {tb.description}" for tb in custom_elements]
+        return "=== Custom Tags and Blocks ===\n" + "\n".join(lines)
+
+    def get_tool_details(self, name: str, **kwargs) -> str:
+        """
+        Retrieves complete metadata, description, parameter schemas, and source code of any registered tool by name.
+
+        Args:
+            name: Unique name of the tool to inspect.
+        """
+        from registry import registry
+        tool_meta = registry.get(name)
+        if not tool_meta:
+            return f"Error: Tool '{name}' is not registered."
+        from utils import safe_serialize
+        details = [
+            f"Tool Details for '{name}':",
+            f"- Category: {tool_meta.category}",
+            f"- Description: {tool_meta.description}",
+            f"- Is Custom Tool: {tool_meta.is_custom}"
+        ]
+        if tool_meta.parameters_schema:
+            details.append(f"- Parameters Schema:\n{safe_serialize(tool_meta.parameters_schema)}")
+        if tool_meta.is_custom and tools.db:
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                tool_data = loop.run_until_complete(tools.db.get_custom_tool(name))
+                if tool_data and tool_data.get("code"):
+                    details.append(f"- Custom Python Code:\n```python\n{tool_data['code']}\n```")
+            except Exception: pass
+        return "\n".join(details)
+
+    async def get_tag_block_details(self, name: str, **kwargs) -> str:
+        """
+        Retrieves complete information (description, handler type, is_custom, source code) of any registered system or custom tag/block.
+
+        Args:
+            name: The name of the target tag, label, or block (e.g. 'react', 'delete', 'seq').
+        """
+        from registry import tag_block_registry
+        tb_meta = tag_block_registry.get(name)
+        if not tb_meta:
+            return f"Error: Tag/Block '{name}' is not registered."
+        details = [
+            f"Tag/Block Details for '<{name}>':",
+            f"- Type: {tb_meta.type}",
+            f"- Description: {tb_meta.description}",
+            f"- Is Custom Element: {tb_meta.is_custom}"
+        ]
+        if tb_meta.is_custom and tools.db:
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                tb_data = loop.run_until_complete(tools.db.get_custom_tag_block(name))
+                if tb_data and tb_data.get("code"):
+                    details.append(f"- Custom Python Code:\n```python\n{tb_data['code']}\n```")
+            except Exception: pass
+        return "\n".join(details)
 
     async def delete_custom_tool(self, name: str, **kwargs) -> str:
         """Deletes a previously created custom dynamic AI tool."""
