@@ -550,7 +550,9 @@ class AIToolKitTelegram:
             result = await tools.client.send_file(chat_id, file=file_arg, caption=caption, reply_to=target_reply_to, parse_mode="html", **kwargs)
             msg_id = getattr(result, "id", None)
             if msg_id:
-                media_info = json.dumps({"path": resolved_files[0], "mime_type": "media"})
+                import mimetypes
+                mime_val, _ = mimetypes.guess_type(resolved_files[0])
+                media_info = json.dumps({"path": resolved_files[0], "mime_type": mime_val or "application/octet-stream"})
                 await tools.db.save_message(str(chat_id), "model", caption or "[Sent Media]", media_info=media_info, msg_id=msg_id)
                 import bot
                 bot.processed_msg_ids.add((int(chat_id), msg_id))

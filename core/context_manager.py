@@ -199,6 +199,10 @@ class AIContextManager:
                     media_data = json.loads(media_info_str)
                     m_path = media_data.get("path")
                     m_type = media_data.get("mime_type")
+                    if m_type == "media" and m_path:
+                        import mimetypes
+                        guessed, _ = mimetypes.guess_type(m_path)
+                        m_type = guessed or "application/octet-stream"
                     if m_path and os.path.exists(m_path) and m_type:
                         if "webm" in m_type or m_path.endswith(".webm"):
                             continue
