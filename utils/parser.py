@@ -179,7 +179,7 @@ async def parse_and_cache_user_metadata(client, db, user) -> dict:
     try:
         from config import PROFILE_UPDATE_INTERVAL
         import time
-        from datetime import datetime
+        from datetime import datetime, timezone
         cached = await db.get_user_meta(user_id)
         if cached:
             db_ts_str = cached.get("timestamp")
@@ -193,7 +193,7 @@ async def parse_and_cache_user_metadata(client, db, user) -> dict:
                         continue
                 
                 if db_dt:
-                    delta = (datetime.utcnow() - db_dt).total_seconds()
+                    delta = (datetime.now(timezone.utc).replace(tzinfo=None) - db_dt).total_seconds()
                     if delta < PROFILE_UPDATE_INTERVAL:
                         logger.debug(f"Profile cache for user {user_id} is fresh ({int(delta)}s old). Skipping API requests.")
                         return cached
@@ -315,7 +315,7 @@ async def parse_and_cache_chat_metadata(client, db, chat) -> dict:
     # Check database cache first to prevent hammering Telegram API (FloodWait protection)
     try:
         from config import PROFILE_UPDATE_INTERVAL
-        from datetime import datetime
+        from datetime import datetime, timezone
         cached = await db.get_chat_meta(chat_id)
         if cached:
             db_ts_str = cached.get("timestamp")
@@ -329,7 +329,7 @@ async def parse_and_cache_chat_metadata(client, db, chat) -> dict:
                         continue
                 
                 if db_dt:
-                    delta = (datetime.utcnow() - db_dt).total_seconds()
+                    delta = (datetime.now(timezone.utc).replace(tzinfo=None) - db_dt).total_seconds()
                     if delta < PROFILE_UPDATE_INTERVAL:
                         logger.debug(f"Profile cache for chat {chat_id} is fresh ({int(delta)}s old). Skipping API requests.")
                         return cached
@@ -427,7 +427,6 @@ def parse_sender_info(sender, message) -> str:
         author_sig = f" (author signature: '{post_author}')" if post_author else ""
         anonymous_label = " [ANONYMOUS SENDER - this is a user writing anonymously on behalf of this group/channel]" if is_anonymous else ""
         return f"{entity_kind} '{title}'{user_ref}{phone_ref if 'phone_ref' in locals() else ''}{anonymous_label} [ID: {sender.id}]{badges_str}{author_sig}"
-        return f"{entity_kind} '{title}'{user_ref} [ID: {sender.id}]{badges_str}{author_sig}"
         
     elif p_type == "Chat":
         title = getattr(sender, 'title', 'Group')

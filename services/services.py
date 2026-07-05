@@ -36,40 +36,43 @@ async def bootstrap_database_if_empty(client, db, run_pending_query_fn=None):
         me = await client.get_me()
         
         async for dialog in client.iter_dialogs(limit=DIALOGS_LIMIT):
-            chat_id = str(dialog.id)
-            chat_entity = dialog.entity
-            logger.info(f"Importing chat history: '{dialog.name}' ({chat_id})...")
-
             try:
-                await parse_and_cache_chat_metadata(client, db, chat_entity)
-            except Exception:
-                pass
+                chat_id = str(dialog.id)
+                chat_entity = dialog.entity
+                logger.info(f"Importing chat history: '{dialog.name}' ({chat_id})...")
 
-            messages_to_save = []
-            async for msg in client.iter_messages(chat_entity, limit=BOOTSTRAP_MESSAGES_LIMIT):  # [FIXED]: Using BOOTSTRAP_MESSAGES_LIMIT
-                messages_to_save.append(msg)
+                try:
+                    await parse_and_cache_chat_metadata(client, db, chat_entity)
+                except Exception:
+                    pass
 
-            messages_to_save.reverse()
+                messages_to_save = []
+                async for msg in client.iter_messages(chat_entity, limit=BOOTSTRAP_MESSAGES_LIMIT):
+                    messages_to_save.append(msg)
 
-            for msg in messages_to_save:
-                async with db.db.execute(
-                    "SELECT id FROM messages WHERE chat_id = ? AND msg_id = ?",
-                    (chat_id, msg.id)
-                ) as check_c:
-                    exists = await check_c.fetchone()
-                if exists:
-                    continue
+                messages_to_save.reverse()
 
-                role = "model" if msg.sender_id == me.id else "user"
-                
-                if role == "user" and msg.sender:
-                    try:
-                        await parse_and_cache_user_metadata(client, db, msg.sender)
-                    except Exception:
-                        pass
+                for msg in messages_to_save:
+                    async with db.db.execute(
+                        "SELECT id FROM messages WHERE chat_id = ? AND msg_id = ?",
+                        (chat_id, msg.id)
+                    ) as check_c:
+                        exists = await check_c.fetchone()
+                    if exists:
+                        continue
 
-                parsed_text = await parse_message_payload(client, db, msg)
-                await db.save_message(chat_id, role, parsed_text, None, msg.id)
+                    role = "model" if msg.sender_id == me.id else "user"
+                    
+                    if role == "user" and msg.sender:
+                        try:
+                            await parse_and_cache_user_metadata(client, db, msg.sender)
+                        except Exception:
+                            pass
+
+                    parsed_text = await parse_message_payload(client, db, msg)
+                    await db.save_message(chat_id, role, parsed_text, None, msg.id)
+            except Exception as d_err:
+                logger.warning(f"Failed to bootstrap dialog '{dialog.name}' ({dialog.id}): {str(d_err)}")
 
         logger.info("--- INITIAL CHAT HISTORY CATCH-UP SUCCESSFULLY COMPLETED! ---")
         # Trigger initial generation for the most recent active chat if requested
@@ -90,65 +93,68 @@ async def catch_up_missed_messages(client, db, workspace_dir, processed_msg_ids,
     try:
         me = await client.get_me()
         async for dialog in client.iter_dialogs(limit=DIALOGS_LIMIT):
-            chat_id = str(dialog.id)
-            
-            # Find the ID of the absolute last saved message
-            async with db.db.execute(
-                "SELECT msg_id FROM messages WHERE chat_id = ? AND msg_id IS NOT NULL ORDER BY id DESC LIMIT 1",
-                (chat_id,)
-            ) as cursor:
-                row = await cursor.fetchone()
-            
-            if not row:
-                continue
-            
-            last_msg_id = row[0]
-            missed_messages = []
-            async for msg in client.iter_messages(dialog.id, min_id=last_msg_id, limit=MISSED_MESSAGES_LIMIT):  # [FIXED]: Using MISSED_MESSAGES_LIMIT
-                missed_messages.append(msg)
-            
-            if not missed_messages:
-                continue
-            
-            # Instantly record missed IDs in processed_msg_ids SYNCHRONOUSLY,
-            # so that the NewMessage handler does not process them repeatedly during our awaits
-            for msg in missed_messages:
-                processed_msg_ids.add(msg.id)
-            
-            logger.info(f"Found {len(missed_messages)} missed messages in chat '{dialog.name}' ({chat_id}).")
-            missed_messages.reverse()
-            newly_saved_count = 0
-            
-            for msg in missed_messages:
-                # Check if the message is already in the DB
+            try:
+                chat_id = str(dialog.id)
+                
+                # Find the ID of the absolute last saved message
                 async with db.db.execute(
-                    "SELECT id FROM messages WHERE chat_id = ? AND msg_id = ?",
-                    (chat_id, msg.id)
-                ) as check_cursor:
-                    exists = await check_cursor.fetchone()
-                if exists:
+                    "SELECT msg_id FROM messages WHERE chat_id = ? AND msg_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+                    (chat_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                
+                if not row:
                     continue
                 
-                role = "model" if msg.sender_id == me.id else "user"
-                if role == "user" and msg.sender:
-                    try:
-                        await parse_and_cache_user_metadata(client, db, msg.sender)
-                    except Exception:
-                        pass
+                last_msg_id = row[0]
+                missed_messages = []
+                async for msg in client.iter_messages(dialog.id, min_id=last_msg_id, limit=MISSED_MESSAGES_LIMIT):
+                    missed_messages.append(msg)
                 
-                parsed_text = await parse_message_payload(client, db, msg)
-                await db.save_message(chat_id, role, parsed_text, None, msg.id)
-                newly_saved_count += 1
-            
-            # If new messages are caught up and there are incoming ones among them, schedule a debounce
-            if newly_saved_count > 0:
-                has_incoming_user_message = any(msg.sender_id != me.id for msg in missed_messages)
-                if has_incoming_user_message:
-                    entity = dialog.entity
-                    entity_cache[dialog.id] = entity
-                    logger.info(f"Debounce response scheduled for {newly_saved_count} missed messages in chat '{dialog.name}'...")
-                    if CATCH_UP_TRIGGER_GENERATION:
-                        run_pending_query_fn(int(chat_id), entity)
+                if not missed_messages:
+                    continue
+                
+                # Instantly record missed IDs in processed_msg_ids SYNCHRONOUSLY,
+                # so that the NewMessage handler does not process them repeatedly during our awaits
+                for msg in missed_messages:
+                    processed_msg_ids.add((int(chat_id), msg.id))
+                
+                logger.info(f"Found {len(missed_messages)} missed messages in chat '{dialog.name}' ({chat_id}).")
+                missed_messages.reverse()
+                newly_saved_count = 0
+                
+                for msg in missed_messages:
+                    # Check if the message is already in the DB
+                    async with db.db.execute(
+                        "SELECT id FROM messages WHERE chat_id = ? AND msg_id = ?",
+                        (chat_id, msg.id)
+                    ) as check_cursor:
+                        exists = await check_cursor.fetchone()
+                    if exists:
+                        continue
+                    
+                    role = "model" if msg.sender_id == me.id else "user"
+                    if role == "user" and msg.sender:
+                        try:
+                            await parse_and_cache_user_metadata(client, db, msg.sender)
+                        except Exception:
+                            pass
+                    
+                    parsed_text = await parse_message_payload(client, db, msg)
+                    await db.save_message(chat_id, role, parsed_text, None, msg.id)
+                    newly_saved_count += 1
+                
+                # If new messages are caught up and there are incoming ones among them, schedule a debounce
+                if newly_saved_count > 0:
+                    has_incoming_user_message = any(msg.sender_id != me.id for msg in missed_messages)
+                    if has_incoming_user_message:
+                        entity = dialog.entity
+                        entity_cache[dialog.id] = entity
+                        logger.info(f"Debounce response scheduled for {newly_saved_count} missed messages in chat '{dialog.name}'...")
+                        if CATCH_UP_TRIGGER_GENERATION:
+                            run_pending_query_fn(int(chat_id), entity)
+            except Exception as d_err:
+                logger.warning(f"Failed to catch up missed messages for dialog '{dialog.name}' ({dialog.id}): {str(d_err)}")
     except Exception as e:
         logger.error(f"History catch-up error: {str(e)}")
 

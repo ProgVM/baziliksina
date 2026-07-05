@@ -321,11 +321,12 @@ class AIToolKitSystem:
         if not tools.db:
             return "Error: Database is not initialized."
         try:
-            await tools.db.save_custom_tool(name, category, description, code)
+            parameters_schema = kwargs.get("parameters_schema")
+            await tools.db.save_custom_tool(name, category, description, code, parameters_schema)
             from registry import compile_custom_tool, registry
             compiled_func = compile_custom_tool(name, code)
             registry.register(name=name, callable_func=compiled_func, category=category, description=description, is_custom=True)
-            return f"Error: Custom tool '{name}' completely deleted."
+            return f"Success! Custom tool '{name}' successfully created or updated."
         except Exception as e:
             return f"Error: {str(e)}"
 

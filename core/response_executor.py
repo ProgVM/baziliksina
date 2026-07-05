@@ -211,11 +211,11 @@ class AIResponseExecutor:
     async def parse_execute_and_strip_tags(self, text: str, chat_entity, reply_to_id: int, chat_id: str) -> str:
         """
         Parses nested sequential, parallel, and background blocks inside a string,
-        schedules their execution chronologically, and strips all tags from the output.
         """
         if not text:
             return text
         
+        cleaned_text = text
         # 1. Clean technical prefixes and thought logs
         for pattern in METADATA_CLEAN_PATTERNS:
             cleaned_text = pattern.sub("", cleaned_text)

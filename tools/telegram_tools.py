@@ -116,8 +116,6 @@ class AIToolKitTelegram:
             return f"Calling method '{method_name}' is blocked by the security system."
         if not tools.client:
             return "Error: Telethon client is not initialized."
-        if any(x in method_name.lower() for x in TELEGRAM_METHOD_BLACKLIST):
-            return f"Calling method '{method_name}' is blocked by the security system."
 
         try:
             raw_tl_request = kwargs.pop("raw_tl_request", None)
@@ -347,6 +345,8 @@ class AIToolKitTelegram:
                 if not found: return f"Button index {button_index} out of range."
             else:
                 return "Specify button_index or button_text."
+            
+            target_btn = message.reply_markup.rows[target_i].buttons[target_j]
             # Resolve raw callback_data string of the button
             btn_cb_str = ""
             if target_btn and hasattr(target_btn, "data") and target_btn.data:

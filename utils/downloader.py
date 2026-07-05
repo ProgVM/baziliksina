@@ -43,7 +43,15 @@ async def convert_webm_to_mp4(webm_path: str) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CONVERSION_TIMEOUT)
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CONVERSION_TIMEOUT)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            await proc.wait()
+            raise
         
         if proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
             logger.info(f"WebM successfully converted to MP4: {out_path.name}")
@@ -85,11 +93,18 @@ async def convert_ogg_to_mp3(ogg_path: str) -> str:
         ]
         
         proc = await asyncio.create_subprocess_exec(
-            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CONVERSION_TIMEOUT)
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CONVERSION_TIMEOUT)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            await proc.wait()
+            raise
         
         if proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 0:
             logger.info(f"Voice message successfully converted to MP3: {out_path.name}")

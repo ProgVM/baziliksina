@@ -60,8 +60,10 @@ class AIToolKitFiles:
             return f"Error: File '{filename}' not found."
         
         resolved_path = os.path.abspath(file_path)
-        if any(x in resolved_path for x in ["bot.py", "config.py", "db_manager.py", "key_manager.py", "gemini_manager.py", ".env", "tools.py", "sandbox.py", "utils.py", "downloader.py", "registry.py"]):
-            return "Security error: Access to bot system files is blocked."
+        filename_only = os.path.basename(resolved_path)
+        from utils import matches_filter
+        if not matches_filter(filename_only, config.SANDBOX_ALLOWED_FILES, config.SANDBOX_BLOCKED_FILES):
+            return "Security error: Access to this file is blocked by sandbox policy."
 
         try:
             if read_as_hex:

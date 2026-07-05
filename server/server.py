@@ -501,7 +501,7 @@ class BaziliksinaWebServer:
         await asyncio.sleep(config.WEB_SERVER_REBOOT_DELAY)
         if self.db:
             await self.db.close()
-        os.execv(sys.executable, ['python'] + sys.argv)
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
 async def start_web_server(telegram_client, db_manager, ai_manager):

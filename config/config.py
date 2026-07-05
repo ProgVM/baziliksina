@@ -200,6 +200,7 @@ TOR_ROTATION_TIMEOUT = float(os.getenv("TOR_ROTATION_TIMEOUT", 15.0))
 POLLINATIONS_MAX_ATTEMPTS = int(os.getenv("POLLINATIONS_MAX_ATTEMPTS", 8))
 TOR_MAX_CONSECUTIVE_FAILURES = int(os.getenv("TOR_MAX_CONSECUTIVE_FAILURES", 2))
 PROXY_CHECK_TIMEOUT = float(os.getenv("PROXY_CHECK_TIMEOUT", "3.0"))
+PROXY_STRICT_CHECK = os.getenv("PROXY_STRICT_CHECK", "false").lower() == "true"
 
 def _parse_list(key: str, default: list = None) -> list:
     raw = os.getenv(key, "").strip()
@@ -234,6 +235,8 @@ def check_proxy_active(proxy_url_str: str) -> bool:
     import urllib.parse
     if not proxy_url_str:
         return False
+    if not PROXY_STRICT_CHECK:
+        return True
     try:
         parsed = urllib.parse.urlparse(proxy_url_str)
         host = parsed.hostname
@@ -268,6 +271,7 @@ SQL_STDOUT_CHAR_LIMIT = int(os.getenv("SQL_STDOUT_CHAR_LIMIT", 3500))
 TELEGRAM_ACTION_CHAR_LIMIT = int(os.getenv("TELEGRAM_ACTION_CHAR_LIMIT", 5000))
 TELEGRAM_ACTION_CONFIRM_LIMIT = int(os.getenv("TELEGRAM_ACTION_CONFIRM_LIMIT", 500))
 VM_STDOUT_NOTICE_LIMIT = int(os.getenv("VM_STDOUT_NOTICE_LIMIT", 1500))
+SANDBOX_ALLOWED_FILES = _parse_list("SANDBOX_ALLOWED_FILES", ["all"])
 SANDBOX_BLOCKED_FILES = _parse_list("SANDBOX_BLOCKED_FILES", ["bot.py", "config.py", "db_manager.py", "key_manager.py", "gemini_manager.py", ".env", "tools.py", "sandbox.py", "utils.py", "downloader.py", "registry.py"])
 SANDBOX_COMMAND_CHAR_LIMIT = int(os.getenv("SANDBOX_COMMAND_CHAR_LIMIT", 3000))
 
@@ -397,16 +401,12 @@ WEB_SERVER_IP_DETECTION_HOST = os.getenv("WEB_SERVER_IP_DETECTION_HOST", "8.8.8.
 WEB_SERVER_IP_DETECTION_PORT = int(os.getenv("WEB_SERVER_IP_DETECTION_PORT", 80))
 WEB_SERVER_DEFAULT_LOG_LIMIT = int(os.getenv("WEB_SERVER_DEFAULT_LOG_LIMIT", 150))
 WEB_SERVER_DEFAULT_META_LIMIT = int(os.getenv("WEB_SERVER_DEFAULT_META_LIMIT", 50))
-WEB_SERVER_DEFAULT_LOG_LIMIT = int(os.getenv("WEB_SERVER_DEFAULT_LOG_LIMIT", 150))
-WEB_SERVER_DEFAULT_META_LIMIT = int(os.getenv("WEB_SERVER_DEFAULT_META_LIMIT", 50))
 WEB_SERVER_DEFAULT_TIMER_DELAY = int(os.getenv("WEB_SERVER_DEFAULT_TIMER_DELAY", 60))
 WEB_SERVER_REBOOT_DELAY = float(os.getenv("WEB_SERVER_REBOOT_DELAY", 2.0))
 PACIFIC_STANDARD_TIME_OFFSET = int(os.getenv("PACIFIC_STANDARD_TIME_OFFSET", -8))
 PACIFIC_DAYLIGHT_TIME_OFFSET = int(os.getenv("PACIFIC_DAYLIGHT_TIME_OFFSET", -7))
 GEMINI_MIN_COOLDOWN_SECONDS = int(os.getenv("GEMINI_MIN_COOLDOWN_SECONDS", 5))
 GEMINI_DAILY_LIMIT_COOLDOWN = int(os.getenv("GEMINI_DAILY_LIMIT_COOLDOWN", 86400))
-RECURSIVE_REPLY_DEPTH_LIMIT = int(os.getenv("RECURSIVE_REPLY_DEPTH_LIMIT", 3))
-RECURSIVE_REPLY_DEPTH_LIMIT = int(os.getenv("RECURSIVE_REPLY_DEPTH_LIMIT", 3))
 RECURSIVE_REPLY_DEPTH_LIMIT = int(os.getenv("RECURSIVE_REPLY_DEPTH_LIMIT", 3))
 
 SANDBOX_CONFIG_WHITELIST = _parse_list("SANDBOX_CONFIG_WHITELIST", ["all"])
@@ -423,7 +423,6 @@ BOT_COMMAND_BLACKLIST = _parse_list("BOT_COMMAND_BLACKLIST", [])
 
 OUTGOING_FILE_WHITELIST = _parse_list("OUTGOING_FILE_WHITELIST", ["all"])
 OUTGOING_FILE_BLACKLIST = _parse_list("OUTGOING_FILE_BLACKLIST", [])
-
 TELEGRAM_ACTION_WHITELIST = _parse_list("TELEGRAM_ACTION_WHITELIST", ["all"])
 TELEGRAM_ACTION_BLACKLIST = _parse_list("TELEGRAM_ACTION_BLACKLIST", ["log_out", "delete_account", "disconnect", "sign_in", "send_code_request", "switch_account"])
 

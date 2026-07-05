@@ -1,0 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Project Specifics
+.env
+*.session
+*.session-journal
+bot_workspace/
+.baziliksina/
+*.db
+*.db-wal
+*.db-shm
+
+# Patches
+*.patch
+*.diff
+
+# Log files
+*.log
+
+# Dynamic local configs
+config/config.json

@@ -206,15 +206,8 @@ class DBManager:
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            # 11. Settings overrides table for multi-tier dynamic config
-            await cursor.execute("""
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                )
-            """)
 
-            # 12. Storage of code and metadata of dynamic custom tags and blocks
+            # 11. Storage of code and metadata of dynamic custom tags and blocks
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS custom_tags_blocks (
                     name TEXT PRIMARY KEY,
@@ -224,6 +217,9 @@ class DBManager:
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+
+            # 12. Settings overrides table for multi-tier dynamic config
+            await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -577,7 +573,9 @@ class DBManager:
         )
         await self.db.commit()
 
-    # --- Managing custom dynamic AI tools in the DB ---
+    # =====================================================================
+    # SECTION 10: CUSTOM DYNAMIC TOOLS MANAGEMENT (SQL REGISTRY)
+    # =====================================================================
     async def save_custom_tool(self, name: str, category: str, description: str, code: str, parameters_schema: str = None):
         """Saves or updates a custom AI tool in the database."""
         await self.db.execute("""
@@ -617,28 +615,9 @@ class DBManager:
         await self.db.commit()
         return True
 
-    # --- 2026 ADVANCED CONFIGURATION TABLE METHODS ---
-    async def get_all_settings(self) -> dict:
-        """Retrieves all configuration settings stored in the settings table."""
-        async with self.db.execute("SELECT key, value FROM settings") as cursor:
-            rows = await cursor.fetchall()
-            return {row[0]: row[1] for row in rows}
-
-    async def save_setting(self, key: str, value: Any):
-        """Saves or updates a dynamic setting parameter in the database."""
-        val_str = json.dumps(value) if not isinstance(value, str) else value
-        await self.db.execute("""
-            INSERT INTO settings (key, value) VALUES (?, ?)
-            ON CONFLICT(key) DO UPDATE SET value = excluded.value
-        """, (key, val_str))
-        await self.db.commit()
-
-    async def delete_setting(self, key: str):
-        """Removes a dynamic setting override from the database."""
-        await self.db.execute("DELETE FROM settings WHERE key = ?", (key,))
-        await self.db.commit()
-
-    # --- Managing custom dynamic tags and blocks in the DB ---
+    # =====================================================================
+    # SECTION 11: CUSTOM DYNAMIC TAGS AND BLOCKS MANAGEMENT
+    # =====================================================================
     async def save_custom_tag_block(self, name: str, type_str: str, description: str, code: str):
         """Saves or updates a custom tag or block in the database."""
         await self.db.execute("""
@@ -676,6 +655,29 @@ class DBManager:
         await self.db.execute("DELETE FROM custom_tags_blocks WHERE name = ?", (name,))
         await self.db.commit()
         return True
+
+    # =====================================================================
+    # SECTION 12: DYNAMIC SETTINGS OVERRIDES CONFIGURATION
+    # =====================================================================
+    async def get_all_settings(self) -> dict:
+        """Retrieves all configuration settings stored in the settings table."""
+        async with self.db.execute("SELECT key, value FROM settings") as cursor:
+            rows = await cursor.fetchall()
+            return {row[0]: row[1] for row in rows}
+
+    async def save_setting(self, key: str, value: Any):
+        """Saves or updates a dynamic setting parameter in the database."""
+        val_str = json.dumps(value) if not isinstance(value, str) else value
+        await self.db.execute("""
+            INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """, (key, val_str))
+        await self.db.commit()
+
+    async def delete_setting(self, key: str):
+        """Removes a dynamic setting override from the database."""
+        await self.db.execute("DELETE FROM settings WHERE key = ?", (key,))
+        await self.db.commit()
 
     async def close(self):
         """Closes the active database connection."""
