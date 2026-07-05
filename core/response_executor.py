@@ -194,11 +194,6 @@ class AIResponseExecutor:
                     merged_segments.append(("reply_msg", {"msg_id": current_rep_id, "text": ""}))
 
             async def execute_segment(segment):
-                s_type, s_data = segment
-                if not reply_consumed:
-                    merged_segments.append(("reply_msg", {"msg_id": current_rep_id, "text": ""}))
-
-            async def execute_segment(segment):
                 nonlocal should_ignore
                 s_type, s_data = segment
                 
