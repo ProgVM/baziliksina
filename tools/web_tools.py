@@ -35,7 +35,7 @@ class AIToolKitWeb:
 
     async def internet_media_search(self, query: str, media_type: str = "image", timeout: float = WEB_MEDIA_SEARCH_TIMEOUT, auto_download: bool = None, auto_upload_google: bool = None, **kwargs) -> str:
         """
-        Performs a search for multimedia files or PDF documents on the Internet via DuckDuckGo.
+        Performs a search for multimedia files, videos, gifs, audio, or any document/file format on the Internet via DuckDuckGo.
         If auto_download is True, automatically downloads the first result to the workspace.
         If auto_upload_google is True, also uploads the downloaded media to Google File API so the AI can see it.
         """
@@ -46,10 +46,23 @@ class AIToolKitWeb:
 
         headers = {"User-Agent": USER_AGENT}
         search_query = query
-        if media_type == "document":
+        
+        # Tailor the DuckDuckGo query dynamically based on the requested media type
+        m_type_lower = media_type.lower().strip()
+        if m_type_lower == "document":
             search_query += " filetype:pdf"
-        elif media_type == "image":
+        elif m_type_lower == "image":
             search_query += " format:jpg"
+        elif m_type_lower == "video":
+            search_query += " filetype:mp4"
+        elif m_type_lower == "gif":
+            search_query += " filetype:gif"
+        elif m_type_lower == "audio":
+            search_query += " filetype:mp3"
+        elif m_type_lower.isalnum():
+            # Support any arbitrary extension, e.g. "zip", "xlsx", "epub"
+            search_query += f" filetype:{m_type_lower}"
+
         url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(search_query)}"
         from proxy_manager import proxy_rotator
         proxy_url = proxy_rotator.get_proxy("scraper")
@@ -60,22 +73,20 @@ class AIToolKitWeb:
                     return f"Media search failed, code: {resp.status_code}"
                 soup = BeautifulSoup(resp.text, "html.parser")
                 results = []
-                if media_type in ["image", "document"]:
-                    for link in soup.find_all("a", class_="result__url")[:WEB_SEARCH_RESULTS_LIMIT]:
-                        href = link.get("href", "")
-                        if "uddg=" in href:
-                            actual_url = urllib.parse.unquote(href.split("uddg=")[1].split("&")[0])
-                            results.append(actual_url)
-                else:
-                    for link in soup.find_all("a", class_="result__snippet")[:WEB_SEARCH_RESULTS_LIMIT]:
-                        results.append(link.get_text(strip=True))
+                
+                # Parse the direct result URLs
+                for link in soup.find_all("a", class_="result__url")[:WEB_SEARCH_RESULTS_LIMIT]:
+                    href = link.get("href", "")
+                    if "uddg=" in href:
+                        actual_url = urllib.parse.unquote(href.split("uddg=")[1].split("&")[0])
+                        results.append(actual_url)
                 
                 if not results:
                     return "Multimedia not found."
                 
-                output_msg = f"Search Results for '{query}':\n" + "\n".join(f"- {url}" for url in results)
+                output_msg = f"Search Results for '{query}' ({media_type}):\n" + "\n".join(f"- {url}" for url in results)
                 
-                if auto_download and media_type in ["image", "document"]:
+                if auto_download:
                     import time
                     from PIL import Image
                     from utils import sanitize_filename
@@ -83,17 +94,54 @@ class AIToolKitWeb:
                     
                     download_success = False
                     valid_filename = None
-                    ext = ".jpg" if media_type == "image" else ".pdf"
                     
+                    # 5-turn self-healing verification loop
                     for idx, candidate_url in enumerate(results[:5]):
-                        candidate_filename = f"search_{sanitize_filename(query)}_{idx}_{int(time.time())}{ext}"
+                        # 1. Pre-check Content-Type via a lightweight HEAD request (strictly if 200 OK)
+                        try:
+                            async with httpx.AsyncClient(timeout=3.0, follow_redirects=True) as client_head:
+                                head_resp = await client_head.head(candidate_url)
+                                # Only enforce filters if HEAD was successful (status 200)
+                                if head_resp.status_code == 200:
+                                    content_type = head_resp.headers.get("Content-Type", "").lower()
+                                    
+                                    if m_type_lower in ["image", "gif"] and not content_type.startswith("image/"):
+                                        logger.warning(f"Candidate #{idx+1} is not an image (Content-Type: {content_type}). Skipping...")
+                                        continue
+                                    if m_type_lower == "video" and not content_type.startswith("video/"):
+                                        logger.warning(f"Candidate #{idx+1} is not a video (Content-Type: {content_type}). Skipping...")
+                                        continue
+                                    if m_type_lower == "audio" and not content_type.startswith("audio/"):
+                                        logger.warning(f"Candidate #{idx+1} is not an audio file (Content-Type: {content_type}). Skipping...")
+                                        continue
+                                    if "text/html" in content_type or "application/xhtml" in content_type:
+                                        logger.warning(f"Candidate #{idx+1} is an HTML web page. Skipping...")
+                                        continue
+                        except Exception as head_err:
+                            logger.debug(f"HEAD request pre-check failed for {candidate_url}: {str(head_err)}")
+                        
+                        # Determine file extension dynamically from the URL path
+                        parsed_path = urllib.parse.urlparse(candidate_url).path
+                        url_ext = os.path.splitext(parsed_path)[1].lower()
+                        if not url_ext or len(url_ext) > 5:
+                            # Fallback extension mapping
+                            mapping = {
+                                "image": ".jpg",
+                                "video": ".mp4",
+                                "gif": ".gif",
+                                "audio": ".mp3",
+                                "document": ".pdf"
+                            }
+                            url_ext = mapping.get(m_type_lower, f".{m_type_lower}")
+                        
+                        candidate_filename = f"search_{sanitize_filename(query)}_{idx}_{int(time.time())}{url_ext}"
                         candidate_path = config.WORKSPACE_DIR / candidate_filename
                         
                         logger.info(f"Downloading and verifying search candidate #{idx+1}: {candidate_url}")
                         dl_res = await download_content_from_url(candidate_url, filename=candidate_filename, timeout=timeout)
                         
                         if "Success" in dl_res and candidate_path.exists():
-                            if media_type == "image":
+                            if m_type_lower in ["image", "gif"]:
                                 try:
                                     with Image.open(candidate_path) as img:
                                         img.verify()
@@ -102,14 +150,15 @@ class AIToolKitWeb:
                                     logger.info(f"Verified candidate #{idx+1} as a valid image.")
                                     break
                                 except Exception as img_err:
-                                    logger.warning(f"Candidate #{idx+1} is not a valid image/HTML page: {str(img_err)}. Cleaning up...")
+                                    logger.warning(f"Candidate #{idx+1} failed image verification: {str(img_err)}. Cleaning up...")
                                     try: candidate_path.unlink()
                                     except Exception: pass
                             else:
+                                # Generic size check for files/videos/audio to ensure it is not empty
                                 if candidate_path.stat().st_size > 1024:
                                     download_success = True
                                     valid_filename = candidate_filename
-                                    logger.info(f"Verified candidate #{idx+1} as a valid document.")
+                                    logger.info(f"Verified candidate #{idx+1} as a valid file/media.")
                                     break
                                 else:
                                     try: candidate_path.unlink()
