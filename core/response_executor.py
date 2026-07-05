@@ -171,16 +171,18 @@ class AIResponseExecutor:
             after_seg_text = b_content[last_seg_idx:].strip()
             if after_seg_text:
                 segments.append(("text", after_seg_text))
-                
             # Merge text segments into preceding reply segments (bracket compatibility)
             merged_segments = []
             current_rep_id = None
+            reply_consumed = False
             for s_type, s_data in segments:
                 if s_type == "reply":
                     current_rep_id = s_data["msg_id"]
+                    reply_consumed = False
                 elif s_type == "text":
                     if current_rep_id is not None:
                         merged_segments.append(("reply_msg", {"msg_id": current_rep_id, "text": s_data}))
+                        reply_consumed = True
                     else:
                         merged_segments.append(("msg", {"text": s_data}))
                 elif s_type == "reply_msg":
@@ -188,7 +190,13 @@ class AIResponseExecutor:
                 else:
                     merged_segments.append((s_type, s_data))
             if current_rep_id is not None:
-                merged_segments.append(("reply_msg", {"msg_id": current_rep_id, "text": ""}))
+                if not reply_consumed:
+                    merged_segments.append(("reply_msg", {"msg_id": current_rep_id, "text": ""}))
+
+            async def execute_segment(segment):
+                s_type, s_data = segment
+                if not reply_consumed:
+                    merged_segments.append(("reply_msg", {"msg_id": current_rep_id, "text": ""}))
 
             async def execute_segment(segment):
                 nonlocal should_ignore
