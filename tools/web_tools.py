@@ -77,23 +77,54 @@ class AIToolKitWeb:
                 
                 if auto_download and media_type in ["image", "document"]:
                     import time
+                    from PIL import Image
                     from utils import sanitize_filename
+                    from tools import download_content_from_url, upload_file_to_google
+                    
+                    download_success = False
+                    valid_filename = None
                     ext = ".jpg" if media_type == "image" else ".pdf"
-                    filename = f"search_{sanitize_filename(query)}_{int(time.time())}{ext}"
                     
-                    from tools import download_content_from_url
-                    dl_res = await download_content_from_url(results[0], filename=filename, timeout=timeout)
-                    
-                    if "Success" in dl_res:
-                        output_msg += f"\n\n[Auto-Download]: Successfully downloaded top result to workspace as '{filename}'."
+                    for idx, candidate_url in enumerate(results[:5]):
+                        candidate_filename = f"search_{sanitize_filename(query)}_{idx}_{int(time.time())}{ext}"
+                        candidate_path = config.WORKSPACE_DIR / candidate_filename
                         
+                        logger.info(f"Downloading and verifying search candidate #{idx+1}: {candidate_url}")
+                        dl_res = await download_content_from_url(candidate_url, filename=candidate_filename, timeout=timeout)
+                        
+                        if "Success" in dl_res and candidate_path.exists():
+                            if media_type == "image":
+                                try:
+                                    with Image.open(candidate_path) as img:
+                                        img.verify()
+                                    download_success = True
+                                    valid_filename = candidate_filename
+                                    logger.info(f"Verified candidate #{idx+1} as a valid image.")
+                                    break
+                                except Exception as img_err:
+                                    logger.warning(f"Candidate #{idx+1} is not a valid image/HTML page: {str(img_err)}. Cleaning up...")
+                                    try: candidate_path.unlink()
+                                    except Exception: pass
+                            else:
+                                if candidate_path.stat().st_size > 1024:
+                                    download_success = True
+                                    valid_filename = candidate_filename
+                                    logger.info(f"Verified candidate #{idx+1} as a valid document.")
+                                    break
+                                else:
+                                    try: candidate_path.unlink()
+                                    except Exception: pass
+                    
+                    if download_success and valid_filename:
+                        output_msg += f"\n\n[Auto-Download]: Successfully downloaded verified result to workspace as '{valid_filename}'."
                         if auto_upload_google:
-                            from tools import upload_file_to_google
-                            up_res = await upload_file_to_google(filename)
+                            up_res = await upload_file_to_google(valid_filename)
                             if isinstance(up_res, dict) and up_res.get("status") == "success":
                                 output_msg += f"\n[Auto-Upload]: Successfully uploaded to Google File API. URI: {up_res.get('google_uri')} (Mime-type: {up_res.get('mime_type')}). You can view this file in the history!"
                             else:
                                 output_msg += f"\n[Auto-Upload]: Failed to upload to Google File API: {up_res.get('message') if isinstance(up_res, dict) else str(up_res)}"
+                    else:
+                        output_msg += f"\n\n[Auto-Download]: All search results failed to deliver a valid, non-corrupted media file."
                 return output_msg
         except Exception as e:
             return f"Error searching for media: {str(e)}"
