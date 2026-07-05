@@ -90,7 +90,11 @@ class AIResponseExecutor:
                     if name == "reply":
                         data = {"msg_id": int(match.group(1))}
                     elif name == "react":
-                        data = {"msg_id": int(match.group(1)), "emoji": match.group(2)}
+                        parts = [p.strip() for p in match.group(2).split("|")]
+                        if len(parts) > 1:
+                            data = {"msg_id": int(match.group(1)), "emoji": parts[0], "action": parts[1]}
+                        else:
+                            data = {"msg_id": int(match.group(1)), "emoji": parts[0], "action": "set"}
                     elif name == "attach":
                         data = {"files": [f.strip() for f in match.group(1).split(",")], "caption": match.group(2) or ""}
                     elif name == "edit":
@@ -105,7 +109,7 @@ class AIResponseExecutor:
                     
             xml_regexes_compiled = [
                 (re.compile(r'(?<!\\)<reply\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</reply>', re.IGNORECASE | re.DOTALL), "reply_msg"),
-                (re.compile(r'(?<!\\)<react\s+(?:msg_)?id=["\'](\d+)["\']\s+emoji=["\']([^"\']*)["\']\s*/?>', re.IGNORECASE), "react"),
+                (re.compile(r'(?<!\\)<react\s+([^>]*)\s*/?>', re.IGNORECASE), "react_tag"),
                 (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/?>', re.IGNORECASE), "attach"),
                 (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', re.IGNORECASE | re.DOTALL), "attach_tag"),
                 (re.compile(r'(?<!\\)<edit\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</edit>', re.IGNORECASE | re.DOTALL), "edit"),
@@ -118,8 +122,17 @@ class AIResponseExecutor:
                 for match in regex.finditer(b_content):
                     if name == "reply_msg":
                         data = {"msg_id": int(match.group(1)), "text": match.group(2).strip()}
-                    elif name == "react":
-                        data = {"msg_id": int(match.group(1)), "emoji": match.group(2)}
+                    elif name == "react_tag":
+                        attrs_str = match.group(1)
+                        id_m = re.search(r'(?:msg_)?id=["\'](\d+)["\']', attrs_str, re.IGNORECASE)
+                        emoji_m = re.search(r'emoji=["\']([^"\']*)["\']', attrs_str, re.IGNORECASE)
+                        action_m = re.search(r'action=["\']([^"\']*)["\']', attrs_str, re.IGNORECASE)
+                        data = {
+                            "msg_id": int(id_m.group(1)) if id_m else None,
+                            "emoji": emoji_m.group(1) if emoji_m else None,
+                            "action": action_m.group(1) if action_m else "set"
+                        }
+                        name = "react"
                     elif name == "attach":
                         data = {"files": [f.strip() for f in match.group(1).split(",")], "caption": match.group(2) or ""}
                     elif name == "attach_tag":
@@ -161,7 +174,6 @@ class AIResponseExecutor:
                 elif s_type == "text":
                     if current_rep_id is not None:
                         merged_segments.append(("reply_msg", {"msg_id": current_rep_id, "text": s_data}))
-                        current_rep_id = None
                     else:
                         merged_segments.append(("msg", {"text": s_data}))
                 elif s_type == "reply_msg":
@@ -264,7 +276,12 @@ class AIResponseExecutor:
             for regex, name in tag_regexes_compiled:
                 for match in regex.finditer(b_content):
                     if name == "reply": data = {"msg_id": int(match.group(1))}
-                    elif name == "react": data = {"msg_id": int(match.group(1)), "emoji": match.group(2)}
+                    elif name == "react":
+                        parts = [p.strip() for p in match.group(2).split("|")]
+                        if len(parts) > 1:
+                            data = {"msg_id": int(match.group(1)), "emoji": parts[0], "action": parts[1]}
+                        else:
+                            data = {"msg_id": int(match.group(1)), "emoji": parts[0], "action": "set"}
                     elif name == "attach": data = {"files": [f.strip() for f in match.group(1).split(",")], "caption": match.group(2) or ""}
                     elif name == "edit": data = {"msg_id": int(match.group(1)), "text": match.group(2)}
                     elif name == "delete": data = {"msg_id": int(match.group(1))}
@@ -274,7 +291,7 @@ class AIResponseExecutor:
                     
             xml_regexes_compiled = [
                 (re.compile(r'(?<!\\)<reply\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</reply>', re.IGNORECASE | re.DOTALL), "reply_msg"),
-                (re.compile(r'(?<!\\)<react\s+(?:msg_)?id=["\'](\d+)["\']\s+emoji=["\']([^"\']*)["\']\s*/?>', re.IGNORECASE), "react"),
+                (re.compile(r'(?<!\\)<react\s+([^>]*)\s*/?>', re.IGNORECASE), "react_tag"),
                 (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/?>', re.IGNORECASE), "attach"),
                 (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', re.IGNORECASE | re.DOTALL), "attach_tag"),
                 (re.compile(r'(?<!\\)<edit\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</edit>', re.IGNORECASE | re.DOTALL), "edit"),
@@ -286,7 +303,17 @@ class AIResponseExecutor:
             for regex, name in xml_regexes_compiled:
                 for match in regex.finditer(b_content):
                     if name == "reply_msg": data = {"msg_id": int(match.group(1)), "text": match.group(2).strip()}
-                    elif name == "react": data = {"msg_id": int(match.group(1)), "emoji": match.group(2)}
+                    elif name == "react_tag":
+                        attrs_str = match.group(1)
+                        id_m = re.search(r'(?:msg_)?id=["\'](\d+)["\']', attrs_str, re.IGNORECASE)
+                        emoji_m = re.search(r'emoji=["\']([^"\']*)["\']', attrs_str, re.IGNORECASE)
+                        action_m = re.search(r'action=["\']([^"\']*)["\']', attrs_str, re.IGNORECASE)
+                        data = {
+                            "msg_id": int(id_m.group(1)) if id_m else None,
+                            "emoji": emoji_m.group(1) if emoji_m else None,
+                            "action": action_m.group(1) if action_m else "set"
+                        }
+                        name = "react"
                     elif name == "attach": data = {"files": [f.strip() for f in match.group(1).split(",")], "caption": match.group(2) or ""}
                     elif name == "attach_tag":
                         data = {"files": [f.strip() for f in match.group(1).split(",")], "caption": match.group(2).strip()}
@@ -339,7 +366,7 @@ class AIResponseExecutor:
             clean_text = re.sub(config.RE_NOOP_TAG, "", clean_text)
             clean_text = re.sub(config.RE_TOOL_TAG, "", clean_text)
             clean_text = re.sub(r'<reply\s+(?:msg_)?id=["\']\d+["\']>(.*?)</reply>', "", clean_text, flags=re.IGNORECASE | re.DOTALL)
-            clean_text = re.sub(r'<react\s+(?:msg_)?id=["\']\d+["\']\s+emoji=["\']([^"\']*)["\']\s*/?>', "", clean_text, flags=re.IGNORECASE)
+            clean_text = re.sub(r'<react\s+[^>]*\s*/?>', "", clean_text, flags=re.IGNORECASE)
             clean_text = re.sub(r'<attach\s+files=["\']([^"\']*)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/?>', "", clean_text, flags=re.IGNORECASE)
             clean_text = re.sub(r'<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', "", clean_text, flags=re.IGNORECASE | re.DOTALL)
             clean_text = re.sub(r'<edit\s+(?:msg_)?id=["\']\d+["\']>(.*?)</edit>', "", clean_text, flags=re.IGNORECASE | re.DOTALL)

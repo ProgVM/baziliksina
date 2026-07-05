@@ -413,8 +413,16 @@ class AIToolKitTelegram:
         except Exception as e:
             return f"Error sending Telegram poll: {str(e)}"
 
-    async def set_message_reaction(self, chat_id: str, message_id: int, reaction_emoji: str = None, is_add: bool = True, **kwargs) -> str:
-        """Sets or removes a reaction emoji on a specific message."""
+    async def set_message_reaction(self, chat_id: str, message_id: int, reaction_emojis: str = None, action: str = "set", **kwargs) -> str:
+        """
+        Manages reactions on a specific message. Supports single/multiple emojis, Premium custom emojis, and full/partial clearing.
+        
+        Args:
+            chat_id: Target chat ID or username.
+            message_id: ID of the message to react to.
+            reaction_emojis: Comma-separated list of emojis or custom emoji document IDs (e.g., "👍,❤️" or "5432112345,🔥"). Max 3 for Premium, 1 for non-Premium user..
+            action: The action to perform: "set" (replace all with these), "add" (append to existing), "remove" (remove these specific ones), or "clear" (remove all).
+        """
         if not tools.client:
             return "Error: Telethon client is not initialized."
         try:
@@ -423,14 +431,66 @@ class AIToolKitTelegram:
             if isinstance(chat_id, str):
                 try: chat_id = int(chat_id)
                 except ValueError: pass
-            reaction_list = []
-            if is_add and reaction_emoji:
-                if str(reaction_emoji).isdigit():
-                    reaction_list.append(tl_types.ReactionCustomEmoji(document_id=int(reaction_emoji)))
+            
+            action = action.lower().strip()
+            
+            def parse_emojis(em_str):
+                res = []
+                if not em_str:
+                    return res
+                parts = [e.strip() for e in str(em_str).split(",") if e.strip()]
+                for part in parts:
+                    if part.isdigit():
+                        res.append(tl_types.ReactionCustomEmoji(document_id=int(part)))
+                    else:
+                        res.append(tl_types.ReactionEmoji(emoticon=part))
+                return res
+            
+            input_reactions = parse_emojis(reaction_emojis)
+            
+            if action == "clear":
+                reaction_list = []
+            elif action == "set":
+                reaction_list = input_reactions[:3]
+            else:
+                msg = await tools.client.get_messages(chat_id, ids=int(message_id))
+                current_own = []
+                if msg and msg.reactions and hasattr(msg.reactions, "results"):
+                    for r_count in msg.reactions.results:
+                        if getattr(r_count, "chosen", False):
+                            current_own.append(r_count.reaction)
+                
+                if action == "add":
+                    merged = list(current_own)
+                    for r in input_reactions:
+                        exists = False
+                        for existing in merged:
+                            if type(r) == type(existing):
+                                if isinstance(r, tl_types.ReactionEmoji) and r.emoticon == existing.emoticon:
+                                    exists = True
+                                elif isinstance(r, tl_types.ReactionCustomEmoji) and r.document_id == existing.document_id:
+                                    exists = True
+                        if not exists:
+                            merged.append(r)
+                    reaction_list = merged[:3]
+                elif action == "remove":
+                    filtered = []
+                    for existing in current_own:
+                        to_remove = False
+                        for r in input_reactions:
+                            if type(r) == type(existing):
+                                if isinstance(r, tl_types.ReactionEmoji) and r.emoticon == existing.emoticon:
+                                    to_remove = True
+                                elif isinstance(r, tl_types.ReactionCustomEmoji) and r.document_id == existing.document_id:
+                                    to_remove = True
+                        if not to_remove:
+                            filtered.append(existing)
+                    reaction_list = filtered[:3]
                 else:
-                    reaction_list.append(tl_types.ReactionEmoji(emoticon=reaction_emoji))
+                    return f"Error: Invalid action '{action}'. Choose from 'set', 'add', 'remove', 'clear'."
+            
             await tools.client(SendReactionRequest(peer=chat_id, msg_id=int(message_id), reaction=reaction_list))
-            return f"Success. Message #{message_id} reaction updated."
+            return f"Success! Message #{message_id} reactions updated via action '{action}'."
         except Exception as e:
             return f"Error setting reaction: {str(e)}"
 

@@ -34,9 +34,11 @@ class RootTagBlockHandlers:
     async def react(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """Sets or removes an emoji reaction on a message."""
         emoji = data.get("emoji")
-        is_add = emoji.lower() != "none" if emoji else False
         msg_id = data.get("msg_id") or reply_to_id
-        await tools.toolkit.set_message_reaction(chat_entity, msg_id, reaction_emoji=emoji if is_add else None, is_add=is_add)
+        if emoji and emoji.lower() == "none":
+            await tools.toolkit.set_message_reaction(chat_entity, msg_id, action="clear")
+        else:
+            await tools.toolkit.set_message_reaction(chat_entity, msg_id, reaction_emojis=emoji, action="set")
 
     async def attach(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """Sends media attachments (photos, videos, files, GIFs) to the chat."""
