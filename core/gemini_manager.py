@@ -211,10 +211,12 @@ class GeminiManager:
                 # Inject dynamic custom title and admin rights directly into the active chat header
                 for content in contents:
                     if content.parts and content.parts[0].text and "[System notification: Active conversation thread" in content.parts[0].text:
+                        reply_to_id_str = str(reply_to_id) if reply_to_id else "unknown"
                         content.parts[0].text = (
                             f"{content.parts[0].text}\n"
                             f"- Your custom Member Tag in this active chat: {custom_title_status}\n"
-                            f"- Your administrative privileges: {admin_status}"
+                            f"- Your administrative privileges: {admin_status}\n"
+                            f"- Current active triggering Message ID: {reply_to_id_str} (All your plain conversational replies and default <reply> tags MUST target this Message ID unless you explicitly reply to another ID)"
                         )
                         break
 
