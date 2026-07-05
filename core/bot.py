@@ -345,7 +345,7 @@ async def on_new_message(event):
     entity_cache[chat_id] = input_chat_entity
 
     # Global filter check: should we save this message event?
-    if not should_process_message_event(event, me, "save"):
+    if not await should_process_message_event(event, me, "save", db):
         return
 
     # Auto-read incoming messages (only if PM or mentioned)
@@ -463,7 +463,7 @@ async def on_new_message(event):
         return
 
     # Global filter check: should we trigger AI generation on this message?
-    if not should_process_message_event(event, me, "trigger"):
+    if not await should_process_message_event(event, me, "trigger", db):
         return
 
     # Start Debounce generation of AI response in all chats during activity lull

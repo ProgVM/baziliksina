@@ -162,7 +162,14 @@ def safe_telegram_html(text: str) -> str:
     
     return ''.join(parts)
 
-def should_process_message_event(event, me, action_type="save") -> bool:
+
+def sanitize_filename(name: str) -> str:
+    """Sanitizes a string for use as a safe filename on disk."""
+    import re
+    cleaned = re.sub(r'[\\/*?:"<>|]', "", name)
+    return cleaned.replace(" ", "_")[:100]
+
+async def should_process_message_event(event, me, action_type="save", db=None) -> bool:
     """
     Evaluates whether an incoming or outgoing message event should be processed
     (either 'save' to DB or 'generate' / trigger AI response) based on config.
@@ -262,7 +269,18 @@ def should_process_message_event(event, me, action_type="save") -> bool:
             if "mentioned" in config.AI_RESPONSE_TRIGGERS and event.mentioned:
                 triggered = True
             if "reply_to_me" in config.AI_RESPONSE_TRIGGERS and event.message.is_reply:
-                triggered = True
+                # Strictly verify if the replied-to message belongs to the model (the userbot)
+                if event.message.reply_to and db:
+                    reply_to_msg_id = event.message.reply_to.reply_to_msg_id
+                    async with db.db.execute(
+                        "SELECT role FROM messages WHERE chat_id = ? AND msg_id = ? LIMIT 1",
+                        (str(event.chat_id), reply_to_msg_id)
+                    ) as cursor:
+                        row = await cursor.fetchone()
+                    if row and row[0] == "model":
+                        triggered = True
+                else:
+                    triggered = True
             if config.AI_RESPONSE_TRIGGERS and not triggered:
                 return False
 
