@@ -1260,6 +1260,42 @@ class AIToolKitTelegram:
         except Exception as e:
             return f"Error managing contact: {str(e)}"
 
+    async def pin_telegram_message(self, message_id: int, chat_id: str = None, notify: bool = False, **kwargs) -> str:
+        """
+        Pins a specific message in the specified chat. Requires pin privileges.
+        """
+        if not tools.client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = tools.current_chat_id.get()
+            except LookupError: return "Error: Failed to determine target chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+        try:
+            await tools.client.pin_message(chat_id, int(message_id), notify=notify)
+            return f"Success! Message #{message_id} pinned in chat {chat_id}."
+        except Exception as e:
+            return f"Error pinning message: {str(e)}"
+
+    async def unpin_telegram_message(self, message_id: int = None, chat_id: str = None, **kwargs) -> str:
+        """
+        Unpins a specific message or all messages in the specified chat.
+        """
+        if not tools.client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try: chat_id = tools.current_chat_id.get()
+            except LookupError: return "Error: Failed to determine target chat."
+        if isinstance(chat_id, str):
+            try: chat_id = int(chat_id)
+            except ValueError: pass
+        try:
+            await tools.client.unpin_message(chat_id, int(message_id) if message_id is not None else None)
+            return f"Success! Pinned message(s) unpinned in chat {chat_id}."
+        except Exception as e:
+            return f"Error unpinning message: {str(e)}"
+
 # Export methods to module level
 toolkit_tg = AIToolKitTelegram()
 for attr in dir(toolkit_tg):

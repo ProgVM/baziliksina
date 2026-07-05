@@ -59,6 +59,17 @@ class RootTagBlockHandlers:
         if msg_id:
             await tools.toolkit.delete_message(chat_entity, int(msg_id))
 
+    async def pin(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
+        """Pins a specific message in the chat."""
+        msg_id = data.get("msg_id") or reply_to_id
+        notify = data.get("notify", False)
+        await tools.toolkit.pin_telegram_message(message_id=msg_id, chat_id=chat_entity, notify=notify)
+
+    async def unpin(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
+        """Unpins a message in the chat."""
+        msg_id = data.get("msg_id")
+        await tools.toolkit.unpin_telegram_message(message_id=msg_id, chat_id=chat_entity)
+
     async def noop(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """No-Op Ignore action. Specify a reason."""
         reason = data.get("reason", "No reason provided")
@@ -121,6 +132,8 @@ ROOT_TAGS_BLOCKS = {
     "attach": ("tag", handlers.attach),
     "edit": ("tag", handlers.edit),
     "delete": ("tag", handlers.delete),
+    "pin": ("tag", handlers.pin),
+    "unpin": ("tag", handlers.unpin),
     "noop": ("tag", handlers.noop),
     "no_op_ignore": ("tag", handlers.noop),
     "tool": ("tag", handlers.tool),

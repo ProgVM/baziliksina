@@ -64,6 +64,8 @@ ROOT_TOOL_CATEGORIES = {
     "edit_chat_participant_settings": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "get_chat_participant_info": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "join_telegram_chat": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "pin_telegram_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "unpin_telegram_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "set_task_timer": "Category 4: Timers and Scheduler (SQLite Schedulers)",
     "delete_task_timer": "Category 4: Timers and Scheduler (SQLite Schedulers)",
     "list_task_timers": "Category 4: Timers and Scheduler (SQLite Schedulers)",

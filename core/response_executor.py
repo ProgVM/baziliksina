@@ -101,6 +101,10 @@ class AIResponseExecutor:
                         data = {"msg_id": int(match.group(1)), "text": match.group(2)}
                     elif name == "delete":
                         data = {"msg_id": int(match.group(1))}
+                    elif name == "pin":
+                        data = {"msg_id": int(match.group(1)), "notify": True if match.group(2) and match.group(2).lower() == "true" else False}
+                    elif name == "unpin":
+                        data = {"msg_id": int(match.group(1)) if match.group(1) else None}
                     elif name == "noop":
                         data = {"reason": match.group(1), "continue": True if match.group(2) and match.group(2).lower() == "true" else False}
                     elif name == "tool":
@@ -114,6 +118,8 @@ class AIResponseExecutor:
                 (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', re.IGNORECASE | re.DOTALL), "attach_tag"),
                 (re.compile(r'(?<!\\)<edit\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</edit>', re.IGNORECASE | re.DOTALL), "edit"),
                 (re.compile(r'(?<!\\)<delete\s+(?:msg_)?id=["\'](\d+)["\']\s*/?>', re.IGNORECASE), "delete"),
+                (re.compile(r'(?<!\\)<pin\s+(?:msg_)?id=["\'](\d+)["\'](?:\s+notify=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "pin"),
+                (re.compile(r'(?<!\\)<unpin(?:\s+(?:msg_)?id=["\'](\d+)["\'])?\s*/?>', re.IGNORECASE), "unpin"),
                 (re.compile(r'(?<!\\)<(?:noop|no_op_ignore)\s+reason=["\']([^"\']*)["\'](?:\s+continue=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "noop"),
                 (re.compile(r'(?<!\\)<tool\s+name=["\']([a-zA-Z0-9_]+)["\']\s*([^>]*)\s*/?>', re.IGNORECASE), "tool")
             ]
@@ -138,12 +144,13 @@ class AIResponseExecutor:
                     elif name == "attach_tag":
                         data = {"files": [f.strip() for f in match.group(1).split(",")], "caption": match.group(2).strip()}
                         name = "attach"
-                    elif name == "edit":
-                        data = {"msg_id": int(match.group(1)), "text": match.group(2).strip()}
-                    elif name == "delete":
-                        data = {"msg_id": int(match.group(1))}
-                    elif name == "noop":
-                        data = {"reason": match.group(1), "continue": True if match.group(2) and match.group(2).lower() == "true" else False}
+                    elif name == "edit": data = {"msg_id": int(match.group(1)), "text": match.group(2).strip()}
+                    elif name == "delete": data = {"msg_id": int(match.group(1))}
+                    elif name == "pin":
+                        data = {"msg_id": int(match.group(1)), "notify": True if match.group(2) and match.group(2).lower() == "true" else False}
+                    elif name == "unpin":
+                        data = {"msg_id": int(match.group(1)) if match.group(1) else None}
+                    elif name == "noop": data = {"reason": match.group(1), "continue": True if match.group(2) and match.group(2).lower() == "true" else False}
                     elif name == "tool":
                         data = {"tool_name": match.group(1), "args_str": match.group(2)}
                     all_matches.append((match.start(), match.end(), name, data))
@@ -296,6 +303,8 @@ class AIResponseExecutor:
                 (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', re.IGNORECASE | re.DOTALL), "attach_tag"),
                 (re.compile(r'(?<!\\)<edit\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</edit>', re.IGNORECASE | re.DOTALL), "edit"),
                 (re.compile(r'(?<!\\)<delete\s+(?:msg_)?id=["\'](\d+)["\']\s*/?>', re.IGNORECASE), "delete"),
+                (re.compile(r'(?<!\\)<pin\s+(?:msg_)?id=["\'](\d+)["\'](?:\s+notify=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "pin"),
+                (re.compile(r'(?<!\\)<unpin(?:\s+(?:msg_)?id=["\'](\d+)["\'])?\s*/?>', re.IGNORECASE), "unpin"),
                 (re.compile(r'(?<!\\)<(?:noop|no_op_ignore)\s+reason=["\']([^"\']*)["\'](?:\s+continue=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "noop"),
                 (re.compile(r'(?<!\\)<tool\s+name=["\']([a-zA-Z0-9_]+)["\']\s*([^>]*)\s*/?>', re.IGNORECASE), "tool")
             ]
@@ -371,6 +380,8 @@ class AIResponseExecutor:
             clean_text = re.sub(r'<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', "", clean_text, flags=re.IGNORECASE | re.DOTALL)
             clean_text = re.sub(r'<edit\s+(?:msg_)?id=["\']\d+["\']>(.*?)</edit>', "", clean_text, flags=re.IGNORECASE | re.DOTALL)
             clean_text = re.sub(r'<delete\s+(?:msg_)?id=["\']\d+["\']\s*/?>', "", clean_text, flags=re.IGNORECASE)
+            clean_text = re.sub(r'<pin\s+[^>]*\s*/?>', "", clean_text, flags=re.IGNORECASE)
+            clean_text = re.sub(r'<unpin\s+[^>]*\s*/?>', "", clean_text, flags=re.IGNORECASE)
             clean_text = re.sub(r'<noop\s+reason=["\']([^"\']*)["\'](?:\s+continue=["\'](?:true|false)["\'])?\s*/?>', "", clean_text, flags=re.IGNORECASE)
             clean_text = re.sub(r'<tool\s+name=["\']([a-zA-Z0-9_]+)["\']\s*([^>]*)\s*/?>', "", clean_text, flags=re.IGNORECASE)
             return clean_text.strip()
