@@ -33,8 +33,17 @@ class AIToolKitWeb:
         except Exception as e:
             return f"Search error: {str(e)}"
 
-    async def internet_media_search(self, query: str, media_type: str = "image", timeout: float = WEB_MEDIA_SEARCH_TIMEOUT, **kwargs) -> str:
-        """Performs a search for multimedia files or PDF documents on the Internet via DuckDuckGo."""
+    async def internet_media_search(self, query: str, media_type: str = "image", timeout: float = WEB_MEDIA_SEARCH_TIMEOUT, auto_download: bool = None, auto_upload_google: bool = None, **kwargs) -> str:
+        """
+        Performs a search for multimedia files or PDF documents on the Internet via DuckDuckGo.
+        If auto_download is True, automatically downloads the first result to the workspace.
+        If auto_upload_google is True, also uploads the downloaded media to Google File API so the AI can see it.
+        """
+        if auto_download is None:
+            auto_download = getattr(config, "MEDIA_SEARCH_AUTO_DOWNLOAD", True)
+        if auto_upload_google is None:
+            auto_upload_google = getattr(config, "MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE", True)
+
         headers = {"User-Agent": USER_AGENT}
         search_query = query
         if media_type == "document":
@@ -60,7 +69,32 @@ class AIToolKitWeb:
                 else:
                     for link in soup.find_all("a", class_="result__snippet")[:WEB_SEARCH_RESULTS_LIMIT]:
                         results.append(link.get_text(strip=True))
-                return "\n".join(results) if results else "Multimedia not found."
+                
+                if not results:
+                    return "Multimedia not found."
+                
+                output_msg = f"Search Results for '{query}':\n" + "\n".join(f"- {url}" for url in results)
+                
+                if auto_download and media_type in ["image", "document"]:
+                    import time
+                    from utils import sanitize_filename
+                    ext = ".jpg" if media_type == "image" else ".pdf"
+                    filename = f"search_{sanitize_filename(query)}_{int(time.time())}{ext}"
+                    
+                    from tools import download_content_from_url
+                    dl_res = await download_content_from_url(results[0], filename=filename, timeout=timeout)
+                    
+                    if "Success" in dl_res:
+                        output_msg += f"\n\n[Auto-Download]: Successfully downloaded top result to workspace as '{filename}'."
+                        
+                        if auto_upload_google:
+                            from tools import upload_file_to_google
+                            up_res = await upload_file_to_google(filename)
+                            if isinstance(up_res, dict) and up_res.get("status") == "success":
+                                output_msg += f"\n[Auto-Upload]: Successfully uploaded to Google File API. URI: {up_res.get('google_uri')} (Mime-type: {up_res.get('mime_type')}). You can view this file in the history!"
+                            else:
+                                output_msg += f"\n[Auto-Upload]: Failed to upload to Google File API: {up_res.get('message') if isinstance(up_res, dict) else str(up_res)}"
+                return output_msg
         except Exception as e:
             return f"Error searching for media: {str(e)}"
 
