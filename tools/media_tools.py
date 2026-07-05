@@ -199,8 +199,8 @@ class AIToolKitMedia:
                 try:
                     with open(file_path, "rb") as f:
                         files = {"file": (os.path.basename(file_path), f)}
-                        async with httpx.AsyncClient(timeout=timeout) as client_httpx:
-                            resp = await client_httpx.post("https://file.io", files=files, headers=headers)
+                        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client_httpx:
+                            resp = await client_httpx.post("https://file.io/", files=files, headers=headers)
                             if resp.status_code == 200 and resp.json().get("success"):
                                 return f"File '{filename}' successfully uploaded to file.io!\nPublic URL: {resp.json().get('link')}"
                 except Exception as e:
@@ -209,7 +209,8 @@ class AIToolKitMedia:
             if provider in ["uguu.se", "auto"]:
                 try:
                     with open(file_path, "rb") as f:
-                        files = {"files[]": (os.path.basename(file_path), f, f"image/{ext}" if ext in ["jpg", "jpeg", "png"] else "application/octet-stream")}
+                        mime_val = "image/jpeg" if ext in ["jpg", "jpeg"] else "image/png" if ext == "png" else "application/octet-stream"
+                        files = {"files[]": (os.path.basename(file_path), f, mime_val)}
                         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client_httpx:
                             resp = await client_httpx.post("https://uguu.se/upload", files=files, headers=headers)
                             if resp.status_code == 200 and resp.json().get("success"):
