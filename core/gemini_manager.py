@@ -446,7 +446,9 @@ class GeminiManager:
                 # 5. Hand over text response executing block-level tags dynamically to ResponseExecutor
                 if response.text and not function_calls_to_execute and not should_ignore:
                     typing_task.cancel()
-                    should_ignore = await self.executor.execute_response(response.text, chat_entity, reply_to_id, chat_id)
+                    should_ignore, should_continue = await self.executor.execute_response(response.text, chat_entity, reply_to_id, chat_id)
+                    if should_continue:
+                        continue
 
                 # 6. Process tool calls
                 if function_calls_to_execute:

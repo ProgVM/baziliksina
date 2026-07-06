@@ -39,6 +39,7 @@ class AIResponseExecutor:
         Parses sequentially/parallel/background blocks and executes contained segments chronologically.
         Returns should_ignore (bool) to signal if transaction should be closed immediately.
         """
+        self.should_continue = False
         should_ignore = False
         cleaned_text = text
 
@@ -198,6 +199,16 @@ class AIResponseExecutor:
                 nonlocal should_ignore
                 s_type, s_data = segment
                 
+                # Check for explicit XML 'continue' attribute override, otherwise fallback to defaults
+                explicit_continue = s_data.get("continue") if isinstance(s_data, dict) else None
+                if explicit_continue is not None:
+                    tag_should_continue = str(explicit_continue).lower() in ["true", "1", "yes"]
+                else:
+                    tag_should_continue = s_type in ["search", "mediasearch", "draw", "scrape", "sql", "python", "tool"]
+                
+                if tag_should_continue:
+                    self.should_continue = True
+                
                 from utils import matches_filter
                 from registry import tag_block_registry
                 if not matches_filter(s_type, config.AI_TAG_WHITELIST, config.AI_TAG_BLACKLIST):
@@ -229,7 +240,7 @@ class AIResponseExecutor:
                 for segment in merged_segments:
                     asyncio.create_task(execute_segment(segment))
 
-        return should_ignore
+        return should_ignore, self.should_continue
 
     async def parse_execute_and_strip_tags(self, text: str, chat_entity, reply_to_id: int, chat_id: str) -> str:
         """
@@ -344,6 +355,16 @@ class AIResponseExecutor:
             segments = [(name, data) for (start, end, name, data) in all_matches]
             
             async def execute_segment(segment):
+                s_type, s_data = segment
+                
+                explicit_continue = s_data.get("continue") if isinstance(s_data, dict) else None
+                if explicit_continue is not None:
+                    tag_should_continue = str(explicit_continue).lower() in ["true", "1", "yes"]
+                else:
+                    tag_should_continue = s_type in ["search", "mediasearch", "draw", "scrape", "sql", "python", "tool"]
+                
+                if tag_should_continue:
+                    self.should_continue = True
                 s_type, s_data = segment
                 from utils import matches_filter
                 from registry import tag_block_registry
