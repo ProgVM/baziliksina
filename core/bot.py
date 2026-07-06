@@ -200,6 +200,11 @@ def schedule_debounce_query(chat_id, entity, trigger_msg_id=None):
 
     asyncio.create_task(wait_and_send_debounce(chat_id, current_time_id))
 
+async def run_pending_query_after_delay(cid, entity, trigger_msg_id):
+    """Non-cancellable brief safety sleep using config.TIMEOUT_SLEEP, then promotes the query."""
+    await asyncio.sleep(config.QUEUE_PROMOTION_DELAY)
+    await run_pending_query(cid, entity, trigger_msg_id=trigger_msg_id)
+
 # Handler for executing pending queries (strictly int types for queues)
 async def run_pending_query(cid, entity, trigger_msg_id=None):
     cid_int = int(cid)
@@ -210,7 +215,8 @@ async def run_pending_query(cid, entity, trigger_msg_id=None):
         generating_chats.discard(cid_int)
         if cid_int in pending_buffers:
             p_data = pending_buffers.pop(cid_int)
-            schedule_debounce_query(cid_int, p_data["entity"], trigger_msg_id=p_data.get("trigger_msg_id"))
+            # Run non-cancellable promotion in background task so new messages cannot cancel it
+            asyncio.create_task(run_pending_query_after_delay(cid_int, p_data["entity"], p_data.get("trigger_msg_id")))
 
 
 # --- Universal background tracking of reactions on posts, channels, and PMs ---
@@ -403,6 +409,13 @@ async def on_new_message(event):
     debounce_counter += 1
     current_trigger_id = debounce_counter
     
+    # If the chat is already busy generating, queue the parameters directly.
+    # This prevents the active conversation flow from delaying or canceling the queue.
+    if chat_id in generating_chats:
+        logger.info(f"Chat {chat_id} is busy generating. Queuing message {msg_id} directly.")
+        pending_buffers[chat_id] = {"entity": input_chat_entity, "trigger_msg_id": msg_id}
+        return
+        
     if chat_id not in message_buffers:
         message_buffers[chat_id] = {}
         
