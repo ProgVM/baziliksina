@@ -123,6 +123,9 @@ class AIResponseExecutor:
                     attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
                 attrs["text"] = content.strip()
                 
+                if tag_name == "reply":
+                    tag_name = "reply_msg"
+                
                 all_matches.append((match.start(), match.end(), tag_name, attrs))
                 
             # 2. Universal Self-Closing Tags: <tag key="val" />
@@ -198,6 +201,7 @@ class AIResponseExecutor:
             async def execute_segment(segment):
                 nonlocal should_ignore
                 s_type, s_data = segment
+                logger.info(f"Executing segment action: <{s_type}> | Arguments: {s_data}")
                 
                 # Check for explicit XML 'continue' attribute override, otherwise fallback to defaults
                 explicit_continue = s_data.get("continue") if isinstance(s_data, dict) else None
@@ -232,12 +236,15 @@ class AIResponseExecutor:
                 b_type = "seq"
             if b_type == "seq":
                 for segment in merged_segments:
+                    logger.debug(f"Scheduling sequential segment execution for: <{segment[0]}>")
                     await execute_segment(segment)
             elif b_type == "par":
                 tasks_list = [execute_segment(segment) for segment in merged_segments]
+                logger.debug(f"Scheduling parallel execution of {len(tasks_list)} segments.")
                 await asyncio.gather(*tasks_list, return_exceptions=True)
             elif b_type == "bg":
                 for segment in merged_segments:
+                    logger.debug(f"Spawning background task for segment: <{segment[0]}>")
                     asyncio.create_task(execute_segment(segment))
 
         return should_ignore, self.should_continue
@@ -249,6 +256,7 @@ class AIResponseExecutor:
         if not text:
             return text
         
+        logger.info(f"parse_execute_and_strip_tags: Processing text block (length={len(text)} characters).")
         cleaned_text = text
         # 1. Clean technical prefixes and thought logs
         for pattern in METADATA_CLEAN_PATTERNS:
@@ -284,6 +292,8 @@ class AIResponseExecutor:
         # Helper to execute a single block with sequential/parallel/background scheduling
         async def execute_block(b_type, b_content):
             all_matches = []
+            logger.info(f"Executing block container '{b_type}' parsed during text stripping. Content length: {len(b_content)}")
+            
             
             tag_regexes_compiled = [
                 (re.compile(config.RE_REPLY_TAG, re.IGNORECASE), "reply"),
@@ -311,42 +321,38 @@ class AIResponseExecutor:
                     elif name == "tool": data = {"tool_name": match.group(1), "args_str": match.group(2)}
                     all_matches.append((match.start(), match.end(), name, data))
                     
-            xml_regexes_compiled = [
-                (re.compile(r'(?<!\\)<reply\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</reply>', re.IGNORECASE | re.DOTALL), "reply_msg"),
-                (re.compile(r'(?<!\\)<react\s+([^>]*)\s*/?>', re.IGNORECASE), "react_tag"),
-                (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/?>', re.IGNORECASE), "attach"),
-                (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', re.IGNORECASE | re.DOTALL), "attach_tag"),
-                (re.compile(r'(?<!\\)<edit\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</edit>', re.IGNORECASE | re.DOTALL), "edit"),
-                (re.compile(r'(?<!\\)<delete\s+(?:msg_)?id=["\'](\d+)["\']\s*/?>', re.IGNORECASE), "delete"),
-                (re.compile(r'(?<!\\)<pin\s+(?:msg_)?id=["\'](\d+)["\'](?:\s+notify=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "pin"),
-                (re.compile(r'(?<!\\)<unpin(?:\s+(?:msg_)?id=["\'](\d+)["\'])?\s*/?>', re.IGNORECASE), "unpin"),
-                (re.compile(r'(?<!\\)<(?:noop|no_op_ignore)\s+reason=["\']([^"\']*)["\'](?:\s+continue=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "noop"),
-                (re.compile(r'(?<!\\)<tool\s+name=["\']([a-zA-Z0-9_]+)["\']\s*([^>]*)\s*/?>', re.IGNORECASE), "tool")
-            ]
-            
-            for regex, name in xml_regexes_compiled:
-                for match in regex.finditer(b_content):
-                    if name == "reply_msg": data = {"msg_id": int(match.group(1)), "text": match.group(2).strip()}
-                    elif name == "react_tag":
-                        attrs_str = match.group(1)
-                        id_m = re.search(r'(?:msg_)?id=["\'](\d+)["\']', attrs_str, re.IGNORECASE)
-                        emoji_m = re.search(r'emoji=["\']([^"\']*)["\']', attrs_str, re.IGNORECASE)
-                        action_m = re.search(r'action=["\']([^"\']*)["\']', attrs_str, re.IGNORECASE)
-                        data = {
-                            "msg_id": int(id_m.group(1)) if id_m else None,
-                            "emoji": emoji_m.group(1) if emoji_m else None,
-                            "action": action_m.group(1) if action_m else "set"
-                        }
-                        name = "react"
-                    elif name == "attach": data = {"files": [f.strip() for f in match.group(1).split(",")], "caption": match.group(2) or ""}
-                    elif name == "attach_tag":
-                        data = {"files": [f.strip() for f in match.group(1).split(",")], "caption": match.group(2).strip()}
-                        name = "attach"
-                    elif name == "edit": data = {"msg_id": int(match.group(1)), "text": match.group(2).strip()}
-                    elif name == "delete": data = {"msg_id": int(match.group(1))}
-                    elif name == "noop": data = {"reason": match.group(1), "continue": True if match.group(2) and match.group(2).lower() == "true" else False}
-                    elif name == "tool": data = {"tool_name": match.group(1), "args_str": match.group(2)}
-                    all_matches.append((match.start(), match.end(), name, data))
+            # 1. Universal Content Tags: <tag key="val">content</tag>
+            universal_content_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)(?:\s+([^>]*))?>(.*?)</\1>', re.IGNORECASE | re.DOTALL)
+            for match in universal_content_regex.finditer(b_content):
+                tag_name = match.group(1).lower()
+                attrs_str = match.group(2) or ""
+                content = match.group(3)
+                
+                # Extract key-value attribute pairs
+                attrs = dict(re.findall(r'([a-zA-Z0-9_-]+)=["\']([^"\']*)["\']', attrs_str))
+                if "id" in attrs and "msg_id" not in attrs:
+                    attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
+                attrs["text"] = content.strip()
+                
+                if tag_name == "reply":
+                    tag_name = "reply_msg"
+                
+                all_matches.append((match.start(), match.end(), tag_name, attrs))
+                
+            # 2. Universal Self-Closing Tags: <tag key="val" />
+            universal_self_closing_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)\s+([^>]*)\s*/>', re.IGNORECASE)
+            for match in universal_self_closing_regex.finditer(b_content):
+                tag_name = match.group(1).lower()
+                attrs_str = match.group(2) or ""
+                
+                # Extract key-value attribute pairs
+                attrs = dict(re.findall(r'([a-zA-Z0-9_-]+)=["\']([^"\']*)["\']', attrs_str))
+                if "id" in attrs and "msg_id" not in attrs:
+                    attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
+                if "files" in attrs:
+                    attrs["files"] = [f.strip() for f in attrs["files"].split(",")]
+                    
+                all_matches.append((match.start(), match.end(), tag_name, attrs))
 
             if not all_matches:
                 return
@@ -355,6 +361,7 @@ class AIResponseExecutor:
             segments = [(name, data) for (start, end, name, data) in all_matches]
             
             async def execute_segment(segment):
+                logger.info(f"Executing stripped sub-segment: <{segment[0]}> | Arguments: {segment[1]}")
                 s_type, s_data = segment
                 
                 explicit_continue = s_data.get("continue") if isinstance(s_data, dict) else None
@@ -381,9 +388,12 @@ class AIResponseExecutor:
                 for segment in segments: await execute_segment(segment)
             elif b_type == "par":
                 tasks_list = [execute_segment(segment) for segment in segments]
+                logger.debug(f"Stripping: Scheduling parallel execution of {len(tasks_list)} sub-segments.")
                 await asyncio.gather(*tasks_list, return_exceptions=True)
             elif b_type == "bg":
-                for segment in segments: asyncio.create_task(execute_segment(segment))
+                for segment in segments:
+                    logger.debug(f"Stripping: Spawning background task for sub-segment: <{segment[0]}>")
+                    asyncio.create_task(execute_segment(segment))
 
         # 3. Schedule execution of parsed blocks in background
         for b_type, b_content in blocks:
@@ -409,7 +419,9 @@ class AIResponseExecutor:
             clean_text = re.sub(r'<unpin\s+[^>]*\s*/?>', "", clean_text, flags=re.IGNORECASE)
             clean_text = re.sub(r'<noop\s+reason=["\']([^"\']*)["\'](?:\s+continue=["\'](?:true|false)["\'])?\s*/?>', "", clean_text, flags=re.IGNORECASE)
             clean_text = re.sub(r'<tool\s+name=["\']([a-zA-Z0-9_]+)["\']\s*([^>]*)\s*/?>', "", clean_text, flags=re.IGNORECASE)
-            return clean_text.strip()
+            final_text = clean_text.strip()
+            logger.info(f"parse_execute_and_strip_tags (no blocks): Cleaned output: '{final_text[:60]}...'")
+            return final_text
 
         clean_parts = []
         last_idx = 0
@@ -420,4 +432,5 @@ class AIResponseExecutor:
         final_stripped = "".join(clean_parts).strip()
         final_stripped = final_stripped.replace(r'\[', '[').replace(r'\]', ']')
         final_stripped = final_stripped.replace(r'\<', '<').replace(r'\>', '>')
+        logger.info(f"parse_execute_and_strip_tags (with blocks): Cleaned output: '{final_stripped[:60]}...'")
         return final_stripped

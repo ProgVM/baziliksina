@@ -438,6 +438,7 @@ class GeminiManager:
                                 if call["name"] == "no_op_ignore":
                                     should_ignore = True
                             
+                            logger.info(f"Auto-Heal Interceptor: successfully healed {len(healed_calls)} call(s) from plain conversational text: {[c['name'] for c in healed_calls]}")
                             function_calls_to_execute = []
                             for part in response.candidates[0].content.parts:
                                 if part.function_call:
