@@ -133,11 +133,11 @@ class AIToolKitWeb:
                                         page_soup = BeautifulSoup(page_resp.text, "html.parser")
                                         
                                         # A. Extract OpenGraph and Twitter images (highly reliable preview banners!)
-                                        og_meta = page_soup.find("meta", property=re.compile(r"og:image", re.I)) or page_soup.find("meta", name=re.compile(r"og:image", re.I))
+                                        og_meta = page_soup.find("meta", property=re.compile(r"og:image", re.I)) or page_soup.find("meta", attrs={"name": re.compile(r"og:image", re.I)})
                                         if og_meta and og_meta.get("content"):
                                             scraped_image_urls.append(urllib.parse.urljoin(candidate_url, og_meta["content"]))
                                             
-                                        tw_meta = page_soup.find("meta", name=re.compile(r"twitter:image", re.I)) or page_soup.find("meta", property=re.compile(r"twitter:image", re.I))
+                                        tw_meta = page_soup.find("meta", attrs={"name": re.compile(r"twitter:image", re.I)}) or page_soup.find("meta", property=re.compile(r"twitter:image", re.I))
                                         if tw_meta and tw_meta.get("content"):
                                             scraped_image_urls.append(urllib.parse.urljoin(candidate_url, tw_meta["content"]))
                                             
