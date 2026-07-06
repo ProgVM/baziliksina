@@ -107,53 +107,37 @@ class AIResponseExecutor:
                         data = {"msg_id": int(match.group(1)) if match.group(1) else None}
                     elif name == "noop":
                         data = {"reason": match.group(1), "continue": True if match.group(2) and match.group(2).lower() == "true" else False}
-                    elif name == "tool":
-                        data = {"tool_name": match.group(1), "args_str": match.group(2)}
                     all_matches.append((match.start(), match.end(), name, data))
                     
-            xml_regexes_compiled = [
-                (re.compile(r'(?<!\\)<reply\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</reply>', re.IGNORECASE | re.DOTALL), "reply_msg"),
-                (re.compile(r'(?<!\\)<react\s+([^>]*)\s*/?>', re.IGNORECASE), "react_tag"),
-                (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/?>', re.IGNORECASE), "attach"),
-                (re.compile(r'(?<!\\)<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', re.IGNORECASE | re.DOTALL), "attach_tag"),
-                (re.compile(r'(?<!\\)<edit\s+(?:msg_)?id=["\'](\d+)["\']>(.*?)</edit>', re.IGNORECASE | re.DOTALL), "edit"),
-                (re.compile(r'(?<!\\)<delete\s+(?:msg_)?id=["\'](\d+)["\']\s*/?>', re.IGNORECASE), "delete"),
-                (re.compile(r'(?<!\\)<pin\s+(?:msg_)?id=["\'](\d+)["\'](?:\s+notify=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "pin"),
-                (re.compile(r'(?<!\\)<unpin(?:\s+(?:msg_)?id=["\'](\d+)["\'])?\s*/?>', re.IGNORECASE), "unpin"),
-                (re.compile(r'(?<!\\)<(?:noop|no_op_ignore)\s+reason=["\']([^"\']*)["\'](?:\s+continue=["\'](true|false)["\'])?\s*/?>', re.IGNORECASE), "noop"),
-                (re.compile(r'(?<!\\)<tool\s+name=["\']([a-zA-Z0-9_]+)["\']\s*([^>]*)\s*/?>', re.IGNORECASE), "tool")
-            ]
-            
-            for regex, name in xml_regexes_compiled:
-                for match in regex.finditer(b_content):
-                    if name == "reply_msg":
-                        data = {"msg_id": int(match.group(1)), "text": match.group(2).strip()}
-                    elif name == "react_tag":
-                        attrs_str = match.group(1)
-                        id_m = re.search(r'(?:msg_)?id=["\'](\d+)["\']', attrs_str, re.IGNORECASE)
-                        emoji_m = re.search(r'emoji=["\']([^"\']*)["\']', attrs_str, re.IGNORECASE)
-                        action_m = re.search(r'action=["\']([^"\']*)["\']', attrs_str, re.IGNORECASE)
-                        data = {
-                            "msg_id": int(id_m.group(1)) if id_m else None,
-                            "emoji": emoji_m.group(1) if emoji_m else None,
-                            "action": action_m.group(1) if action_m else "set"
-                        }
-                        name = "react"
-                    elif name == "attach":
-                        data = {"files": [f.strip() for f in match.group(1).split(",")], "caption": match.group(2) or ""}
-                    elif name == "attach_tag":
-                        data = {"files": [f.strip() for f in match.group(1).split(",")], "caption": match.group(2).strip()}
-                        name = "attach"
-                    elif name == "edit": data = {"msg_id": int(match.group(1)), "text": match.group(2).strip()}
-                    elif name == "delete": data = {"msg_id": int(match.group(1))}
-                    elif name == "pin":
-                        data = {"msg_id": int(match.group(1)), "notify": True if match.group(2) and match.group(2).lower() == "true" else False}
-                    elif name == "unpin":
-                        data = {"msg_id": int(match.group(1)) if match.group(1) else None}
-                    elif name == "noop": data = {"reason": match.group(1), "continue": True if match.group(2) and match.group(2).lower() == "true" else False}
-                    elif name == "tool":
-                        data = {"tool_name": match.group(1), "args_str": match.group(2)}
-                    all_matches.append((match.start(), match.end(), name, data))
+            # 1. Universal Content Tags: <tag key="val">content</tag>
+            universal_content_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)(?:\s+([^>]*))?>(.*?)</\1>', re.IGNORECASE | re.DOTALL)
+            for match in universal_content_regex.finditer(b_content):
+                tag_name = match.group(1).lower()
+                attrs_str = match.group(2) or ""
+                content = match.group(3)
+                
+                # Extract key-value attribute pairs
+                attrs = dict(re.findall(r'([a-zA-Z0-9_-]+)=["\']([^"\']*)["\']', attrs_str))
+                if "id" in attrs and "msg_id" not in attrs:
+                    attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
+                attrs["text"] = content.strip()
+                
+                all_matches.append((match.start(), match.end(), tag_name, attrs))
+                
+            # 2. Universal Self-Closing Tags: <tag key="val" />
+            universal_self_closing_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)\s+([^>]*)\s*/>', re.IGNORECASE)
+            for match in universal_self_closing_regex.finditer(b_content):
+                tag_name = match.group(1).lower()
+                attrs_str = match.group(2) or ""
+                
+                # Extract key-value attribute pairs
+                attrs = dict(re.findall(r'([a-zA-Z0-9_-]+)=["\']([^"\']*)["\']', attrs_str))
+                if "id" in attrs and "msg_id" not in attrs:
+                    attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
+                if "files" in attrs:
+                    attrs["files"] = [f.strip() for f in attrs["files"].split(",")]
+                    
+                all_matches.append((match.start(), match.end(), tag_name, attrs))
 
             # Sort by start position ascending, and by length descending to process outer tags first
             all_matches.sort(key=lambda x: (x[0], -(x[1] - x[0])))

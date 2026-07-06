@@ -127,13 +127,7 @@ class GeminiManager:
 
         env_prompt = env_template.replace("{chat_id}", str(chat_id)).replace("{chat_title}", chat_title).replace("{chat_username}", chat_username)
         env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}\nYour custom Member Tag / Custom Title in this chat: {custom_title_status}"
-        critical_security_append = (
-            f"\n\n--- INSTRUCTIONS FOR CURRENT GROUP CHAT ---\n"
-            f"- Address other users strictly by their name/username or general friendly words. Never refer to other group members as your personal creator or master.\n"
-            f"- Pay close attention to message reply threads. If a user asks a question like 'Who is this?' in a reply to someone else's post, resolve the pronoun (who/she/this) based on that parent post, not yourself. Use `<noop reason='not_addressed' />` to bypass messages that are clearly meant for others.\n"
-            f"- NO DUPLICATION: If you have already successfully executed a tool call (such as 'execute_telegram_action' to send a file/message with a caption), the content has already been delivered to the chat. You MUST NOT output any duplicate text responses or tags (like <reply> or <msg>) containing the same text. Leave your text response completely empty or use <noop reason='delivered_via_tool' /> to complete the transaction."
-        )
-        dynamic_prompt = f"{system_prompt}\n\n{env_prompt}{critical_security_append}"
+        dynamic_prompt = f"{system_prompt}\n\n{env_prompt}"
         logger.info(f"Full dynamic system_instruction passed to Gemini: {len(dynamic_prompt)} characters.")
 
         if not chat_entity or isinstance(chat_entity, (int, str)):
