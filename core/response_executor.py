@@ -155,13 +155,28 @@ class AIResponseExecutor:
                         data = {"tool_name": match.group(1), "args_str": match.group(2)}
                     all_matches.append((match.start(), match.end(), name, data))
 
-            # Chronologically sort all matched bracket actions and XML tags
-            all_matches.sort(key=lambda x: x[0])
+            # Sort by start position ascending, and by length descending to process outer tags first
+            all_matches.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+            
+            non_overlapping = []
+            for match in all_matches:
+                m_start, m_end, m_name, m_data = match
+                overlap = False
+                for a_start, a_end, a_name, a_data in non_overlapping:
+                    if m_start < a_end and m_end > a_start:
+                        overlap = True
+                        break
+                if not overlap:
+                    non_overlapping.append(match)
+            
+            # Sort the selected non-overlapping matches chronologically
+            non_overlapping.sort(key=lambda x: x[0])
+            logger.info(f"Filtered {len(all_matches)} raw matches into {len(non_overlapping)} non-overlapping segments.")
             
             segments = []
             last_seg_idx = 0
             
-            for start, end, name, data in all_matches:
+            for start, end, name, data in non_overlapping:
                 before_seg_text = b_content[last_seg_idx:start].strip()
                 if before_seg_text:
                     segments.append(("text", before_seg_text))
@@ -192,6 +207,8 @@ class AIResponseExecutor:
             if current_rep_id is not None:
                 if not reply_consumed:
                     merged_segments.append(("reply_msg", {"msg_id": current_rep_id, "text": ""}))
+
+            logger.info(f"Executing block type '{b_type}' with {len(merged_segments)} merged segments.")
 
             async def execute_segment(segment):
                 nonlocal should_ignore

@@ -55,8 +55,8 @@ baziliksina/
     ├── web_tools.py            # Search engine, scraper & custom HTTP request tool
     ├── telegram_tools.py       # MTProto client actions, polling, muting, kicking & bans
     ├── scheduler_tools.py      # Persistent Scheduled tasks, SQLite timers & triggers
-    └── media_tools.py          # Generative image, audio & video Pollinations шлюз
-```
+    └── media_tools.py          # Generative image, audio & video Pollinations gateway
+    ```
 
 ---
 

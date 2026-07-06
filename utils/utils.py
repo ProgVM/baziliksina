@@ -187,28 +187,35 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
     if action_type == "save":
         if is_outgoing:
             if not config.SAVE_OUTGOING_NEW_MESSAGES:
+                logger.info(f"[Message {event.message.id}] Skipping save: SAVE_OUTGOING_NEW_MESSAGES is disabled.")
                 return False
         else:
             if not config.SAVE_INCOMING_MESSAGES:
+                logger.info(f"[Message {event.message.id}] Skipping save: SAVE_INCOMING_MESSAGES is disabled.")
                 return False
     elif action_type == "trigger":
         if is_outgoing:
             if not config.TRIGGER_ON_OUTGOING_NEW_MESSAGES:
+                logger.info(f"[Message {event.message.id}] Skipping trigger: TRIGGER_ON_OUTGOING_NEW_MESSAGES is disabled.")
                 return False
         else:
             if not config.TRIGGER_ON_INCOMING:
+                logger.info(f"[Message {event.message.id}] Skipping trigger: TRIGGER_ON_INCOMING is disabled.")
                 return False
 
     # 2. Check Allowed Message Types
     m_type = get_media_type_description(event.message) or "text"
     if m_type.lower() not in [t.lower() for t in config.ALLOWED_MESSAGE_TYPES]:
+        logger.info(f"[Message {event.message.id}] Skipping: Media type '{m_type}' is not allowed in ALLOWED_MESSAGE_TYPES.")
         return False
 
     # 3. Check Chat Whitelist / Blacklist Restrictions
     chat_id = int(event.chat_id)
     if config.CHAT_BLACKLIST and chat_id in config.CHAT_BLACKLIST:
+        logger.info(f"[Message {event.message.id}] Skipping: Chat {chat_id} is in CHAT_BLACKLIST.")
         return False
     if config.CHAT_WHITELIST and chat_id not in config.CHAT_WHITELIST:
+        logger.info(f"[Message {event.message.id}] Skipping: Chat {chat_id} is not in CHAT_WHITELIST.")
         return False
 
     # 4. Check Message Whitelist / Blacklist (Regex or Raw Values)
@@ -228,6 +235,7 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
     blacklist = config.MSG_SAVE_BLACKLIST if action_type == "save" else config.MSG_GEN_BLACKLIST
 
     if not matches_filter(text_content, whitelist, blacklist, default_allow=True):
+        logger.info(f"[Message {event.message.id}] Skipping: Message text matches blacklist or doesn't match whitelist.")
         return False
 
     if event.message.media:
@@ -237,6 +245,7 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
         elif hasattr(event.message.media, "photo") and event.message.media.photo:
             file_id = str(event.message.media.photo.id)
         if not matches_filter(file_id, config.INCOMING_FILE_WHITELIST, config.INCOMING_FILE_BLACKLIST):
+            logger.info(f"[Message {event.message.id}] Skipping: File attachment ID {file_id} matches blacklist or doesn't match whitelist.")
             return False
 
     # 5. Additional Generation Triggers check
@@ -247,10 +256,13 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
 
         # Match AI_RESPONSE_MODE
         if config.AI_RESPONSE_MODE == "private_only" and not is_private:
+            logger.info(f"[Message {event.message.id}] Skipping trigger: Private-only mode, but chat is not private.")
             return False
         elif config.AI_RESPONSE_MODE == "group_only" and not is_group:
+            logger.info(f"[Message {event.message.id}] Skipping trigger: Group-only mode, but chat is not a group.")
             return False
         elif config.AI_RESPONSE_MODE == "channel_only" and not is_channel:
+            logger.info(f"[Message {event.message.id}] Skipping trigger: Channel-only mode, but chat is not a channel.")
             return False
 
         # Match AI_RESPONSE_TRIGGERS
@@ -282,6 +294,7 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
                 else:
                     triggered = True
             if config.AI_RESPONSE_TRIGGERS and not triggered:
+                logger.info(f"[Message {event.message.id}] Skipping trigger: Message did not fire any of the active triggers: {config.AI_RESPONSE_TRIGGERS}")
                 return False
 
     return True

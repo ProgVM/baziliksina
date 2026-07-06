@@ -18,12 +18,24 @@ class RootTagBlockHandlers:
     async def reply(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """Sends a text message reply to a specific Telegram message."""
         raw_text = data.get("text", "")
+        
+        # Strip any nested tag structures from the reply text recursively to avoid leaking tags in message bubbles
+        if tools.ai_manager and hasattr(tools.ai_manager, "executor"):
+            logger.info(f"Stripping nested XML/HTML tags and executing sub-actions for reply text: '{raw_text[:60]}...'")
+            raw_text = await tools.ai_manager.executor.parse_execute_and_strip_tags(raw_text, chat_entity, reply_to_id, chat_id)
+            
         unescaped_text = raw_text.replace(r'\[', '[').replace(r'\]', ']')
         unescaped_text = unescaped_text.replace(r'\<', '<').replace(r'\>', '>')
         formatted_html = safe_telegram_html(unescaped_text)
         
+        # Stop execution of empty replies (e.g. if the tag text only contained a nested media tag which got executed and stripped)
+        if not formatted_html.strip():
+            logger.info("Reply text is empty or fully stripped of action tags. Skipping sending empty text bubble.")
+            return
+            
         target_reply_id = data.get("msg_id") or reply_to_id
         try:
+            logger.info(f"Delivering text reply to msg #{target_reply_id} in chat {chat_id}: '{formatted_html[:60]}...'")
             result = await client.send_message(chat_entity, formatted_html, reply_to=int(target_reply_id), parse_mode="html")
             await db.save_message(str(chat_id), "model", unescaped_text, msg_id=result.id)
             import bot
