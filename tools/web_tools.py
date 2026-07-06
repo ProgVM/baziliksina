@@ -33,6 +33,7 @@ class AIToolKitWeb:
                 return "\n\n".join(results) if results else "Search returned no results."
         except Exception as e:
             return f"Search error: {str(e)}"
+
     async def internet_media_search(self, query: str, media_type: str = "image", timeout: float = WEB_MEDIA_SEARCH_TIMEOUT, auto_download: bool = None, auto_upload_google: bool = None, **kwargs) -> str:
         """
         Performs a search for multimedia files, videos, gifs, audio, or any document/file format on the Internet via DuckDuckGo.
@@ -113,7 +114,7 @@ class AIToolKitWeb:
                                     content_type = head_resp.headers.get("Content-Type", "").lower()
                                 else:
                                     # Fallback to GET if HEAD method is not supported
-                                    head_resp = await client_head.get(candidate_url)
+                                    head_resp = await client_get.get(candidate_url)
                                     content_type = head_resp.headers.get("Content-Type", "").lower()
                         except Exception as head_err:
                             logger.debug(f"Pre-check failed for candidate #{idx+1} ({candidate_url}): {str(head_err)}")
