@@ -37,7 +37,17 @@ class RootTagBlockHandlers:
         try:
             logger.info(f"Delivering text reply to msg #{target_reply_id} in chat {chat_id}: '{formatted_html[:60]}...'")
             result = await client.send_message(chat_entity, formatted_html, reply_to=int(target_reply_id), parse_mode="html")
-            await db.save_message(str(chat_id), "model", unescaped_text, msg_id=result.id)
+            
+            # Generate reply metadata for the bot's own message to preserve full context of her responses in database history
+            reply_meta = ""
+            try:
+                from parser import parse_reply_metadata
+                reply_meta = await parse_reply_metadata(result, chat_id, client, db)
+            except Exception as e_meta:
+                logger.debug(f"Failed to generate reply metadata for bot's own message: {str(e_meta)}")
+            
+            full_saved_text = f"{reply_meta}{unescaped_text}".strip()
+            await db.save_message(str(chat_id), "model", full_saved_text, msg_id=result.id)
             import bot
             bot.processed_msg_ids.add((int(chat_id), result.id))
         except Exception as tg_err:

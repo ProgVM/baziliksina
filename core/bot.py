@@ -134,7 +134,8 @@ async def check_and_run_triggers(chat_id: int, text: str, input_chat_entity, eve
             
             logger.info(f"Wake trigger fired in chat {chat_id}. Starting AI generation...")
             await db.save_message(str(chat_id), "user", wake_reason)
-            asyncio.create_task(run_pending_query(chat_id, input_chat_entity))
+            trigger_id = event.message.id if hasattr(event, "message") else None
+            asyncio.create_task(run_pending_query(chat_id, input_chat_entity, trigger_msg_id=trigger_id))
             return True
             
     except Exception as tr_err:
@@ -665,7 +666,7 @@ async def on_message_deleted(event):
                             logger.info(f"Starting generation of response to deletion in chat {cid_int}...")
                             generating_chats.add(cid_int)
                             try:
-                                await ai_manager.handle_query(str(cid_int), input_chat_entity)
+                                await ai_manager.handle_query(str(cid_int), input_chat_entity, trigger_msg_id=msg_id)
                             finally:
                                 generating_chats.discard(cid_int)
         except Exception as e:
