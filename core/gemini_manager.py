@@ -283,7 +283,8 @@ class GeminiManager:
                             continue
                         raise e
                     elif e.code in [502, 503, 504]:
-                        await asyncio.sleep(API_ERROR_SLEEP)
+                        logger.warning(f"Gemini API transient error {e.code} received. Retrying in {config.API_ERROR_SLEEP}s...")
+                        await asyncio.sleep(config.API_ERROR_SLEEP)
                         continue
                     else:
                         raise e
