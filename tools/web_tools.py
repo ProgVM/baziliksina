@@ -66,7 +66,9 @@ class AIToolKitWeb:
                         vqd = vqd_match.group(1)
                         api_url = f"https://duckduckgo.com/i.js"
                         params = {"q": search_query, "o": "json", "vqd": vqd, "f": ",,,", "p": "1"}
-                        api_resp = await client_httpx.get(api_url, params=params, headers=headers)
+                        headers_api = headers.copy()
+                        headers_api["Referer"] = "https://duckduckgo.com/"
+                        api_resp = await client_httpx.get(api_url, params=params, headers=headers_api)
                         if api_resp.status_code == 200:
                             data = api_resp.json()
                             for item in data.get("results", [])[:WEB_SEARCH_RESULTS_LIMIT]:

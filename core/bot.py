@@ -396,18 +396,22 @@ async def on_new_message(event):
     if event.sender_id == me.id:
         text = await parse_message_payload(client, db, event.message)
         
+        
         # Match reply context metadata for outgoing messages
         reply_meta = ""
         if event.message.is_reply:
             reply_meta = await parse_reply_metadata(event.message, chat_id, client, db)
-        full_outgoing_text = f"{reply_meta}{text}".strip()
         
+        existing_meta = await db.get_msg_meta(str(chat_id), msg_id)
+        existing_meta_text = existing_meta.get("meta_text") if existing_meta else ""
+        combined_meta = f"{reply_meta.strip()}\n{existing_meta_text.strip()}".strip()
+        await db.save_msg_meta(str(chat_id), msg_id, meta_text=combined_meta, raw_meta_dict=existing_meta.get("raw_meta") if existing_meta else None)
         
-        logger.info(f"Recording outgoing message {msg_id} in chat {chat_id}: '{full_outgoing_text[:100]}...'")
+        logger.info(f"Recording outgoing message {msg_id} in chat {chat_id}: '{text[:100]}...'")
         media_info = await download_and_cache_media(client, event.message, is_private=True, mentioned=True)
         if media_info:
             asyncio.create_task(upload_media_to_google_background(media_info))
-        await db.save_message(str(chat_id), "model", full_outgoing_text, media_info, msg_id)
+        await db.save_message(str(chat_id), "model", text, media_info, msg_id)
         return
 
     # Background update of Premium metadata and avatars of sender and chat once every PROFILE_UPDATE_INTERVAL
@@ -500,13 +504,16 @@ async def on_new_message(event):
         reply_meta = await parse_reply_metadata(event.message, chat_id, client, db)
         meta_prefix += reply_meta
 
-    full_prompt_text = f"{meta_prefix}{text}".strip()
+    existing_meta = await db.get_msg_meta(str(chat_id), msg_id)
+    existing_meta_text = existing_meta.get("meta_text") if existing_meta else ""
+    combined_meta = f"{meta_prefix.strip()}\n{existing_meta_text.strip()}".strip()
+    await db.save_msg_meta(str(chat_id), msg_id, meta_text=combined_meta, raw_meta_dict=existing_meta.get("raw_meta") if existing_meta else None)
 
-    if me.username and f"@{me.username}" in full_prompt_text:
-        full_prompt_text = full_prompt_text.replace(f"@{me.username}", "").strip()
+    if me.username and f"@{me.username}" in text:
+        text = text.replace(f"@{me.username}", "").strip()
 
     logger.info(f"Message {msg_id} saved to chat history {chat_id}.")
-    await db.save_message(str(chat_id), "user", full_prompt_text, media_info, msg_id)
+    await db.save_message(str(chat_id), "user", text, media_info, msg_id)
 
     if await check_and_run_triggers(chat_id, text, input_chat_entity, event):
         return
