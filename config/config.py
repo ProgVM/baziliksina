@@ -687,6 +687,7 @@ MSG_SAVE_WHITELIST = _parse_list("MSG_SAVE_WHITELIST", [])
 MSG_SAVE_BLACKLIST = _parse_list("MSG_SAVE_BLACKLIST", [])
 MSG_GEN_WHITELIST = _parse_list("MSG_GEN_WHITELIST", [])
 MSG_GEN_BLACKLIST = _parse_list("MSG_GEN_BLACKLIST", [])
+ALLOWED_MESSAGE_TYPES = _parse_list("ALLOWED_MESSAGE_TYPES", ["text", "voice", "video", "photo", "document", "gif", "sticker", "location", "contact", "poll", "venue", "album", "list"])
 
 SAVE_INCOMING_REACTION_ADD = os.getenv("SAVE_INCOMING_REACTION_ADD", "true").lower() == "true"
 SAVE_INCOMING_REACTION_REMOVE = os.getenv("SAVE_INCOMING_REACTION_REMOVE", "true").lower() == "true"
