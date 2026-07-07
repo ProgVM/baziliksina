@@ -75,6 +75,36 @@ pending_buffers = {}
 last_profile_updates = {}  # {user_id_int: timestamp_int}
 last_chat_updates = {}     # {chat_id_int: timestamp_int}
 
+async def upload_media_to_google_background(media_info_str):
+    """Asynchronously uploads newly downloaded media files to Google Files API in the background."""
+    if not media_info_str:
+        return
+    try:
+        media_data = json.loads(media_info_str)
+        m_path = media_data.get("path")
+        m_type = media_data.get("mime_type")
+        if m_path and os.path.exists(m_path) and m_type:
+            if "webm" in m_type or m_path.endswith(".webm"):
+                return
+            
+            import hashlib
+            file_hash = hashlib.md5(m_path.encode('utf-8')).hexdigest()
+            cache_key = f"google_file_uri_{file_hash}"
+            
+            google_uri = await db.get_memory(cache_key)
+            if not google_uri:
+                logger.info(f"[Background Upload]: Uploading file '{m_path}' to Google Files API...")
+                gemini_client = ai_manager.key_manager.get_client()
+                uploaded_file = await gemini_client.aio.files.upload(file=m_path)
+                google_uri = uploaded_file.uri
+                
+                from utils import wait_for_google_file_active
+                if await wait_for_google_file_active(gemini_client, uploaded_file.name):
+                    await db.set_memory(cache_key, google_uri)
+                    await db.set_memory(google_uri, m_type)
+                    logger.info(f"[Background Upload]: File successfully cached: {google_uri}")
+    except Exception as e:
+        logger.error(f"Error in background media upload: {str(e)}")
 
 async def run_and_log_sandbox_code(chat_id: int, code: str, source_type: str = "trigger", event = None):
     """Asynchronously runs code in the VM, prints results to the console, and writes them to the chat history for the AI."""
@@ -372,8 +402,11 @@ async def on_new_message(event):
             reply_meta = await parse_reply_metadata(event.message, chat_id, client, db)
         full_outgoing_text = f"{reply_meta}{text}".strip()
         
+        
         logger.info(f"Recording outgoing message {msg_id} in chat {chat_id}: '{full_outgoing_text[:100]}...'")
         media_info = await download_and_cache_media(client, event.message, is_private=True, mentioned=True)
+        if media_info:
+            asyncio.create_task(upload_media_to_google_background(media_info))
         await db.save_message(str(chat_id), "model", full_outgoing_text, media_info, msg_id)
         return
 
@@ -426,6 +459,8 @@ async def on_new_message(event):
     # 4. Processing incoming messages
     text = await parse_message_payload(client, db, event.message)
     media_info = await download_and_cache_media(client, event.message, is_private, mentioned)
+    if media_info:
+        asyncio.create_task(upload_media_to_google_background(media_info))
 
     meta_prefix = f"[Message ID: {msg_id}]\n"
     sender_role = "Member"
@@ -556,6 +591,8 @@ async def on_message_edited(event):
     # Get the full text of the edited message
     new_text = await parse_message_payload(client, db, event.message)
     media_info = await download_and_cache_media(client, event.message, is_private, mentioned)
+    if media_info:
+        asyncio.create_task(upload_media_to_google_background(media_info))
 
     if me.username and f"@{me.username}" in new_text:
         new_text = new_text.replace(f"@{me.username}", "").strip()
