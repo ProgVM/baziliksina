@@ -229,20 +229,13 @@ class AIContextManager:
                             )
                             await self.db.db.commit()
                         else:
+                            file_part = None
                             is_image = m_type.startswith("image/")
                             file_size = os.path.getsize(m_path)
                             if is_image and file_size < 4 * 1024 * 1024:
                                 with open(m_path, "rb") as f:
                                     file_bytes = f.read()
-                                has_inline = False
-                                for part in (content_obj.parts or []):
-                                    if part.inline_data:
-                                        part.inline_data.data = file_bytes
-                                        has_inline = True
-                                        break
-                                if not has_inline:
-                                    content_obj.parts.insert(0, types.Part.from_bytes(data=file_bytes, mime_type=m_type))
-                                media_count += 1
+                                file_part = types.Part.from_bytes(data=file_bytes, mime_type=m_type)
                             else:
                                 file_hash = hashlib.md5(m_path.encode('utf-8')).hexdigest()
                                 cache_key = f"google_file_uri_{file_hash}"
@@ -263,8 +256,25 @@ class AIContextManager:
                                         logger.error(f"Google upload failed for {m_path}: {str(upload_err)}")
                                         google_uri = None
                                 if google_uri:
-                                    content_obj.parts.insert(0, types.Part.from_uri(file_uri=google_uri, mime_type=m_type))
+                                    file_part = types.Part.from_uri(file_uri=google_uri, mime_type=m_type)
+
+                            if file_part:
+                                if content_obj.role == "user":
+                                    content_obj.parts.insert(0, file_part)
                                     media_count += 1
+                                elif content_obj.role == "model":
+                                    # Bypass modelTurn media restriction with virtual userTurn representation!
+                                    virtual_content = types.Content(
+                                        role="user",
+                                        parts=[
+                                            types.Part.from_text(text="[System notification: You successfully attached and displayed this media file to the chat]"),
+                                            file_part
+                                        ]
+                                    )
+                                    history.append((content_obj, None))
+                                    history.append((virtual_content, None))
+                                    media_count += 1
+                                    continue
                 except Exception as me_err:
                     logger.error(f"Error loading media data: {str(me_err)}")
             contents_raw.append(content_obj)
