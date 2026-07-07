@@ -505,9 +505,17 @@ class GeminiManager:
                                 except Exception as uri_err:
                                     logger.error(f"Failed to bind universal tool part for {uri}: {str(uri_err)}")
                     
-                    user_tool_resp_content = types.Content(role="user", parts=tool_responses + additional_parts)
+                    user_tool_resp_content = types.Content(role="user", parts=tool_responses)
                     contents.append(user_tool_resp_content)
                     await self.db.save_message(chat_id, "user", content_obj=user_tool_resp_content)
+                    
+                    if additional_parts:
+                        user_media_content = types.Content(
+                            role="user",
+                            parts=[types.Part.from_text(text="[System: Below are the actual visual files found by the search tool]")] + additional_parts
+                        )
+                        contents.append(user_media_content)
+                        await self.db.save_message(chat_id, "user", content_obj=user_media_content)
                     
                     if should_ignore:
                         typing_task.cancel()
