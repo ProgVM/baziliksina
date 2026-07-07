@@ -487,6 +487,23 @@ class GeminiManager:
                             result = f"Error: Function '{fn_name}' is not registered."
 
                         tool_responses.append(types.Part.from_function_response(name=fn_name, response={"result": result}))
+                        
+                        # Universal extraction of Google File URIs from any tool result!
+                        if result:
+                            res_str = str(result)
+                            GOOGLE_FILE_URI_REGEX = re.compile(
+                                r"(https://generativelanguage\.googleapis\.com/(?:upload/)?v1beta/files/[a-zA-Z0-9_-]+)",
+                                re.IGNORECASE
+                            )
+                            uris = GOOGLE_FILE_URI_REGEX.findall(res_str)
+                            for uri in uris:
+                                try:
+                                    m_type = await self.db.get_memory(uri)
+                                    if m_type:
+                                        logger.info(f"[Universal Tool Interceptor]: Detected Google URI in tool result: {uri}. Binding native Part.from_uri...")
+                                        additional_parts.append(types.Part.from_uri(file_uri=uri, mime_type=m_type))
+                                except Exception as uri_err:
+                                    logger.error(f"Failed to bind universal tool part for {uri}: {str(uri_err)}")
                     
                     user_tool_resp_content = types.Content(role="user", parts=tool_responses + additional_parts)
                     contents.append(user_tool_resp_content)
