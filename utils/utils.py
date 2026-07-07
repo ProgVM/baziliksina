@@ -8,36 +8,59 @@ logger = logging.getLogger("Utils")
 
 def matches_filter(val: str, whitelist: list, blacklist: list, default_allow: bool = True) -> bool:
     """
-    Universal checker for whitelists and blacklists.
-    Supports regex patterns, substrings, and exact matches.
+    Universal checker for whitelists and blacklists supporting wildcards/keywords.
+    Keywords: 'all', 'any', '*', 'none', 'nothing', 'empty', 'null'.
     """
     import re
-    if not val:
+    val_str = str(val).strip()
+    if not val_str:
         return default_allow
-    def check_match(patterns, target_val):
-        for pattern in patterns:
-            if not pattern:
-                continue
-            if pattern.strip().lower() == "all":
-                return True
-            try:
-                if re.search(pattern, target_val, re.IGNORECASE):
-                    return True
-            except Exception:
-                if pattern.lower() in target_val.lower():
-                    return True
-        return False
-    w_list = [w.strip() for w in whitelist if w.strip()] if whitelist else []
-    b_list = [b.strip() for b in blacklist if b.strip()] if blacklist else []
+
+    # Normalize lists and strip whitespace
+    w_list = [str(w).strip().lower() for w in whitelist if str(w).strip()] if whitelist else []
+    b_list = [str(b).strip().lower() for b in blacklist if str(b).strip()] if blacklist else []
+
     if not w_list and not b_list:
         return True
-    if b_list and check_match(b_list, val):
-        return False
+
+    # 1. Evaluate Blacklist first (if set)
+    if b_list:
+        if any(b in ["all", "any", "*"] for b in b_list):
+            return False  # Everything is blocked
+            
+        b_active = [b for b in b_list if b not in ["none", "nothing", "empty", "null"]]
+        if b_active:
+            for pattern in b_active:
+                try:
+                    if re.search(pattern, val_str, re.IGNORECASE):
+                        return False
+                except Exception:
+                    if pattern in val_str.lower():
+                        return False
+
+    # 2. Evaluate Whitelist
     if w_list:
-        if "all" in [w.lower() for w in w_list]:
-            return True
-        if not check_match(w_list, val):
-            return False
+        if any(w in ["all", "any", "*"] for w in w_list):
+            return True  # Everything is allowed
+            
+        if all(w in ["none", "nothing", "empty", "null"] for w in w_list):
+            return False  # Block everything
+            
+        w_active = [w for w in w_list if w not in ["none", "nothing", "empty", "null"]]
+        if w_active:
+            matched = False
+            for pattern in w_active:
+                try:
+                    if re.search(pattern, val_str, re.IGNORECASE):
+                        matched = True
+                        break
+                except Exception:
+                    if pattern in val_str.lower():
+                        matched = True
+                        break
+            if not matched:
+                return False
+
     return True
 
 class TelegramJSONEncoder(json.JSONEncoder):
@@ -201,11 +224,26 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
         else:
             if not config.TRIGGER_ON_INCOMING:
                 logger.info(f"[Message {event.message.id}] Skipping trigger: TRIGGER_ON_INCOMING is disabled.")
-                return False
 
-    # 2. Check Allowed Message Types
-    m_type = get_media_type_description(event.message) or "text"
-    if m_type.lower() not in [t.lower() for t in config.ALLOWED_MESSAGE_TYPES]:
+                # 2. Check Allowed Message Types
+                m_type_raw = get_media_type_description(event.message) or "text"
+                m_type_lower = m_type_raw.lower()
+                
+                # Normalize media types for seamless config filtering
+                if "voice" in m_type_lower:
+                    m_type_norm = "voice"
+                elif "video note" in m_type_lower:
+                    m_type_norm = "video"
+                elif "file" in m_type_lower or m_type_lower == "document":
+                    m_type_norm = "document"
+                elif "todo" in m_type_lower or m_type_lower == "list":
+                    m_type_norm = "list"
+                else:
+                    m_type_norm = m_type_lower
+
+                if m_type_norm not in [t.lower() for t in config.ALLOWED_MESSAGE_TYPES]:
+                    logger.info(f"[Message {event.message.id}] Skipping: Media type '{m_type_raw}' (normalized to '{m_type_norm}') is not allowed in ALLOWED_MESSAGE_TYPES.")
+                    return False
         logger.info(f"[Message {event.message.id}] Skipping: Media type '{m_type}' is not allowed in ALLOWED_MESSAGE_TYPES.")
         return False
 

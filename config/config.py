@@ -667,7 +667,7 @@ TRIGGER_ON_OUTGOING_NEW_MESSAGES = os.getenv("TRIGGER_ON_OUTGOING_NEW_MESSAGES",
 TRIGGER_ON_OUTGOING_EDITED_MESSAGES = os.getenv("TRIGGER_ON_OUTGOING_EDITED_MESSAGES", "false").lower() == "true"
 TRIGGER_ON_OUTGOING_DELETED_MESSAGES = os.getenv("TRIGGER_ON_OUTGOING_DELETED_MESSAGES", "false").lower() == "true"
 
-ALLOWED_MESSAGE_TYPES = _parse_list("ALLOWED_MESSAGE_TYPES", ["text", "photo", "video", "voice", "audio", "poll", "sticker", "gif", "location", "document"])
+ALLOWED_MESSAGE_TYPES = _parse_list("ALLOWED_MESSAGE_TYPES", ["text", "photo", "video", "voice", "audio", "poll", "sticker", "gif", "location", "document", "album", "gift", "contact", "venue", "list"])
 FILTER_POLICY = os.getenv("FILTER_POLICY", "blacklist_first").strip().lower()
 
 # Comma-separated regular expressions / keywords (optional)
