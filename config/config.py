@@ -20,6 +20,8 @@ class DynamicParameter:
     implements sequence rotations, random choices, ranges, step iterations, type checks,
     and clamping validation, while natively mimicking standard numeric types.
     """
+    GLOBAL_STATE = {}
+
     def __init__(self, env_key: str, default_val, expected_type=float, min_val=None, max_val=None):
         self.env_key = env_key
         self.default_val = default_val
@@ -66,10 +68,6 @@ class DynamicParameter:
         return self.expected_type(val)
 
     def _parse_and_evaluate_str(self, s: str):
-        # We hold a global state cache for get/set variables to enable Turing-completeness
-        if not hasattr(DynamicParameter, "GLOBAL_STATE"):
-            DynamicParameter.GLOBAL_STATE = {}
-            
         s = s.strip()
         if not s:
             return self.default_val
@@ -174,13 +172,13 @@ class DynamicParameter:
             elif name == "set":
                 if len(args) < 2: raise ValueError("set() requires 2 parameters: set(var, val)")
                 var_name = str(args[0])
-                self.GLOBAL_STATE[var_name] = args[1]
+                DynamicParameter.GLOBAL_STATE[var_name] = args[1]
                 return args[1]
             elif name == "get":
                 if len(args) < 1: raise ValueError("get() requires at least 1 parameter")
                 var_name = str(args[0])
                 default = args[1] if len(args) > 1 else 0
-                return self.GLOBAL_STATE.get(var_name, default)
+                return DynamicParameter.GLOBAL_STATE.get(var_name, default)
             elif name == "seq":
                 if not args: raise ValueError("seq() requires parameters")
                 val = args[self._seq_index % len(args)]
@@ -329,7 +327,7 @@ class DynamicParameter:
     def __eq__(self, other): return self.evaluate() == (float(other) if isinstance(other, DynamicParameter) else other)
     def __ne__(self, other): return self.evaluate() != (float(obj) if hasattr(obj, "to_dict") else other) # Safe comparison
 
-    # Math operators
+    # Math operations
     def __add__(self, other): return self.evaluate() + (float(other) if isinstance(other, DynamicParameter) else other)
     def __radd__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) + self.evaluate()
     def __sub__(self, other): return self.evaluate() - (float(other) if isinstance(other, DynamicParameter) else other)
@@ -349,6 +347,106 @@ class DynamicParameter:
     def __pos__(self): return +self.evaluate()
     def __neg__(self): return -self.evaluate()
     def __abs__(self): return abs(self.evaluate())
+
+
+# =====================================================================
+# SYSTEM CENTRAL PARAMETERS REGISTRY & GETATTR ATTRIBUTE DISPATCHER
+# =====================================================================
+_PARAMS = {
+    # Секция 4: Pollinations
+    "DEFAULT_IMAGE_WIDTH": DynamicParameter("DEFAULT_IMAGE_WIDTH", 1024, int, min_val=1),
+    "DEFAULT_IMAGE_HEIGHT": DynamicParameter("DEFAULT_IMAGE_HEIGHT", 1024, int, min_val=1),
+    "DEFAULT_VIDEO_DURATION": DynamicParameter("DEFAULT_VIDEO_DURATION", 5, int, min_val=1),
+    "POLLINATIONS_SEED_MIN": DynamicParameter("POLLINATIONS_SEED_MIN", 1, int, min_val=1),
+    "POLLINATIONS_SEED_MAX": DynamicParameter("POLLINATIONS_SEED_MAX", 999999999, int, min_val=1),
+    "POLLINATIONS_UPLOAD_JPEG_QUALITY": DynamicParameter("POLLINATIONS_UPLOAD_JPEG_QUALITY", 95, int, min_val=1, max_val=100),
+
+    # Секция 5: Database and Summarization
+    "DIALOGS_LIMIT": DynamicParameter("DIALOGS_LIMIT", 50, int, min_val=1),
+    "BOOTSTRAP_MESSAGES_LIMIT": DynamicParameter("BOOTSTRAP_MESSAGES_LIMIT", 20, int, min_val=1),
+    "MISSED_MESSAGES_LIMIT": DynamicParameter("MISSED_MESSAGES_LIMIT", 50, int, min_val=1),
+    "DEBOUNCE_DELAY": DynamicParameter("DEBOUNCE_DELAY", 7.0, float, min_val=0.0),
+    "DUPLICATE_CACHE_SIZE": DynamicParameter("DUPLICATE_CACHE_SIZE", 1000, int, min_val=1),
+    "MAX_FILE_SIZE": DynamicParameter("MAX_FILE_SIZE", 15 * 1024 * 1024, int, min_val=0),
+    "AVATAR_CACHE_TIME": DynamicParameter("AVATAR_CACHE_TIME", 86400, int, min_val=0),
+    "MESSAGES_LIMIT": DynamicParameter("MESSAGES_LIMIT", 150, int, min_val=1),
+    "CONTEXT_LOCAL_MIN_LIMIT": DynamicParameter("CONTEXT_LOCAL_MIN_LIMIT", 15, int, min_val=1),
+    "SUMMARIZATION_MESSAGES_LIMIT": DynamicParameter("SUMMARIZATION_MESSAGES_LIMIT", 500, int, min_val=1),
+    "SUMMARIZATION_KEEP_LIMIT": DynamicParameter("SUMMARIZATION_KEEP_LIMIT", 15, int, min_val=1),
+    "MAX_TURNS": DynamicParameter("MAX_TURNS", 1000, int, min_val=1),
+    "MEDIA_LIMIT": DynamicParameter("MEDIA_LIMIT", 15, int, min_val=1),
+
+    # Секция 6: Network and Timing Settings
+    "TIMERS_LOOP_INTERVAL": DynamicParameter("TIMERS_LOOP_INTERVAL", 1.0, float, min_val=0.1),
+    "KEEP_ALIVE_INTERVAL": DynamicParameter("KEEP_ALIVE_INTERVAL", 120, int, min_val=1),
+    "CONNECTION_MONITOR_INTERVAL": DynamicParameter("CONNECTION_MONITOR_INTERVAL", 10, int, min_val=1),
+    "GEMINI_TIMEOUT": DynamicParameter("GEMINI_TIMEOUT", 30.0, float, min_val=0.1),
+    "TYPING_INTERVAL": DynamicParameter("TYPING_INTERVAL", 10.0, float, min_val=0.1),
+    "TIMEOUT_SLEEP": DynamicParameter("TIMEOUT_SLEEP", 2.0, float, min_val=0.1),
+    "QUEUE_PROMOTION_DELAY": DynamicParameter("QUEUE_PROMOTION_DELAY", 2.0, float, min_val=0.1),
+    "RATE_LIMIT_SLEEP": DynamicParameter("RATE_LIMIT_SLEEP", 5.0, float, min_val=0.1),
+    "API_ERROR_SLEEP": DynamicParameter("API_ERROR_SLEEP", 2.0, float, min_val=0.1),
+    "GEMINI_FREE_RECOVERY_TIME": DynamicParameter("GEMINI_FREE_RECOVERY_TIME", 18000, int, min_val=1),
+    "GEMINI_PRO_RECOVERY_TIME": DynamicParameter("GEMINI_PRO_RECOVERY_TIME", 86400, int, min_val=1),
+    "POLLINATIONS_KEY_RECOVERY_TIME": DynamicParameter("POLLINATIONS_KEY_RECOVERY_TIME", 3600, int, min_val=1),
+    "KEY_INFO_TIMEOUT": DynamicParameter("KEY_INFO_TIMEOUT", 10.0, float, min_val=0.1),
+    "PROFILE_UPDATE_INTERVAL": DynamicParameter("PROFILE_UPDATE_INTERVAL", 3600, int, min_val=1),
+    "TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT": DynamicParameter("TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT", 10, int, min_val=1),
+    "BOT_RESPONSE_TIMEOUT": DynamicParameter("BOT_RESPONSE_TIMEOUT", 6.0, float, min_val=0.1),
+    "BUTTON_CLICK_TIMEOUT": DynamicParameter("BUTTON_CLICK_TIMEOUT", 15.0, float, min_val=0.1),
+    "DOWNLOAD_MEDIA_TIMEOUT": DynamicParameter("DOWNLOAD_MEDIA_TIMEOUT", 120.0, float, min_val=0.1),
+    "TELEGRAM_ACTION_TIMEOUT": DynamicParameter("TELEGRAM_ACTION_TIMEOUT", 60.0, float, min_val=0.1),
+    "CONVERSION_TIMEOUT": DynamicParameter("CONVERSION_TIMEOUT", 30.0, float, min_val=0.1),
+    "GENERATE_IMAGE_TIMEOUT": DynamicParameter("GENERATE_IMAGE_TIMEOUT", 180.0, float, min_val=0.1),
+    "GENERATE_AUDIO_TIMEOUT": DynamicParameter("GENERATE_AUDIO_TIMEOUT", 120.0, float, min_val=0.1),
+    "GENERATE_VIDEO_TIMEOUT": DynamicParameter("GENERATE_VIDEO_TIMEOUT", 180.0, float, min_val=0.1),
+    "GOOGLE_UPLOAD_TIMEOUT": DynamicParameter("GOOGLE_UPLOAD_TIMEOUT", 120.0, float, min_val=0.1),
+    "PUBLIC_UPLOAD_TIMEOUT": DynamicParameter("PUBLIC_UPLOAD_TIMEOUT", 60.0, float, min_val=0.1),
+
+    # Секция 7: Proxy and Anonymization
+    "TOR_ROTATION_TIMEOUT": DynamicParameter("TOR_ROTATION_TIMEOUT", 15.0, float, min_val=0.1),
+    "POLLINATIONS_MAX_ATTEMPTS": DynamicParameter("POLLINATIONS_MAX_ATTEMPTS", 8, int, min_val=1),
+    "TOR_MAX_CONSECUTIVE_FAILURES": DynamicParameter("TOR_MAX_CONSECUTIVE_FAILURES", 2, int, min_val=1),
+    "PROXY_CHECK_TIMEOUT": DynamicParameter("PROXY_CHECK_TIMEOUT", 3.0, float, min_val=0.1),
+
+    # Секция 8: Sandbox limits and Page Scrapers
+    "SQL_SELECT_LIMIT": DynamicParameter("SQL_SELECT_LIMIT", 100, int, min_val=1),
+    "SQL_STDOUT_CHAR_LIMIT": DynamicParameter("SQL_STDOUT_CHAR_LIMIT", 3500, int, min_val=1),
+    "TELEGRAM_ACTION_CHAR_LIMIT": DynamicParameter("TELEGRAM_ACTION_CHAR_LIMIT", 5000, int, min_val=1),
+    "TELEGRAM_ACTION_CONFIRM_LIMIT": DynamicParameter("TELEGRAM_ACTION_CONFIRM_LIMIT", 500, int, min_val=1),
+    "VM_STDOUT_NOTICE_LIMIT": DynamicParameter("VM_STDOUT_NOTICE_LIMIT", 1500, int, min_val=1),
+    "SANDBOX_COMMAND_CHAR_LIMIT": DynamicParameter("SANDBOX_COMMAND_CHAR_LIMIT", 3000, int, min_val=1),
+    "WEB_SEARCH_RESULTS_LIMIT": DynamicParameter("WEB_SEARCH_RESULTS_LIMIT", 5, int, min_val=1),
+    "SCRAPE_CHAR_LIMIT": DynamicParameter("SCRAPE_CHAR_LIMIT", 4000, int, min_val=1),
+    "WEB_SEARCH_TIMEOUT": DynamicParameter("WEB_SEARCH_TIMEOUT", 10.0, float, min_val=0.1),
+    "WEB_MEDIA_SEARCH_TIMEOUT": DynamicParameter("WEB_MEDIA_SEARCH_TIMEOUT", 10.0, float, min_val=0.1),
+    "SCRAPE_TIMEOUT": DynamicParameter("SCRAPE_TIMEOUT", 10.0, float, min_val=0.1),
+    "TELEGRAM_CONNECTION_RETRIES": DynamicParameter("TELEGRAM_CONNECTION_RETRIES", 5, int, min_val=0),
+    "TELEGRAM_RETRY_DELAY": DynamicParameter("TELEGRAM_RETRY_DELAY", 5.0, float, min_val=0.1),
+    "TELEGRAM_TIMEOUT": DynamicParameter("TELEGRAM_TIMEOUT", 15.0, float, min_val=1.0),
+
+    # Секция 10: Advanced Configuration Matrix
+    "MESSAGE_POOL_LIMIT": DynamicParameter("MESSAGE_POOL_LIMIT", 50, int, min_val=1),
+    "PENDING_QUEUE_LIMIT": DynamicParameter("PENDING_QUEUE_LIMIT", 10, int, min_val=1),
+    "TEMP_MEDIA_CLEANUP_INTERVAL": DynamicParameter("TEMP_MEDIA_CLEANUP_INTERVAL", 3600.0, float, min_val=1.0),
+    "RECURSIVE_REPLY_DEPTH_LIMIT": DynamicParameter("RECURSIVE_REPLY_DEPTH_LIMIT", 3, int, min_val=1)
+}
+
+def __getattr__(name: str):
+    """
+    Module level attribute getter. Intercepts other module lookups and redirects
+    to our internal dynamic configuration parameters, returning raw primitives (int, float, etc.)
+    to ensure full compatibility with low-level C-extension libraries.
+    """
+    if name in _PARAMS:
+        return _PARAMS[name].evaluate()
+    if name in globals():
+        return globals()[name]
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+def __dir__():
+    """Allows standard Python autocompletion and module inspection to find all dynamic keys seamlessly."""
+    return sorted(list(globals().keys()) + list(_PARAMS.keys()))
 
 
 # =====================================================================
@@ -447,8 +545,6 @@ pollinations_keys_raw = os.getenv("POLLINATIONS_KEYS", "")
 POLLINATIONS_KEYS = [k.strip() for k in pollinations_keys_raw.split(",") if k.strip()]
 
 DEFAULT_IMAGE_MODEL = os.getenv("DEFAULT_IMAGE_MODEL", "flux")
-DEFAULT_IMAGE_WIDTH = DynamicParameter("DEFAULT_IMAGE_WIDTH", 1024, int, min_val=1)
-DEFAULT_IMAGE_HEIGHT = DynamicParameter("DEFAULT_IMAGE_HEIGHT", 1024, int, min_val=1)
 MEDIA_RESOLUTION = os.getenv("MEDIA_RESOLUTION", "high").lower()
 ASPECT_RATIO = os.getenv("ASPECT_RATIO", "auto").lower()
 
@@ -456,80 +552,9 @@ DEFAULT_AUDIO_VOICE = os.getenv("DEFAULT_AUDIO_VOICE", "nova")
 DEFAULT_AUDIO_MODEL = os.getenv("DEFAULT_AUDIO_MODEL", "qwen-tts-instruct")
 
 DEFAULT_VIDEO_MODEL = os.getenv("DEFAULT_VIDEO_MODEL", "wan")
-DEFAULT_VIDEO_DURATION = DynamicParameter("DEFAULT_VIDEO_DURATION", 5, int, min_val=1)
 DEFAULT_VIDEO_ASPECT_RATIO = os.getenv("DEFAULT_VIDEO_ASPECT_RATIO", "1:1")
-POLLINATIONS_SEED_MIN = DynamicParameter("POLLINATIONS_SEED_MIN", 1, int, min_val=1)
-POLLINATIONS_SEED_MAX = DynamicParameter("POLLINATIONS_SEED_MAX", 999999999, int, min_val=1)
-POLLINATIONS_UPLOAD_JPEG_QUALITY = DynamicParameter("POLLINATIONS_UPLOAD_JPEG_QUALITY", 95, int, min_val=1, max_val=100)
 
-# =====================================================================
-# SECTION 5: Database and Summarization (Memory and Context Settings)
-# =====================================================================
-DB_NAME = os.getenv("DB_NAME", "bot_context.db")
-SQLITE_JOURNAL_MODE = os.getenv("SQLITE_JOURNAL_MODE", "WAL").upper()
-
-BOOTSTRAP_DATABASE = os.getenv("BOOTSTRAP_DATABASE", "false").lower() == "true"
-DIALOGS_LIMIT = DynamicParameter("DIALOGS_LIMIT", 50, int, min_val=1)
-BOOTSTRAP_MESSAGES_LIMIT = DynamicParameter("BOOTSTRAP_MESSAGES_LIMIT", 20, int, min_val=1)
-MISSED_MESSAGES_LIMIT = DynamicParameter("MISSED_MESSAGES_LIMIT", 50, int, min_val=1)
-
-DEBOUNCE_DELAY = DynamicParameter("DEBOUNCE_DELAY", 7.0, float, min_val=0.0)
-DUPLICATE_CACHE_SIZE = DynamicParameter("DUPLICATE_CACHE_SIZE", 1000, int, min_val=1)
-MAX_FILE_SIZE = DynamicParameter("MAX_FILE_SIZE", 15 * 1024 * 1024, int, min_val=0)
-AVATAR_CACHE_TIME = DynamicParameter("AVATAR_CACHE_TIME", 86400, int, min_val=0)
-
-EMOJI_CACHE_DIR_NAME = os.getenv("EMOJI_CACHE_DIR_NAME", "emoji_cache")
-AVATAR_CACHE_DIR_NAME = os.getenv("AVATAR_CACHE_DIR_NAME", "avatar_cache")
-GIFT_CACHE_DIR_NAME = os.getenv("GIFT_CACHE_DIR_NAME", "gift_cache")
-TEMP_MEDIA_DIR_NAME = os.getenv("TEMP_MEDIA_DIR_NAME", "temp_media")
-
-BOT_AVATAR_NAME = os.getenv("BOT_AVATAR_NAME", "bot_avatar.jpg")
-
-MESSAGES_LIMIT = DynamicParameter("MESSAGES_LIMIT", 150, int, min_val=1)
-CONTEXT_LOCAL_RATIO = float(os.getenv("CONTEXT_LOCAL_RATIO", 0.4))
-CONTEXT_LOCAL_MIN_LIMIT = DynamicParameter("CONTEXT_LOCAL_MIN_LIMIT", 15, int, min_val=1)
-
-SUMMARIZATION_MESSAGES_LIMIT = DynamicParameter("SUMMARIZATION_MESSAGES_LIMIT", 500, int, min_val=1)
-SUMMARIZATION_KEEP_LIMIT = DynamicParameter("SUMMARIZATION_KEEP_LIMIT", 15, int, min_val=1)
-
-MAX_TURNS = DynamicParameter("MAX_TURNS", 1000, int, min_val=1)
-MEDIA_LIMIT = DynamicParameter("MEDIA_LIMIT", 15, int, min_val=1)
-
-# =====================================================================
-# SECTION 6: Network and Timing Settings (Timeouts and Cooldowns)
-# =====================================================================
-TIMERS_LOOP_INTERVAL = DynamicParameter("TIMERS_LOOP_INTERVAL", 1.0, float, min_val=0.1)
-KEEP_ALIVE_INTERVAL = DynamicParameter("KEEP_ALIVE_INTERVAL", 120, int, min_val=1)
-CONNECTION_MONITOR_INTERVAL = DynamicParameter("CONNECTION_MONITOR_INTERVAL", 10, int, min_val=1)
-
-GEMINI_TIMEOUT = DynamicParameter("GEMINI_TIMEOUT", 30.0, float, min_val=0.1)
-TYPING_INTERVAL = DynamicParameter("TYPING_INTERVAL", 10.0, float, min_val=0.1)
-TIMEOUT_SLEEP = DynamicParameter("TIMEOUT_SLEEP", 2.0, float, min_val=0.1)
-QUEUE_PROMOTION_DELAY = DynamicParameter("QUEUE_PROMOTION_DELAY", 2.0, float, min_val=0.1)
-RATE_LIMIT_SLEEP = DynamicParameter("RATE_LIMIT_SLEEP", 5.0, float, min_val=0.1)
-API_ERROR_SLEEP = DynamicParameter("API_ERROR_SLEEP", 2.0, float, min_val=0.1)
-
-GEMINI_FREE_RECOVERY_TIME = DynamicParameter("GEMINI_FREE_RECOVERY_TIME", 18000, int, min_val=1)
-GEMINI_PRO_RECOVERY_TIME = DynamicParameter("GEMINI_PRO_RECOVERY_TIME", 86400, int, min_val=1)
-POLLINATIONS_KEY_RECOVERY_TIME = DynamicParameter("POLLINATIONS_KEY_RECOVERY_TIME", 3600, int, min_val=1)
-KEY_INFO_TIMEOUT = DynamicParameter("KEY_INFO_TIMEOUT", 10.0, float, min_val=0.1)
-
-PROFILE_UPDATE_INTERVAL = DynamicParameter("PROFILE_UPDATE_INTERVAL", 3600, int, min_val=1)
-TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT = DynamicParameter("TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT", 10, int, min_val=1)
-
-BOT_RESPONSE_TIMEOUT = DynamicParameter("BOT_RESPONSE_TIMEOUT", 6.0, float, min_val=0.1)
-DEFAULT_RESULT_INDEX = int(os.getenv("DEFAULT_RESULT_INDEX", 0))
-BUTTON_CLICK_TIMEOUT = DynamicParameter("BUTTON_CLICK_TIMEOUT", 15.0, float, min_val=0.1)
-DOWNLOAD_MEDIA_TIMEOUT = DynamicParameter("DOWNLOAD_MEDIA_TIMEOUT", 120.0, float, min_val=0.1)
-TELEGRAM_ACTION_TIMEOUT = DynamicParameter("TELEGRAM_ACTION_TIMEOUT", 60.0, float, min_val=0.1)
-CONVERSION_TIMEOUT = DynamicParameter("CONVERSION_TIMEOUT", 30.0, float, min_val=0.1)
-
-GENERATE_IMAGE_TIMEOUT = DynamicParameter("GENERATE_IMAGE_TIMEOUT", 180.0, float, min_val=0.1)
-GENERATE_AUDIO_TIMEOUT = DynamicParameter("GENERATE_AUDIO_TIMEOUT", 120.0, float, min_val=0.1)
-GENERATE_VIDEO_TIMEOUT = DynamicParameter("GENERATE_VIDEO_TIMEOUT", 180.0, float, min_val=0.1)
-GOOGLE_UPLOAD_TIMEOUT = DynamicParameter("GOOGLE_UPLOAD_TIMEOUT", 120.0, float, min_val=0.1)
 DEFAULT_PUBLIC_UPLOAD_PROVIDER = os.getenv("DEFAULT_PUBLIC_UPLOAD_PROVIDER", "auto")
-PUBLIC_UPLOAD_TIMEOUT = DynamicParameter("PUBLIC_UPLOAD_TIMEOUT", 60.0, float, min_val=0.1)
 
 # =====================================================================
 # SECTION 7: Proxy and Anonymization Settings (Tor & Proxy Controls)
@@ -538,11 +563,6 @@ TOR_HOST = os.getenv("TOR_HOST", "127.0.0.1")
 TOR_SOCKS_PORT = int(os.getenv("TOR_SOCKS_PORT", 9050))
 TOR_CONTROL_PORT = int(os.getenv("TOR_CONTROL_PORT", 9051))
 TOR_PASSWORD = os.getenv("TOR_PASSWORD", "")
-TOR_ROTATION_TIMEOUT = DynamicParameter("TOR_ROTATION_TIMEOUT", 15.0, float, min_val=0.1)
-
-POLLINATIONS_MAX_ATTEMPTS = DynamicParameter("POLLINATIONS_MAX_ATTEMPTS", 8, int, min_val=1)
-TOR_MAX_CONSECUTIVE_FAILURES = DynamicParameter("TOR_MAX_CONSECUTIVE_FAILURES", 2, int, min_val=1)
-PROXY_CHECK_TIMEOUT = DynamicParameter("PROXY_CHECK_TIMEOUT", 3.0, float, min_val=0.1)
 PROXY_STRICT_CHECK = os.getenv("PROXY_STRICT_CHECK", "false").lower() == "true"
 
 def _parse_list(key: str, default: list = None) -> list:
@@ -607,35 +627,6 @@ else:
     ALL_PROXY = None
 
 # =====================================================================
-# SECTION 8: Sandbox limits and Page Scrapers
-# =====================================================================
-SQL_SELECT_LIMIT = DynamicParameter("SQL_SELECT_LIMIT", 100, int, min_val=1)
-SQL_STDOUT_CHAR_LIMIT = DynamicParameter("SQL_STDOUT_CHAR_LIMIT", 3500, int, min_val=1)
-TELEGRAM_ACTION_CHAR_LIMIT = DynamicParameter("TELEGRAM_ACTION_CHAR_LIMIT", 5000, int, min_val=1)
-TELEGRAM_ACTION_CONFIRM_LIMIT = DynamicParameter("TELEGRAM_ACTION_CONFIRM_LIMIT", 500, int, min_val=1)
-VM_STDOUT_NOTICE_LIMIT = DynamicParameter("VM_STDOUT_NOTICE_LIMIT", 1500, int, min_val=1)
-SANDBOX_ALLOWED_FILES = _parse_list("SANDBOX_ALLOWED_FILES", ["all"])
-SANDBOX_BLOCKED_FILES = _parse_list("SANDBOX_BLOCKED_FILES", ["bot.py", "config.py", "db_manager.py", "key_manager.py", "gemini_manager.py", ".env", "tools.py", "sandbox.py", "utils.py", "downloader.py", "registry.py"])
-SANDBOX_COMMAND_CHAR_LIMIT = DynamicParameter("SANDBOX_COMMAND_CHAR_LIMIT", 3000, int, min_val=1)
-
-DEFAULT_IMAGE_NAME = os.getenv("DEFAULT_IMAGE_NAME", "generated_image.png")
-DEFAULT_AUDIO_NAME = os.getenv("DEFAULT_AUDIO_NAME", "generated_audio.mp3")
-DEFAULT_VIDEO_NAME = os.getenv("DEFAULT_VIDEO_NAME", "generated_video.mp4")
-
-WEB_SEARCH_RESULTS_LIMIT = DynamicParameter("WEB_SEARCH_RESULTS_LIMIT", 5, int, min_val=1)
-SCRAPE_CHAR_LIMIT = DynamicParameter("SCRAPE_CHAR_LIMIT", 4000, int, min_val=1)
-WEB_SEARCH_TIMEOUT = DynamicParameter("WEB_SEARCH_TIMEOUT", 10.0, float, min_val=0.1)
-WEB_MEDIA_SEARCH_TIMEOUT = DynamicParameter("WEB_MEDIA_SEARCH_TIMEOUT", 10.0, float, min_val=0.1)
-MEDIA_SEARCH_AUTO_DOWNLOAD = os.getenv("MEDIA_SEARCH_AUTO_DOWNLOAD", "true").lower() == "true"
-MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE = os.getenv("MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE", "true").lower() == "true"
-SCRAPE_TIMEOUT = DynamicParameter("SCRAPE_TIMEOUT", 10.0, float, min_val=0.1)
-
-TELEGRAM_CONNECTION_RETRIES = DynamicParameter("TELEGRAM_CONNECTION_RETRIES", 5, int, min_val=0)
-TELEGRAM_RETRY_DELAY = DynamicParameter("TELEGRAM_RETRY_DELAY", 5.0, float, min_val=0.1)
-TELEGRAM_AUTO_RECONNECT = os.getenv("TELEGRAM_AUTO_RECONNECT", "true").lower() == "true"
-TELEGRAM_TIMEOUT = DynamicParameter("TELEGRAM_TIMEOUT", 15.0, float, min_val=1.0)
-
-# =====================================================================
 # SECTION 9: AI Generation and Flow Triggers
 # =====================================================================
 BOOTSTRAP_TRIGGER_GENERATION = os.getenv("BOOTSTRAP_TRIGGER_GENERATION", "true").lower() == "true"
@@ -664,7 +655,6 @@ TRIGGER_ON_OUTGOING_NEW_MESSAGES = os.getenv("TRIGGER_ON_OUTGOING_NEW_MESSAGES",
 TRIGGER_ON_OUTGOING_EDITED_MESSAGES = os.getenv("TRIGGER_ON_OUTGOING_EDITED_MESSAGES", "false").lower() == "true"
 TRIGGER_ON_OUTGOING_DELETED_MESSAGES = os.getenv("TRIGGER_ON_OUTGOING_DELETED_MESSAGES", "false").lower() == "true"
 
-ALLOWED_MESSAGE_TYPES = _parse_list("ALLOWED_MESSAGE_TYPES", ["text", "photo", "video", "voice", "audio", "poll", "sticker", "gif", "location", "document", "album", "gift", "contact", "venue", "list"])
 FILTER_POLICY = os.getenv("FILTER_POLICY", "blacklist_first").strip().lower()
 
 # Comma-separated regular expressions / keywords (optional)
@@ -720,9 +710,6 @@ CUSTOM_TOOLS_INVOKE_BLACKLIST = _parse_int_list("CUSTOM_TOOLS_INVOKE_BLACKLIST",
 CROSS_CHAT_CONTEXT = os.getenv("CROSS_CHAT_CONTEXT", "true").lower() == "true"
 STREAMING_GENERATION = os.getenv("STREAMING_GENERATION", "false").lower() == "true"
 STREAMING_INTERVAL = float(os.getenv("STREAMING_INTERVAL", 1.5))
-MESSAGE_POOL_LIMIT = DynamicParameter("MESSAGE_POOL_LIMIT", 50, int, min_val=1)
-PENDING_QUEUE_LIMIT = DynamicParameter("PENDING_QUEUE_LIMIT", 10, int, min_val=1)
-TEMP_MEDIA_CLEANUP_INTERVAL = DynamicParameter("TEMP_MEDIA_CLEANUP_INTERVAL", 3600.0, float, min_val=1.0)
 
 RE_SEQ_BLOCK = os.getenv("RE_SEQ_BLOCK", r"<(seq|par|bg)>(.*?)</\1>")
 RE_REPLY_TAG = os.getenv("RE_REPLY_TAG", r"(?<!\\)\[Reply(?:\s+to\s+message\s+#?|:\s*)(\d+)\]")
@@ -752,7 +739,6 @@ PACIFIC_STANDARD_TIME_OFFSET = int(os.getenv("PACIFIC_STANDARD_TIME_OFFSET", -8)
 PACIFIC_DAYLIGHT_TIME_OFFSET = int(os.getenv("PACIFIC_DAYLIGHT_TIME_OFFSET", -7))
 GEMINI_MIN_COOLDOWN_SECONDS = int(os.getenv("GEMINI_MIN_COOLDOWN_SECONDS", 5))
 GEMINI_DAILY_LIMIT_COOLDOWN = int(os.getenv("GEMINI_DAILY_LIMIT_COOLDOWN", 86400))
-RECURSIVE_REPLY_DEPTH_LIMIT = DynamicParameter("RECURSIVE_REPLY_DEPTH_LIMIT", 3, int, min_val=1)
 
 SANDBOX_CONFIG_WHITELIST = _parse_list("SANDBOX_CONFIG_WHITELIST", ["all"])
 SANDBOX_CONFIG_BLACKLIST = _parse_list("SANDBOX_CONFIG_BLACKLIST", ["API_HASH", "TELEGRAM_API_HASH", "GEMINI_API_KEYS", "GEMINI_KEYS", "POLLINATIONS_KEYS", "TOR_PASSWORD", "ALL_PROXY", "all_proxy", "TELEGRAM_PROXIES", "GEMINI_PROXIES", "POLLINATIONS_PROXIES", "SCRAPER_PROXIES"])
