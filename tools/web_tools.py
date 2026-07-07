@@ -47,43 +47,57 @@ class AIToolKitWeb:
 
         headers = {"User-Agent": USER_AGENT}
         search_query = query
-        
-        # Tailor the DuckDuckGo query dynamically based on the requested media type
         m_type_lower = media_type.lower().strip()
-        if m_type_lower == "document":
-            search_query += " filetype:pdf"
-        elif m_type_lower == "image":
-            search_query += " format:jpg"
-        elif m_type_lower == "video":
-            search_query += " filetype:mp4"
-        elif m_type_lower == "gif":
-            search_query += " filetype:gif"
-        elif m_type_lower == "audio":
-            search_query += " filetype:mp3"
-        elif m_type_lower.isalnum():
-            # Support any arbitrary extension, e.g. "zip", "xlsx", "epub"
-            search_query += f" filetype:{m_type_lower}"
 
-        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(search_query)}"
         from proxy_manager import proxy_rotator
         proxy_url = proxy_rotator.get_proxy("scraper")
+
+        logger.info(f"Initiating media search: Query='{query}' | Media Type='{media_type}'")
         
-        logger.info(f"Initiating media search: Query='{query}' | Media Type='{media_type}' | URL={url}")
+        results = []
         try:
-            async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout) as client_httpx:
-                resp = await client_httpx.get(url, headers=headers)
-                if resp.status_code != 200:
-                    logger.error(f"DuckDuckGo search failed with HTTP status code {resp.status_code}")
-                    return f"Media search failed, code: {resp.status_code}"
-                soup = BeautifulSoup(resp.text, "html.parser")
-                results = []
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout, follow_redirects=True) as client_httpx:
+                if m_type_lower in ["image", "gif"]:
+                    # Query direct DuckDuckGo Image JSON API
+                    main_url = f"https://duckduckgo.com/?q={urllib.parse.quote(search_query)}"
+                    main_resp = await client_httpx.get(main_url, headers=headers)
+                    vqd_match = re.search(r'vqd=([\d-]+)', main_resp.text) or re.search(r'vqd\s*=\s*[\'"]([^\'"]+)[\'"]', main_resp.text)
+                    if vqd_match:
+                        vqd = vqd_match.group(1)
+                        api_url = f"https://duckduckgo.com/i.js"
+                        params = {"q": search_query, "o": "json", "vqd": vqd, "f": ",,,", "p": "1"}
+                        api_resp = await client_httpx.get(api_url, params=params, headers=headers)
+                        if api_resp.status_code == 200:
+                            data = api_resp.json()
+                            for item in data.get("results", [])[:WEB_SEARCH_RESULTS_LIMIT]:
+                                img_url = item.get("image")
+                                if img_url:
+                                    results.append(img_url)
                 
-                # Parse the search result URLs
-                for link in soup.find_all("a", class_="result__url")[:WEB_SEARCH_RESULTS_LIMIT]:
-                    href = link.get("href", "")
-                    if "uddg=" in href:
-                        actual_url = urllib.parse.unquote(href.split("uddg=")[1].split("&")[0])
-                        results.append(actual_url)
+                # Fallback to standard HTML search for non-image types
+                if not results:
+                    if m_type_lower == "document":
+                        search_query += " filetype:pdf"
+                    elif m_type_lower == "image":
+                        search_query += " format:jpg"
+                    elif m_type_lower == "video":
+                        search_query += " filetype:mp4"
+                    elif m_type_lower == "gif":
+                        search_query += " filetype:gif"
+                    elif m_type_lower == "audio":
+                        search_query += " filetype:mp3"
+                    elif m_type_lower.isalnum():
+                        search_query += f" filetype:{m_type_lower}"
+
+                    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(search_query)}"
+                    resp = await client_httpx.get(url, headers=headers)
+                    if resp.status_code == 200:
+                        soup = BeautifulSoup(resp.text, "html.parser")
+                        for link in soup.find_all("a", class_="result__url")[:WEB_SEARCH_RESULTS_LIMIT]:
+                            href = link.get("href", "")
+                            if "uddg=" in href:
+                                actual_url = urllib.parse.unquote(href.split("uddg=")[1].split("&")[0])
+                                results.append(actual_url)
                 
                 if not results:
                     logger.warning(f"No results found for query: '{search_query}'")

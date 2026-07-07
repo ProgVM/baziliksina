@@ -386,12 +386,14 @@ _PARAMS = {
     "SUMMARIZATION_KEEP_LIMIT": DynamicParameter("SUMMARIZATION_KEEP_LIMIT", 15, int, min_val=1),
     "MAX_TURNS": DynamicParameter("MAX_TURNS", 1000, int, min_val=1),
     "MEDIA_LIMIT": DynamicParameter("MEDIA_LIMIT", 15, int, min_val=1),
+    "MEDIA_SEARCH_AUTO_DOWNLOAD": DynamicParameter("MEDIA_SEARCH_AUTO_DOWNLOAD", True, bool),
+    "MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE": DynamicParameter("MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE", True, bool),
 
     # Section 6: Network and Timing Settings
     "TIMERS_LOOP_INTERVAL": DynamicParameter("TIMERS_LOOP_INTERVAL", 1.0, float, min_val=0.1),
     "KEEP_ALIVE_INTERVAL": DynamicParameter("KEEP_ALIVE_INTERVAL", 120, int, min_val=1),
     "CONNECTION_MONITOR_INTERVAL": DynamicParameter("CONNECTION_MONITOR_INTERVAL", 10, int, min_val=1),
-    "GEMINI_TIMEOUT": DynamicParameter("GEMINI_TIMEOUT", 30.0, float, min_val=0.1),
+    "GEMINI_TIMEOUT": DynamicParameter("GEMINI_TIMEOUT", 90.0, float, min_val=0.1),
     "TYPING_INTERVAL": DynamicParameter("TYPING_INTERVAL", 10.0, float, min_val=0.1),
     "TIMEOUT_SLEEP": DynamicParameter("TIMEOUT_SLEEP", 2.0, float, min_val=0.1),
     "QUEUE_PROMOTION_DELAY": DynamicParameter("QUEUE_PROMOTION_DELAY", 2.0, float, min_val=0.1),
