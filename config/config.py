@@ -47,6 +47,10 @@ class DynamicParameter:
         """Parses the current raw rule string, evaluates it, type-casts, and clamps boundaries."""
         raw_str = self._get_raw_str()
         try:
+            # Bypass parsing for literal strings to prevent syntax errors
+            if self.expected_type == str:
+                return raw_str
+
             val = self._parse_and_evaluate_str(raw_str)
             casted = self._cast_value(val)
             
@@ -65,6 +69,8 @@ class DynamicParameter:
     def _cast_value(self, val):
         if self.expected_type == bool:
             return str(val).lower() in ["true", "1", "yes"]
+        if self.expected_type == str:
+            return str(val)
         return self.expected_type(val)
 
     def _parse_and_evaluate_str(self, s: str):
@@ -72,13 +78,60 @@ class DynamicParameter:
         if not s:
             return self.default_val
 
+        # Pre-execution checks for functional and shorthand notation done FIRST
+        if "|" in s and ":" in s:
+            parts = [p.strip() for p in s.split("|") if p.strip()]
+            population, weights = [], []
+            is_valid_weighted = True
+            for p in parts:
+                if ":" in p:
+                    v_str, w_str = p.split(":", 1)
+                    try:
+                        population.append(v_str.strip())
+                        weights.append(float(w_str.strip()))
+                    except ValueError:
+                        is_valid_weighted = False
+                        break
+                else:
+                    is_valid_weighted = False
+                    break
+            if is_valid_weighted and population:
+                resolved_pop = [float(self._parse_and_evaluate_str(v)) for v in population]
+                return random.choices(resolved_pop, weights=weights)[0]
+
+        m_shorthand_step = re.match(r"^([^-]+)-([^:]+):(.+)$", s)
+        if m_shorthand_step:
+            start, stop, step_part = float(m_shorthand_step.group(1)), float(m_shorthand_step.group(2)), m_shorthand_step.group(3).strip().lower()
+            if step_part in ["random", "rand"]:
+                return random.uniform(start, stop)
+            else:
+                step_size = float(step_part)
+                steps = self._generate_steps(start, stop, step_size)
+                if steps:
+                    val = steps[self._seq_index % len(steps)]
+                    self._seq_index += 1
+                    return val
+
+        if re.match(r"^\s*[0-9]+(?:\.[0-9]+)?\s*-\s*[0-9]+(?:\.[0-9]+)?\s*$", s):
+            m_shorthand_range = re.match(r"^([^-]+)-([^-]+)$", s)
+            if m_shorthand_range:
+                vmin, vmax = float(m_shorthand_range.group(1)), float(m_shorthand_range.group(2))
+                return random.uniform(vmin, vmax)
+
+        if "," in s and not ("(" in s or ")" in s):
+            parts = [p.strip() for p in s.split(",") if p.strip()]
+            if parts:
+                val = parts[self._seq_index % len(parts)]
+                self._seq_index += 1
+                return float(val)
+
         # Safe token-based lexical analyzer pattern
         token_pattern = re.compile(
-            r'\s*(?:([a-zA-Z_][a-zA-Z0-9_]*)\s*\(|([0-9]+(?:\.[0-9]+)?)|([+\-*/%<>=!~]+)|(\))|([,])|([a-zA-Z_][a-zA-Z0-9_]*)|(\S))\s*'
+            r'\s*(?:([a-zA-Z_][a-zA-Z0-9_]*)\s*\(|([0-9]+(?:\.[0-9]+)?)|([+\-*/%<>=!~]+)|(\()|(\))|([,])|([a-zA-Z_][a-zA-Z0-9_]*)|(\S))\s*'
         )
         tokens = []
         for m in token_pattern.finditer(s):
-            func, num, op, rparen, comma, name, err = m.groups()
+            func, num, op, lparen, rparen, comma, name, err = m.groups()
             if err:
                 raise ValueError(f"Syntax error near token: {err}")
             if func:
@@ -87,6 +140,8 @@ class DynamicParameter:
                 tokens.append(("NUM", float(num)))
             elif op:
                 tokens.append(("OP", op))
+            elif lparen:
+                tokens.append(("LPAREN", "("))
             elif rparen:
                 tokens.append(("RPAREN", ")"))
             elif comma:
@@ -143,6 +198,12 @@ class DynamicParameter:
             idx[0] += 1
             if t_type == "NUM":
                 return t_val
+            elif t_type == "LPAREN":
+                expr_val = parse_expression()
+                if idx[0] >= len(tokens) or tokens[idx[0]][0] != "RPAREN":
+                    raise ValueError("Expected ')' matching '('")
+                idx[0] += 1
+                return expr_val
             elif t_type == "NAME":
                 if t_val.lower() == "true": return True
                 if t_val.lower() == "false": return False
@@ -241,63 +302,13 @@ class DynamicParameter:
             elif name == "cos":
                 import math
                 return math.cos(args[0])
-            else:
-                raise ValueError(f"Unknown dynamic function: {name}")
+            a, b = b, a + b
+            return b
 
-        # Pre-execution checks for functional and shorthand notation
-        if tokens:
-            if "|" in s and ":" in s:
-                parts = [p.strip() for p in s.split("|") if p.strip()]
-                population, weights = [], []
-                is_valid_weighted = True
-                for p in parts:
-                    if ":" in p:
-                        v_str, w_str = p.split(":", 1)
-                        try:
-                            population.append(v_str.strip())
-                            weights.append(float(w_str.strip()))
-                        except ValueError:
-                            is_valid_weighted = False
-                            break
-                    else:
-                        is_valid_weighted = False
-                        break
-                if is_valid_weighted and population:
-                    resolved_pop = [float(self._parse_and_evaluate_str(v)) for v in population]
-                    return random.choices(resolved_pop, weights=weights)[0]
-
-            m_shorthand_step = re.match(r"^([^-]+)-([^:]+):(.+)$", s)
-            if m_shorthand_step:
-                start, stop, step_part = float(m_shorthand_step.group(1)), float(m_shorthand_step.group(2)), m_shorthand_step.group(3).strip().lower()
-                if step_part in ["random", "rand"]:
-                    return random.uniform(start, stop)
-                else:
-                    step_size = float(step_part)
-                    steps = self._generate_steps(start, stop, step_size)
-                    if steps:
-                        val = steps[self._seq_index % len(steps)]
-                        self._seq_index += 1
-                        return val
-
-            if re.match(r"^\s*[0-9]+(?:\.[0-9]+)?\s*-\s*[0-9]+(?:\.[0-9]+)?\s*$", s):
-                m_shorthand_range = re.match(r"^([^-]+)-([^-]+)$", s)
-                if m_shorthand_range:
-                    vmin, vmax = float(m_shorthand_range.group(1)), float(m_shorthand_range.group(2))
-                    return random.uniform(vmin, vmax)
-
-            if "," in s and not ("(" in s or ")" in s):
-                parts = [p.strip() for p in s.split(",") if p.strip()]
-                if parts:
-                    val = parts[self._seq_index % len(parts)]
-                    self._seq_index += 1
-                    return float(val)
-
-            res = parse_expression()
-            if idx[0] < len(tokens):
-                raise ValueError(f"Dangling tokens at end of expression: {tokens[idx[0]:]}")
-            return res
-
-        return self.default_val
+        res = parse_expression()
+        if idx[0] < len(tokens):
+            raise ValueError(f"Dangling tokens at end of expression: {tokens[idx[0]:]}")
+        return res
 
     def _generate_steps(self, start, stop, step):
         if step <= 0:
