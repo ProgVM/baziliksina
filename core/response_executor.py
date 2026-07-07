@@ -402,23 +402,11 @@ class AIResponseExecutor:
         # 4. Clean-strip all block wrappers and embedded tags from final string
         if not ranges_to_strip:
             clean_text = cleaned_text
-            clean_text = re.sub(config.RE_REPLY_TAG, "", clean_text)
-            clean_text = re.sub(config.RE_REACT_TAG, "", clean_text)
-            clean_text = re.sub(config.RE_ATTACH_TAG, "", clean_text)
-            clean_text = re.sub(config.RE_EDIT_TAG, "", clean_text)
-            clean_text = re.sub(config.RE_DELETE_TAG, "", clean_text)
-            clean_text = re.sub(config.RE_NOOP_TAG, "", clean_text)
-            clean_text = re.sub(config.RE_TOOL_TAG, "", clean_text)
-            clean_text = re.sub(r'<reply\s+(?:msg_)?id=["\']\d+["\']>(.*?)</reply>', "", clean_text, flags=re.IGNORECASE | re.DOTALL)
-            clean_text = re.sub(r'<react\s+[^>]*\s*/?>', "", clean_text, flags=re.IGNORECASE)
-            clean_text = re.sub(r'<attach\s+files=["\']([^"\']*)["\'](?:\s+caption=["\']([^"\']*)["\'])?\s*/?>', "", clean_text, flags=re.IGNORECASE)
-            clean_text = re.sub(r'<attach\s+files=["\']([^"\']*)["\']>(.*?)</attach>', "", clean_text, flags=re.IGNORECASE | re.DOTALL)
-            clean_text = re.sub(r'<edit\s+(?:msg_)?id=["\']\d+["\']>(.*?)</edit>', "", clean_text, flags=re.IGNORECASE | re.DOTALL)
-            clean_text = re.sub(r'<delete\s+(?:msg_)?id=["\']\d+["\']\s*/?>', "", clean_text, flags=re.IGNORECASE)
-            clean_text = re.sub(r'<pin\s+[^>]*\s*/?>', "", clean_text, flags=re.IGNORECASE)
-            clean_text = re.sub(r'<unpin\s+[^>]*\s*/?>', "", clean_text, flags=re.IGNORECASE)
-            clean_text = re.sub(r'<noop\s+reason=["\']([^"\']*)["\'](?:\s+continue=["\'](?:true|false)["\'])?\s*/?>', "", clean_text, flags=re.IGNORECASE)
-            clean_text = re.sub(r'<tool\s+name=["\']([a-zA-Z0-9_]+)["\']\s*([^>]*)\s*/?>', "", clean_text, flags=re.IGNORECASE)
+            # Universal robust regex tag stripper to clean any action or block tags instantly
+            clean_text = re.compile(
+                r'</?(?:reply|reply_msg|msg|react|attach|edit|delete|pin|unpin|mute|unmute|kick|ban|unban|search|mediasearch|draw|noop|no_op_ignore|tool|seq|par|bg|python|sql|scrape|voice|video)\b[^>]*>',
+                re.IGNORECASE
+            ).sub("", clean_text)
             final_text = clean_text.strip()
             logger.info(f"parse_execute_and_strip_tags (no blocks): Cleaned output: '{final_text[:60]}...'")
             return final_text
@@ -430,6 +418,10 @@ class AIResponseExecutor:
             last_idx = end
         clean_parts.append(cleaned_text[last_idx:])
         final_stripped = "".join(clean_parts).strip()
+        final_stripped = re.compile(
+            r'</?(?:reply|reply_msg|msg|react|attach|edit|delete|pin|unpin|mute|unmute|kick|ban|unban|search|mediasearch|draw|noop|no_op_ignore|tool|seq|par|bg|python|sql|scrape|voice|video)\b[^>]*>',
+            re.IGNORECASE
+        ).sub("", final_stripped)
         final_stripped = final_stripped.replace(r'\[', '[').replace(r'\]', ']')
         final_stripped = final_stripped.replace(r'\<', '<').replace(r'\>', '>')
         logger.info(f"parse_execute_and_strip_tags (with blocks): Cleaned output: '{final_stripped[:60]}...'")
