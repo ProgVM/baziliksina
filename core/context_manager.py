@@ -129,6 +129,20 @@ class AIContextManager:
                      cleaned_db_json if cleaned_db_json is not None else db_raw_json, 
                      r_id)
                 )
+
+            # Wipe matching cache keys from shared_memory to trigger re-upload on next turns
+            try:
+                async with self.db.db.execute(
+                    "SELECT key, value FROM shared_memory WHERE value LIKE ?", 
+                    (f"%{file_id}%",)
+                ) as cursor:
+                    cache_rows = await cursor.fetchall()
+                for key, val in cache_rows:
+                    await self.db.db.execute("DELETE FROM shared_memory WHERE key = ?", (key,))
+                    await self.db.db.execute("DELETE FROM shared_memory WHERE key = ?", (val,))
+            except Exception as cache_err:
+                logger.error(f"Failed to clear shared_memory cache for {file_id}: {str(cache_err)}")
+
             await self.db.db.commit()
             logger.info(f"Permanently sanitized database row(s) containing File ID {file_id} from both text and raw_content_json fields.")
         except Exception as db_clean_err:
