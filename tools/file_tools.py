@@ -136,9 +136,8 @@ class AIToolKitFiles:
             if tools.db:
                 f_info_str = f"[Forwarded {len(message_ids)} messages from {from_chat_id} to {to_chat_id}]"
                 await tools.db.save_message(str(to_chat_id), "model", f_info_str, msg_id=res_messages[-1] if res_messages else None)
-                import bot
                 for m_id in res_messages:
-                    bot.processed_msg_ids.add((int(to_chat_id), m_id))
+                    tools.processed_msg_ids.add((int(to_chat_id), m_id))
             return f"Success. Forwarded {len(message_ids)} messages to chat {to_chat_id}."
         except Exception as e:
             return f"Error forwarding messages: {str(e)}"
@@ -170,8 +169,7 @@ class AIToolKitFiles:
             result = await tools.client.send_file(chat_id, str(file_path.resolve()), caption=caption, force_document=True, **kwargs)
             if tools.db:
                 await tools.db.save_message(str(chat_id), "model", caption or f"[Sent Document: {filename}]", msg_id=result.id)
-                import bot
-                bot.processed_msg_ids.add((int(chat_id), result.id))
+                tools.processed_msg_ids.add((int(chat_id), result.id))
             return f"Success. Uncompressed document sent. Message ID: {result.id}"
         except Exception as e:
             return f"Error sending document: {str(e)}"

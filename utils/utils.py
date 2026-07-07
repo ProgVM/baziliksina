@@ -186,12 +186,6 @@ def safe_telegram_html(text: str) -> str:
     return ''.join(parts)
 
 
-def sanitize_filename(name: str) -> str:
-    """Sanitizes a string for use as a safe filename on disk."""
-    import re
-    cleaned = re.sub(r'[\\/*?:"<>|]', "", name)
-    return cleaned.replace(" ", "_")[:100]
-
 async def should_process_message_event(event, me, action_type="save", db=None) -> bool:
     """
     Evaluates whether an incoming or outgoing message event should be processed
@@ -224,28 +218,28 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
         else:
             if not config.TRIGGER_ON_INCOMING:
                 logger.info(f"[Message {event.message.id}] Skipping trigger: TRIGGER_ON_INCOMING is disabled.")
+                return False
 
-                # 2. Check Allowed Message Types
-                m_type_raw = get_media_type_description(event.message) or "text"
-                m_type_lower = m_type_raw.lower()
-                
-                # Normalize media types for seamless config filtering
-                if "voice" in m_type_lower:
-                    m_type_norm = "voice"
-                elif "video note" in m_type_lower:
-                    m_type_norm = "video"
-                elif "file" in m_type_lower or m_type_lower == "document":
-                    m_type_norm = "document"
-                elif "todo" in m_type_lower or m_type_lower == "list":
-                    m_type_norm = "list"
-                else:
-                    m_type_norm = m_type_lower
+        # 2. Check Allowed Message Types (for both incoming and outgoing triggers)
+        m_type_raw = get_media_type_description(event.message) or "text"
+        m_type_lower = m_type_raw.lower()
+        
+        # Normalize media types for seamless config filtering
+        if "voice" in m_type_lower:
+            m_type_norm = "voice"
+        elif "video note" in m_type_lower or m_type_lower == "video note":
+            m_type_norm = "video"
+        elif "file" in m_type_lower or m_type_lower == "document":
+            m_type_norm = "document"
+        elif "todo" in m_type_lower or m_type_lower == "list":
+            m_type_norm = "list"
+        else:
+            m_type_norm = m_type_lower
 
-                if m_type_norm not in [t.lower() for t in config.ALLOWED_MESSAGE_TYPES]:
-                    logger.info(f"[Message {event.message.id}] Skipping: Media type '{m_type_raw}' (normalized to '{m_type_norm}') is not allowed in ALLOWED_MESSAGE_TYPES.")
-                    return False
-        logger.info(f"[Message {event.message.id}] Skipping: Media type '{m_type}' is not allowed in ALLOWED_MESSAGE_TYPES.")
-        return False
+        allowed_types_lower = [t.lower().strip() for t in config.ALLOWED_MESSAGE_TYPES]
+        if m_type_norm not in allowed_types_lower:
+            logger.info(f"[Message {event.message.id}] Skipping: Media type '{m_type_raw}' (normalized to '{m_type_norm}') is not allowed in ALLOWED_MESSAGE_TYPES.")
+            return False
 
     # 3. Check Chat Whitelist / Blacklist Restrictions
     chat_id = int(event.chat_id)
@@ -258,16 +252,6 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
 
     # 4. Check Message Whitelist / Blacklist (Regex or Raw Values)
     text_content = event.message.message or ""
-    
-    def matches_patterns(patterns, text) -> bool:
-        for pat in patterns:
-            try:
-                if re.search(pat, text, re.IGNORECASE):
-                    return True
-            except Exception:
-                if pat.lower() in text.lower():
-                    return True
-        return False
 
     whitelist = config.MSG_SAVE_WHITELIST if action_type == "save" else config.MSG_GEN_WHITELIST
     blacklist = config.MSG_SAVE_BLACKLIST if action_type == "save" else config.MSG_GEN_BLACKLIST
@@ -336,6 +320,7 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
                 return False
 
     return True
+
 
 def should_process_reaction_event(emoji_or_id: str, actor_id: int, bot_id: int, is_add: bool) -> bool:
     """

@@ -61,8 +61,6 @@ async def get_interpolated_prompt(client, character_file_name, use_system_prompt
 
         full_creator = await client(GetFullUserRequest(creator))
         creator_bio = getattr(full_creator.full_user, 'about', None) or "description missing"
-        full_creator = await client(GetFullUserRequest(creator))
-        creator_bio = getattr(full_creator.full_user, 'about', None) or "description missing"
         
         cbday_obj = getattr(full_creator.full_user, 'birthday', None)
         creator_birthday = "hidden"

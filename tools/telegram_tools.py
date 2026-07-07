@@ -52,8 +52,7 @@ class AIToolKitTelegram:
             final_text = f"{formatted_quote}\n{text}"
             result = await tools.client.send_message(chat_id, final_text, parse_mode="markdown")
             await tools.db.save_message(str(chat_id), "model", final_text, msg_id=result.id)
-            import bot
-            bot.processed_msg_ids.add((int(chat_id), result.id))
+            tools.processed_msg_ids.add((int(chat_id), result.id))
             return f"Message sent successfully with fallback quote. Message ID: {result.id}"
 
         if reply_to_msg_id and (not reply_to_chat_id or str(reply_to_chat_id) == str(chat_id)) and not quote_text:
@@ -95,8 +94,7 @@ class AIToolKitTelegram:
 
         if sent_msg_id:
             await tools.db.save_message(str(chat_id), "model", text, msg_id=sent_msg_id)
-            import bot
-            bot.processed_msg_ids.add((int(chat_id), sent_msg_id))
+            tools.processed_msg_ids.add((int(chat_id), sent_msg_id))
         else:
             await tools.db.save_message(str(chat_id), "model", text)
 
@@ -407,8 +405,7 @@ class AIToolKitTelegram:
             if tools.db:
                 poll_info_str = f"[Poll: '{question}' | Options: {', '.join(options)}]"
                 await tools.db.save_message(str(chat_id), "model", poll_info_str, msg_id=result.id)
-                import bot
-                bot.processed_msg_ids.add((int(chat_id), result.id))
+                tools.processed_msg_ids.add((int(chat_id), result.id))
             return f"Success. Poll successfully sent. Message ID: {result.id}"
         except Exception as e:
             return f"Error sending Telegram poll: {str(e)}"
@@ -554,8 +551,7 @@ class AIToolKitTelegram:
                 mime_val, _ = mimetypes.guess_type(resolved_files[0])
                 media_info = json.dumps({"path": resolved_files[0], "mime_type": mime_val or "application/octet-stream"})
                 await tools.db.save_message(str(chat_id), "model", caption or "[Sent Media]", media_info=media_info, msg_id=msg_id)
-                import bot
-                bot.processed_msg_ids.add((int(chat_id), msg_id))
+                tools.processed_msg_ids.add((int(chat_id), msg_id))
             return "Success. Media message sent."
         except Exception as e:
             return f"Error: {str(e)}"
@@ -888,8 +884,7 @@ class AIToolKitTelegram:
             val = getattr(result.media, "value", None)
             if tools.db:
                 await tools.db.save_message(str(chat_id), "model", f"[Sent Game Emoji: {emoji} | Value: {val}]", msg_id=result.id)
-                import bot
-                bot.processed_msg_ids.add((int(chat_id), result.id))
+                tools.processed_msg_ids.add((int(chat_id), result.id))
             return f"Success. Sent game emoji '{emoji}'. Value: {val}. Message ID: {result.id}"
         except Exception as e:
             return f"Error sending game emoji: {str(e)}"
@@ -916,8 +911,7 @@ class AIToolKitTelegram:
             result = await tools.client.send_file(chat_id, media_geo, **kwargs)
             if tools.db:
                 await tools.db.save_message(str(chat_id), "model", f"[Sent Location: {latitude}, {longitude}]", msg_id=result.id)
-                import bot
-                bot.processed_msg_ids.add((int(chat_id), result.id))
+                tools.processed_msg_ids.add((int(chat_id), result.id))
             return f"Success. Geolocation sent. Message ID: {result.id}"
         except Exception as e:
             return f"Error sending geolocation: {str(e)}"
@@ -947,8 +941,7 @@ class AIToolKitTelegram:
             result = await tools.client.send_message(chat_id, final_text, parse_mode="html", **kwargs)
             if tools.db:
                 await tools.db.save_message(str(chat_id), "model", final_text, msg_id=result.id)
-                import bot
-                bot.processed_msg_ids.add((int(chat_id), result.id))
+                tools.processed_msg_ids.add((int(chat_id), result.id))
             return f"Success. Checklist sent. Message ID: {result.id}"
         except Exception as e:
             return f"Error sending list: {str(e)}"
@@ -976,8 +969,7 @@ class AIToolKitTelegram:
             result = await tools.client.send_file(chat_id, str(file_path.resolve()), caption=caption, attributes=attributes, **kwargs)
             if tools.db:
                 await tools.db.save_message(str(chat_id), "model", caption or f"[Sent Music: {title} by {performer}]", msg_id=result.id)
-                import bot
-                bot.processed_msg_ids.add((int(chat_id), result.id))
+                tools.processed_msg_ids.add((int(chat_id), result.id))
             return f"Success. Audio sent. Message ID: {result.id}"
         except Exception as e:
             return f"Error sending audio: {str(e)}"

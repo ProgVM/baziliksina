@@ -59,7 +59,7 @@ ai_manager = GeminiManager(client, db)
 
 # Global cache of AI account and events
 me = None
-processed_msg_ids = set()
+processed_msg_ids = tools.processed_msg_ids
 
 # Strict incremental counter for debouncing against one-millisecond races
 debounce_counter = 0
@@ -81,7 +81,7 @@ async def run_and_log_sandbox_code(chat_id: int, code: str, source_type: str = "
     result = await tools.execute_python_code(code, chat_id=chat_id, event=event)
     logger.info(f"--- VM background code execution result ({source_type}) ---\n{result}\n--------------------------------------------")
     
-    p_result = result[:VM_STDOUT_NOTICE_LIMIT] + "..." if len(result) > VM_STDOUT_NOTICE_LIMIT else result
+    p_result = result[:config.VM_STDOUT_NOTICE_LIMIT] + "..." if len(result) > config.VM_STDOUT_NOTICE_LIMIT else result
     
     template = load_feedback_template("vm_notification", "[System notification: Autonomous Python code {source_type} finished execution]\nCode:\n{code}\n\nExecution result:\n{p_result}")
     notice_text = template.replace("{source_type}", source_type).replace("{code}", code).replace("{p_result}", p_result).strip()
@@ -172,7 +172,7 @@ async def run_timers_loop():
                         asyncio.create_task(run_pending_query(cid_int, entity))
         except Exception as e:
             logger.error(f"Error in timers loop: {str(e)}")
-        await asyncio.sleep(TIMERS_LOOP_INTERVAL)
+        await asyncio.sleep(config.TIMERS_LOOP_INTERVAL)
 
 
 # Helper debouncer for the downloader and system triggers
@@ -187,7 +187,7 @@ def schedule_debounce_query(chat_id, entity, trigger_msg_id=None):
     message_buffers[chat_id]["trigger_msg_id"] = trigger_msg_id # Store the triggering message ID
 
     async def wait_and_send_debounce(cid, trigger_time):
-        await asyncio.sleep(DEBOUNCE_DELAY)
+        await asyncio.sleep(config.DEBOUNCE_DELAY)
         if cid not in message_buffers:
             return
         if message_buffers[cid].get("last_time") != trigger_time:
@@ -388,7 +388,7 @@ async def on_new_message(event):
                 allowed_user = False
             if config.USER_CACHE_WHITELIST and s_id not in config.USER_CACHE_WHITELIST:
                 allowed_user = False
-            if allowed_user and (s_id not in last_profile_updates or (now_ts - last_profile_updates[s_id]) > PROFILE_UPDATE_INTERVAL):
+            if allowed_user and (s_id not in last_profile_updates or (now_ts - last_profile_updates[s_id]) > config.PROFILE_UPDATE_INTERVAL):
                 last_profile_updates[s_id] = now_ts
                 asyncio.create_task(parse_and_cache_user_metadata(client, db, sender))
             
@@ -399,7 +399,7 @@ async def on_new_message(event):
             allowed_chat = False
         if config.CHAT_CACHE_WHITELIST and c_id not in config.CHAT_CACHE_WHITELIST:
             allowed_chat = False
-        if allowed_chat and (c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > PROFILE_UPDATE_INTERVAL):
+        if allowed_chat and (c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > config.PROFILE_UPDATE_INTERVAL):
             last_chat_updates[c_id] = now_ts
             chat_ent = await event.get_chat()
             asyncio.create_task(parse_and_cache_chat_metadata(client, db, chat_ent))
@@ -482,7 +482,7 @@ async def on_new_message(event):
 
     # Start Debounce generation of AI response in all chats during activity lull
     async def wait_and_send(cid, trigger_time):
-        await asyncio.sleep(DEBOUNCE_DELAY)
+        await asyncio.sleep(config.DEBOUNCE_DELAY)
         
         if cid not in message_buffers:
             return
@@ -568,12 +568,12 @@ async def on_message_edited(event):
     sender = await event.get_sender()
     if sender and getattr(sender, "id", None):
         s_id = int(sender.id)
-        if s_id not in last_profile_updates or (now_ts - last_profile_updates[s_id]) > PROFILE_UPDATE_INTERVAL:
+        if s_id not in last_profile_updates or (now_ts - last_profile_updates[s_id]) > config.PROFILE_UPDATE_INTERVAL:
             last_profile_updates[s_id] = now_ts
             asyncio.create_task(parse_and_cache_user_metadata(client, db, sender))
             
     c_id = int(chat_id)
-    if c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > PROFILE_UPDATE_INTERVAL:
+    if c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > config.PROFILE_UPDATE_INTERVAL:
         last_chat_updates[c_id] = now_ts
         chat_ent = await event.get_chat()
         asyncio.create_task(parse_and_cache_chat_metadata(client, db, chat_ent))
@@ -630,7 +630,7 @@ async def on_message_deleted(event):
     chat_id = event.chat_id
     if chat_id:
         c_id = int(chat_id)
-        if c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > PROFILE_UPDATE_INTERVAL:
+        if c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > config.PROFILE_UPDATE_INTERVAL:
             last_chat_updates[c_id] = now_ts
             try:
                 chat_ent = await event.get_chat()

@@ -1,3 +1,4 @@
+import config
 # db_manager.py
 import json
 import sqlite3
@@ -286,7 +287,8 @@ class DBManager:
         )
         await self.db.commit()
 
-    async def get_history(self, chat_id: str, limit: int = MESSAGES_LIMIT) -> list:
+    async def get_history(self, chat_id: str, limit: int = None) -> list:
+        if limit is None: limit = config.MESSAGES_LIMIT
         """
         Extracts end-to-end message history with split local and global contexts.
         Ensures the active chat is positioned at the end of the prompt for perfect response targeting,
@@ -310,7 +312,7 @@ class DBManager:
             history.append((ack_content, None))
 
         # Determine limits based on config ratio
-        local_limit = max(CONTEXT_LOCAL_MIN_LIMIT, int(limit * CONTEXT_LOCAL_RATIO))
+        local_limit = max(config.CONTEXT_LOCAL_MIN_LIMIT, int(limit * config.CONTEXT_LOCAL_RATIO))
         global_limit = max(0, limit - local_limit)
 
         # 1. Fetch recent messages specifically from the active chat (ordered DESC for DB slice)
@@ -399,7 +401,8 @@ class DBManager:
 
         return history
 
-    async def clear_history_for_summarization(self, chat_id: str, keep_last_n: int = SUMMARIZATION_KEEP_LIMIT):
+    async def clear_history_for_summarization(self, chat_id: str, keep_last_n: int = None):
+        if keep_last_n is None: keep_last_n = config.SUMMARIZATION_KEEP_LIMIT
         async with self.db.execute("""
             SELECT id FROM messages 
             ORDER BY id DESC LIMIT ?
@@ -573,9 +576,7 @@ class DBManager:
         )
         await self.db.commit()
 
-    # =====================================================================
-    # SECTION 10: CUSTOM DYNAMIC TOOLS MANAGEMENT (SQL REGISTRY)
-    # =====================================================================
+    # --- CUSTOM DYNAMIC TOOLS MANAGEMENT (SQL REGISTRY) ---
     async def save_custom_tool(self, name: str, category: str, description: str, code: str, parameters_schema: str = None):
         """Saves or updates a custom AI tool in the database."""
         await self.db.execute("""
@@ -615,9 +616,7 @@ class DBManager:
         await self.db.commit()
         return True
 
-    # =====================================================================
-    # SECTION 11: CUSTOM DYNAMIC TAGS AND BLOCKS MANAGEMENT
-    # =====================================================================
+    # --- CUSTOM DYNAMIC TAGS AND BLOCKS MANAGEMENT ---
     async def save_custom_tag_block(self, name: str, type_str: str, description: str, code: str):
         """Saves or updates a custom tag or block in the database."""
         await self.db.execute("""
@@ -656,9 +655,7 @@ class DBManager:
         await self.db.commit()
         return True
 
-    # =====================================================================
-    # SECTION 12: DYNAMIC SETTINGS OVERRIDES CONFIGURATION
-    # =====================================================================
+    # --- DYNAMIC SETTINGS OVERRIDES CONFIGURATION ---
     async def get_all_settings(self) -> dict:
         """Retrieves all configuration settings stored in the settings table."""
         async with self.db.execute("SELECT key, value FROM settings") as cursor:

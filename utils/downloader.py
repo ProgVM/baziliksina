@@ -93,6 +93,7 @@ async def convert_ogg_to_mp3(ogg_path: str) -> str:
         ]
         
         proc = await asyncio.create_subprocess_exec(
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )

@@ -15,6 +15,8 @@ pollinations_key_manager = None
 bot_callback_fn = None
 ai_manager = None
 
+processed_msg_ids = set()
+
 # Universal redirect imports for full backward compatibility
 from tools.system_tools import *
 from tools.file_tools import *

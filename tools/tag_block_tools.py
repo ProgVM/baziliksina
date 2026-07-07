@@ -48,8 +48,7 @@ class RootTagBlockHandlers:
             
             full_saved_text = f"{reply_meta}{unescaped_text}".strip()
             await db.save_message(str(chat_id), "model", full_saved_text, msg_id=result.id)
-            import bot
-            bot.processed_msg_ids.add((int(chat_id), result.id))
+            tools.processed_msg_ids.add((int(chat_id), result.id))
         except Exception as tg_err:
             logger.error(f"Failed to deliver reply msg: {str(tg_err)}")
 
