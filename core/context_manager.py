@@ -271,14 +271,14 @@ class AIContextManager:
                                             file_part
                                         ]
                                     )
-                                    history.append((content_obj, None))
-                                    history.append((virtual_content, None))
+                                    contents_raw.append(content_obj)
+                                    contents_raw.append(virtual_content)
                                     media_count += 1
                                     continue
                 except Exception as me_err:
                     logger.error(f"Error loading media data: {str(me_err)}")
-            contents_raw.append(content_obj)
 
+            contents_raw.append(content_obj)
         # Chronologically align raw contents
         aligned = []
         skip_indices = set()
