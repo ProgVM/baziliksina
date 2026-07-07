@@ -3,11 +3,353 @@ import os
 import sys
 import json
 import logging
+import random
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 
 logger = logging.getLogger("Config")
 load_dotenv(override=True)
+
+# =====================================================================
+# DYNAMIC CONFIGURATION PARAMETER ENGINE (DSL PARSER & NUMERIC PROXY)
+# =====================================================================
+class DynamicParameter:
+    """
+    A robust configuration proxy class that dynamically parses environment settings,
+    implements sequence rotations, random choices, ranges, step iterations, type checks,
+    and clamping validation, while natively mimicking standard numeric types.
+    """
+    def __init__(self, env_key: str, default_val, expected_type=float, min_val=None, max_val=None):
+        self.env_key = env_key
+        self.default_val = default_val
+        self.expected_type = expected_type
+        self.min_val = min_val
+        self.max_val = max_val
+        self._override_val = None
+        self._seq_index = 0
+
+    def set_override(self, val):
+        """Sets a dynamic database or JSON override value."""
+        self._override_val = val
+
+    def _get_raw_str(self) -> str:
+        if self._override_val is not None:
+            return str(self._override_val)
+        val = os.getenv(self.env_key)
+        if val is not None:
+            return str(val).strip()
+        return str(self.default_val)
+
+    def evaluate(self):
+        """Parses the current raw rule string, evaluates it, type-casts, and clamps boundaries."""
+        raw_str = self._get_raw_str()
+        try:
+            val = self._parse_and_evaluate_str(raw_str)
+            casted = self._cast_value(val)
+            
+            # Apply strict boundary limits
+            if self.min_val is not None and casted < self.min_val:
+                logger.warning(f"Bound warning: {self.env_key} evaluated to {casted}, clamped to minimum {self.min_val}")
+                casted = self.min_val
+            if self.max_val is not None and casted > self.max_val:
+                logger.warning(f"Bound warning: {self.env_key} evaluated to {casted}, clamped to maximum {self.max_val}")
+                casted = self.max_val
+            return casted
+        except Exception as e:
+            logger.error(f"Failed to evaluate dynamic configuration parameter {self.env_key} from raw '{raw_str}': {str(e)}. Falling back to default.")
+            return self._cast_value(self.default_val)
+
+    def _cast_value(self, val):
+        if self.expected_type == bool:
+            return str(val).lower() in ["true", "1", "yes"]
+        return self.expected_type(val)
+
+    def _parse_and_evaluate_str(self, s: str):
+        # We hold a global state cache for get/set variables to enable Turing-completeness
+        if not hasattr(DynamicParameter, "GLOBAL_STATE"):
+            DynamicParameter.GLOBAL_STATE = {}
+            
+        s = s.strip()
+        if not s:
+            return self.default_val
+
+        # Safe token-based lexical analyzer pattern
+        token_pattern = re.compile(
+            r'\s*(?:([a-zA-Z_][a-zA-Z0-9_]*)\s*\(|([0-9]+(?:\.[0-9]+)?)|([+\-*/%<>=!~]+)|(\))|([,])|([a-zA-Z_][a-zA-Z0-9_]*)|(\S))\s*'
+        )
+        tokens = []
+        for m in token_pattern.finditer(s):
+            func, num, op, rparen, comma, name, err = m.groups()
+            if err:
+                raise ValueError(f"Syntax error near token: {err}")
+            if func:
+                tokens.append(("FUNC", func.lower()))
+            elif num:
+                tokens.append(("NUM", float(num)))
+            elif op:
+                tokens.append(("OP", op))
+            elif rparen:
+                tokens.append(("RPAREN", ")"))
+            elif comma:
+                tokens.append(("COMMA", ","))
+            elif name:
+                tokens.append(("NAME", name))
+
+        idx = [0]  # List pointer to allow in-recursion index tracking
+
+        def parse_expression():
+            # logical comparison operators: expr (OP expr)*
+            left = parse_term()
+            while idx[0] < len(tokens) and tokens[idx[0]][0] == "OP" and tokens[idx[0]][1] in ["==", "!=", "<", ">", "<=", ">="]:
+                op = tokens[idx[0]][1]
+                idx[0] += 1
+                right = parse_term()
+                if op == "==": left = (left == right)
+                elif op == "!=": left = (left != right)
+                elif op == "<": left = (left < right)
+                elif op == ">": left = (left > right)
+                elif op == "<=": left = (left <= right)
+                elif op == ">=": left = (left >= right)
+            return left
+
+        def parse_term():
+            # add, subtract, and jitter: term ((+|-|~) term)*
+            left = parse_factor()
+            while idx[0] < len(tokens) and tokens[idx[0]][0] == "OP" and tokens[idx[0]][1] in ["+", "-", "~"]:
+                op = tokens[idx[0]][1]
+                idx[0] += 1
+                right = parse_factor()
+                if op == "+": left = left + right
+                elif op == "-": left = left - right
+                elif op == "~":
+                    left = left + random.uniform(-right, right)
+            return left
+
+        def parse_factor():
+            # multiply, divide, modulo: factor ((*|/|%) factor)*
+            left = parse_primary()
+            while idx[0] < len(tokens) and tokens[idx[0]][0] == "OP" and tokens[idx[0]][1] in ["*", "/", "%"]:
+                op = tokens[idx[0]][1]
+                idx[0] += 1
+                right = parse_primary()
+                if op == "*": left = left * right
+                elif op == "/": left = left / right
+                elif op == "%": left = left % right
+            return left
+
+        def parse_primary():
+            if idx[0] >= len(tokens):
+                raise ValueError("Unexpected end of expression")
+            t_type, t_val = tokens[idx[0]]
+            idx[0] += 1
+            if t_type == "NUM":
+                return t_val
+            elif t_type == "NAME":
+                if t_val.lower() == "true": return True
+                if t_val.lower() == "false": return False
+                return DynamicParameter.GLOBAL_STATE.get(t_val, 0)
+            elif t_type == "FUNC":
+                args = []
+                if idx[0] < len(tokens) and tokens[idx[0]][0] == "RPAREN":
+                    idx[0] += 1
+                else:
+                    while True:
+                        args.append(parse_expression())
+                        if idx[0] < len(tokens) and tokens[idx[0]][0] == "COMMA":
+                            idx[0] += 1
+                        elif idx[0] < len(tokens) and tokens[idx[0]][0] == "RPAREN":
+                            idx[0] += 1
+                            break
+                        else:
+                            raise ValueError("Expected ',' or ')' in function parameters")
+                return evaluate_function(t_val, args)
+            else:
+                raise ValueError(f"Unexpected token: {t_val}")
+
+        def evaluate_function(name, args):
+            if name == "if":
+                if len(args) < 3: raise ValueError("if() requires 3 parameters")
+                return args[1] if args[0] else args[2]
+            elif name == "set":
+                if len(args) < 2: raise ValueError("set() requires 2 parameters: set(var, val)")
+                var_name = str(args[0])
+                self.GLOBAL_STATE[var_name] = args[1]
+                return args[1]
+            elif name == "get":
+                if len(args) < 1: raise ValueError("get() requires at least 1 parameter")
+                var_name = str(args[0])
+                default = args[1] if len(args) > 1 else 0
+                return self.GLOBAL_STATE.get(var_name, default)
+            elif name == "seq":
+                if not args: raise ValueError("seq() requires parameters")
+                val = args[self._seq_index % len(args)]
+                self._seq_index += 1
+                return val
+            elif name in ["choice", "rand"]:
+                if not args: raise ValueError("choice() requires parameters")
+                return random.choice(args)
+            elif name in ["range", "rand_range"]:
+                if len(args) < 2: raise ValueError("range() requires 2 parameters: range(min, max)")
+                return random.uniform(args[0], args[1])
+            elif name == "step":
+                if len(args) < 3: raise ValueError("step() requires 3 parameters: step(start, stop, step_size)")
+                steps = self._generate_steps(args[0], args[1], args[2])
+                if steps:
+                    val = steps[self._seq_index % len(steps)]
+                    self._seq_index += 1
+                    return val
+                return args[0]
+            elif name == "rand_step":
+                if len(args) < 3: raise ValueError("rand_step() requires 3 parameters")
+                steps = self._generate_steps(args[0], args[1], args[2])
+                return random.choice(steps) if steps else args[0]
+            elif name == "jitter":
+                if len(args) < 2: raise ValueError("jitter() requires 2 parameters: jitter(base, amount)")
+                return args[0] + random.uniform(-args[1], args[1])
+            elif name in ["normal", "gaussian"]:
+                if len(args) < 2: raise ValueError("normal() requires 2 parameters: normal(mean, std_dev)")
+                return random.gauss(args[0], args[1])
+            elif name == "backoff":
+                if len(args) < 2: raise ValueError("backoff() requires at least 2 parameters: backoff(base, multiplier, [max_val])")
+                base, factor = args[0], args[1]
+                max_val = args[2] if len(args) > 2 else None
+                val = base * (factor ** self._seq_index)
+                self._seq_index += 1
+                if max_val is not None:
+                    val = min(val, max_val)
+                return val
+            elif name == "fib":
+                if len(args) < 1: raise ValueError("fib() requires at least 1 parameter: fib(base, [max_val])")
+                base = args[0]
+                max_val = args[1] if len(args) > 1 else None
+                def _get_fib(n):
+                    if n <= 0: return 0
+                    if n == 1: return 1
+                    a, b = 0, 1
+                    for _ in range(2, n + 1):
+                        a, b = b, a + b
+                    return b
+                val = base * _get_fib(self._seq_index + 1)
+                self._seq_index += 1
+                if max_val is not None:
+                    val = min(val, max_val)
+                return val
+            elif name == "min": return min(args)
+            elif name == "max": return max(args)
+            elif name == "sin":
+                import math
+                return math.sin(args[0])
+            elif name == "cos":
+                import math
+                return math.cos(args[0])
+            else:
+                raise ValueError(f"Unknown dynamic function: {name}")
+
+        # Pre-execution checks for functional and shorthand notation
+        if tokens:
+            if "|" in s and ":" in s:
+                parts = [p.strip() for p in s.split("|") if p.strip()]
+                population, weights = [], []
+                is_valid_weighted = True
+                for p in parts:
+                    if ":" in p:
+                        v_str, w_str = p.split(":", 1)
+                        try:
+                            population.append(v_str.strip())
+                            weights.append(float(w_str.strip()))
+                        except ValueError:
+                            is_valid_weighted = False
+                            break
+                    else:
+                        is_valid_weighted = False
+                        break
+                if is_valid_weighted and population:
+                    resolved_pop = [float(self._parse_and_evaluate_str(v)) for v in population]
+                    return random.choices(resolved_pop, weights=weights)[0]
+
+            m_shorthand_step = re.match(r"^([^-]+)-([^:]+):(.+)$", s)
+            if m_shorthand_step:
+                start, stop, step_part = float(m_shorthand_step.group(1)), float(m_shorthand_step.group(2)), m_shorthand_step.group(3).strip().lower()
+                if step_part in ["random", "rand"]:
+                    return random.uniform(start, stop)
+                else:
+                    step_size = float(step_part)
+                    steps = self._generate_steps(start, stop, step_size)
+                    if steps:
+                        val = steps[self._seq_index % len(steps)]
+                        self._seq_index += 1
+                        return val
+
+            if re.match(r"^\s*[0-9]+(?:\.[0-9]+)?\s*-\s*[0-9]+(?:\.[0-9]+)?\s*$", s):
+                m_shorthand_range = re.match(r"^([^-]+)-([^-]+)$", s)
+                if m_shorthand_range:
+                    vmin, vmax = float(m_shorthand_range.group(1)), float(m_shorthand_range.group(2))
+                    return random.uniform(vmin, vmax)
+
+            if "," in s and not ("(" in s or ")" in s):
+                parts = [p.strip() for p in s.split(",") if p.strip()]
+                if parts:
+                    val = parts[self._seq_index % len(parts)]
+                    self._seq_index += 1
+                    return float(val)
+
+            res = parse_expression()
+            if idx[0] < len(tokens):
+                raise ValueError(f"Dangling tokens at end of expression: {tokens[idx[0]:]}")
+            return res
+
+        return self.default_val
+
+    def _generate_steps(self, start, stop, step):
+        if step <= 0:
+            return [start]
+        res = []
+        curr = start
+        max_steps = 1000  # Guard constraint to prevent memory exhaustion
+        count = 0
+        while curr <= stop and count < max_steps:
+            res.append(curr)
+            curr += step
+            count += 1
+        return res
+
+    # Numerical proxy operations (magic methods)
+    def __float__(self): return float(self.evaluate())
+    def __int__(self): return int(self.evaluate())
+    def __str__(self): return str(self.evaluate())
+    def __repr__(self): return f"{self.evaluate()}"
+    def __bool__(self): return bool(self.evaluate())
+
+    # Comparison methods
+    def __lt__(self, other): return self.evaluate() < (float(other) if isinstance(other, DynamicParameter) else other)
+    def __le__(self, other): return self.evaluate() <= (float(other) if isinstance(other, DynamicParameter) else other)
+    def __gt__(self, other): return self.evaluate() > (float(other) if isinstance(other, DynamicParameter) else other)
+    def __ge__(self, other): return self.evaluate() >= (float(other) if isinstance(other, DynamicParameter) else other)
+    def __eq__(self, other): return self.evaluate() == (float(other) if isinstance(other, DynamicParameter) else other)
+    def __ne__(self, other): return self.evaluate() != (float(obj) if hasattr(obj, "to_dict") else other) # Safe comparison
+
+    # Math operators
+    def __add__(self, other): return self.evaluate() + (float(other) if isinstance(other, DynamicParameter) else other)
+    def __radd__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) + self.evaluate()
+    def __sub__(self, other): return self.evaluate() - (float(other) if isinstance(other, DynamicParameter) else other)
+    def __rsub__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) - self.evaluate()
+    def __mul__(self, other): return self.evaluate() * (float(other) if isinstance(other, DynamicParameter) else other)
+    def __rmul__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) * self.evaluate()
+    def __truediv__(self, other): return self.evaluate() / (float(other) if isinstance(other, DynamicParameter) else other)
+    def __rtruediv__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) / self.evaluate()
+    def __floordiv__(self, other): return self.evaluate() // (float(other) if isinstance(other, DynamicParameter) else other)
+    def __rfloordiv__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) // self.evaluate()
+    def __mod__(self, other): return self.evaluate() % (float(other) if isinstance(other, DynamicParameter) else other)
+    def __rmod__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) % self.evaluate()
+    def __pow__(self, other): return self.evaluate() ** (float(other) if isinstance(other, DynamicParameter) else other)
+    def __rpow__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) ** self.evaluate()
+
+    # Unary operators
+    def __pos__(self): return +self.evaluate()
+    def __neg__(self): return -self.evaluate()
+    def __abs__(self): return abs(self.evaluate())
+
 
 # =====================================================================
 # SECTION 1: Workspace and System Paths (General Settings)
@@ -105,8 +447,8 @@ pollinations_keys_raw = os.getenv("POLLINATIONS_KEYS", "")
 POLLINATIONS_KEYS = [k.strip() for k in pollinations_keys_raw.split(",") if k.strip()]
 
 DEFAULT_IMAGE_MODEL = os.getenv("DEFAULT_IMAGE_MODEL", "flux")
-DEFAULT_IMAGE_WIDTH = int(os.getenv("DEFAULT_IMAGE_WIDTH", 1024))
-DEFAULT_IMAGE_HEIGHT = int(os.getenv("DEFAULT_IMAGE_HEIGHT", 1024))
+DEFAULT_IMAGE_WIDTH = DynamicParameter("DEFAULT_IMAGE_WIDTH", 1024, int, min_val=1)
+DEFAULT_IMAGE_HEIGHT = DynamicParameter("DEFAULT_IMAGE_HEIGHT", 1024, int, min_val=1)
 MEDIA_RESOLUTION = os.getenv("MEDIA_RESOLUTION", "high").lower()
 ASPECT_RATIO = os.getenv("ASPECT_RATIO", "auto").lower()
 
@@ -114,11 +456,11 @@ DEFAULT_AUDIO_VOICE = os.getenv("DEFAULT_AUDIO_VOICE", "nova")
 DEFAULT_AUDIO_MODEL = os.getenv("DEFAULT_AUDIO_MODEL", "qwen-tts-instruct")
 
 DEFAULT_VIDEO_MODEL = os.getenv("DEFAULT_VIDEO_MODEL", "wan")
-DEFAULT_VIDEO_DURATION = int(os.getenv("DEFAULT_VIDEO_DURATION", 5))
+DEFAULT_VIDEO_DURATION = DynamicParameter("DEFAULT_VIDEO_DURATION", 5, int, min_val=1)
 DEFAULT_VIDEO_ASPECT_RATIO = os.getenv("DEFAULT_VIDEO_ASPECT_RATIO", "1:1")
-POLLINATIONS_SEED_MIN = int(os.getenv("POLLINATIONS_SEED_MIN", 1))
-POLLINATIONS_SEED_MAX = int(os.getenv("POLLINATIONS_SEED_MAX", 999999999))
-POLLINATIONS_UPLOAD_JPEG_QUALITY = int(os.getenv("POLLINATIONS_UPLOAD_JPEG_QUALITY", 95))
+POLLINATIONS_SEED_MIN = DynamicParameter("POLLINATIONS_SEED_MIN", 1, int, min_val=1)
+POLLINATIONS_SEED_MAX = DynamicParameter("POLLINATIONS_SEED_MAX", 999999999, int, min_val=1)
+POLLINATIONS_UPLOAD_JPEG_QUALITY = DynamicParameter("POLLINATIONS_UPLOAD_JPEG_QUALITY", 95, int, min_val=1, max_val=100)
 
 # =====================================================================
 # SECTION 5: Database and Summarization (Memory and Context Settings)
@@ -127,14 +469,14 @@ DB_NAME = os.getenv("DB_NAME", "bot_context.db")
 SQLITE_JOURNAL_MODE = os.getenv("SQLITE_JOURNAL_MODE", "WAL").upper()
 
 BOOTSTRAP_DATABASE = os.getenv("BOOTSTRAP_DATABASE", "false").lower() == "true"
-DIALOGS_LIMIT = int(os.getenv("DIALOGS_LIMIT", 50))
-BOOTSTRAP_MESSAGES_LIMIT = int(os.getenv("BOOTSTRAP_MESSAGES_LIMIT", 20))
-MISSED_MESSAGES_LIMIT = int(os.getenv("MISSED_MESSAGES_LIMIT", 50))
+DIALOGS_LIMIT = DynamicParameter("DIALOGS_LIMIT", 50, int, min_val=1)
+BOOTSTRAP_MESSAGES_LIMIT = DynamicParameter("BOOTSTRAP_MESSAGES_LIMIT", 20, int, min_val=1)
+MISSED_MESSAGES_LIMIT = DynamicParameter("MISSED_MESSAGES_LIMIT", 50, int, min_val=1)
 
-DEBOUNCE_DELAY = float(os.getenv("DEBOUNCE_DELAY", 7.0))
-DUPLICATE_CACHE_SIZE = int(os.getenv("DUPLICATE_CACHE_SIZE", 1000))
-MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 15 * 1024 * 1024))
-AVATAR_CACHE_TIME = int(os.getenv("AVATAR_CACHE_TIME", 86400))
+DEBOUNCE_DELAY = DynamicParameter("DEBOUNCE_DELAY", 7.0, float, min_val=0.0)
+DUPLICATE_CACHE_SIZE = DynamicParameter("DUPLICATE_CACHE_SIZE", 1000, int, min_val=1)
+MAX_FILE_SIZE = DynamicParameter("MAX_FILE_SIZE", 15 * 1024 * 1024, int, min_val=0)
+AVATAR_CACHE_TIME = DynamicParameter("AVATAR_CACHE_TIME", 86400, int, min_val=0)
 
 EMOJI_CACHE_DIR_NAME = os.getenv("EMOJI_CACHE_DIR_NAME", "emoji_cache")
 AVATAR_CACHE_DIR_NAME = os.getenv("AVATAR_CACHE_DIR_NAME", "avatar_cache")
@@ -143,51 +485,51 @@ TEMP_MEDIA_DIR_NAME = os.getenv("TEMP_MEDIA_DIR_NAME", "temp_media")
 
 BOT_AVATAR_NAME = os.getenv("BOT_AVATAR_NAME", "bot_avatar.jpg")
 
-MESSAGES_LIMIT = int(os.getenv("MESSAGES_LIMIT", 150))
+MESSAGES_LIMIT = DynamicParameter("MESSAGES_LIMIT", 150, int, min_val=1)
 CONTEXT_LOCAL_RATIO = float(os.getenv("CONTEXT_LOCAL_RATIO", 0.4))
-CONTEXT_LOCAL_MIN_LIMIT = int(os.getenv("CONTEXT_LOCAL_MIN_LIMIT", 15))
+CONTEXT_LOCAL_MIN_LIMIT = DynamicParameter("CONTEXT_LOCAL_MIN_LIMIT", 15, int, min_val=1)
 
-SUMMARIZATION_MESSAGES_LIMIT = int(os.getenv("SUMMARIZATION_MESSAGES_LIMIT", 500))
-SUMMARIZATION_KEEP_LIMIT = int(os.getenv("SUMMARIZATION_KEEP_LIMIT", 15))
+SUMMARIZATION_MESSAGES_LIMIT = DynamicParameter("SUMMARIZATION_MESSAGES_LIMIT", 500, int, min_val=1)
+SUMMARIZATION_KEEP_LIMIT = DynamicParameter("SUMMARIZATION_KEEP_LIMIT", 15, int, min_val=1)
 
-MAX_TURNS = int(os.getenv("MAX_TURNS", 1000))
-MEDIA_LIMIT = int(os.getenv("MEDIA_LIMIT", 15))
+MAX_TURNS = DynamicParameter("MAX_TURNS", 1000, int, min_val=1)
+MEDIA_LIMIT = DynamicParameter("MEDIA_LIMIT", 15, int, min_val=1)
 
 # =====================================================================
 # SECTION 6: Network and Timing Settings (Timeouts and Cooldowns)
 # =====================================================================
-TIMERS_LOOP_INTERVAL = float(os.getenv("TIMERS_LOOP_INTERVAL", 1.0))
-KEEP_ALIVE_INTERVAL = int(os.getenv("KEEP_ALIVE_INTERVAL", 120))
-CONNECTION_MONITOR_INTERVAL = int(os.getenv("CONNECTION_MONITOR_INTERVAL", 10))
+TIMERS_LOOP_INTERVAL = DynamicParameter("TIMERS_LOOP_INTERVAL", 1.0, float, min_val=0.1)
+KEEP_ALIVE_INTERVAL = DynamicParameter("KEEP_ALIVE_INTERVAL", 120, int, min_val=1)
+CONNECTION_MONITOR_INTERVAL = DynamicParameter("CONNECTION_MONITOR_INTERVAL", 10, int, min_val=1)
 
-GEMINI_TIMEOUT = float(os.getenv("GEMINI_TIMEOUT", 30.0))
-TYPING_INTERVAL = float(os.getenv("TYPING_INTERVAL", 10.0))
-TIMEOUT_SLEEP = float(os.getenv("TIMEOUT_SLEEP", 2.0))
-QUEUE_PROMOTION_DELAY = float(os.getenv("QUEUE_PROMOTION_DELAY", 2.0))
-RATE_LIMIT_SLEEP = float(os.getenv("RATE_LIMIT_SLEEP", 5.0))
-API_ERROR_SLEEP = float(os.getenv("API_ERROR_SLEEP", 2.0))
+GEMINI_TIMEOUT = DynamicParameter("GEMINI_TIMEOUT", 30.0, float, min_val=0.1)
+TYPING_INTERVAL = DynamicParameter("TYPING_INTERVAL", 10.0, float, min_val=0.1)
+TIMEOUT_SLEEP = DynamicParameter("TIMEOUT_SLEEP", 2.0, float, min_val=0.1)
+QUEUE_PROMOTION_DELAY = DynamicParameter("QUEUE_PROMOTION_DELAY", 2.0, float, min_val=0.1)
+RATE_LIMIT_SLEEP = DynamicParameter("RATE_LIMIT_SLEEP", 5.0, float, min_val=0.1)
+API_ERROR_SLEEP = DynamicParameter("API_ERROR_SLEEP", 2.0, float, min_val=0.1)
 
-GEMINI_FREE_RECOVERY_TIME = int(os.getenv("GEMINI_FREE_RECOVERY_TIME", 18000))
-GEMINI_PRO_RECOVERY_TIME = int(os.getenv("GEMINI_PRO_RECOVERY_TIME", 86400))
-POLLINATIONS_KEY_RECOVERY_TIME = int(os.getenv("POLLINATIONS_KEY_RECOVERY_TIME", 3600))
-KEY_INFO_TIMEOUT = float(os.getenv("KEY_INFO_TIMEOUT", 10.0))
+GEMINI_FREE_RECOVERY_TIME = DynamicParameter("GEMINI_FREE_RECOVERY_TIME", 18000, int, min_val=1)
+GEMINI_PRO_RECOVERY_TIME = DynamicParameter("GEMINI_PRO_RECOVERY_TIME", 86400, int, min_val=1)
+POLLINATIONS_KEY_RECOVERY_TIME = DynamicParameter("POLLINATIONS_KEY_RECOVERY_TIME", 3600, int, min_val=1)
+KEY_INFO_TIMEOUT = DynamicParameter("KEY_INFO_TIMEOUT", 10.0, float, min_val=0.1)
 
-PROFILE_UPDATE_INTERVAL = int(os.getenv("PROFILE_UPDATE_INTERVAL", 3600))
-TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT = int(os.getenv("TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT", 10))
+PROFILE_UPDATE_INTERVAL = DynamicParameter("PROFILE_UPDATE_INTERVAL", 3600, int, min_val=1)
+TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT = DynamicParameter("TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT", 10, int, min_val=1)
 
-BOT_RESPONSE_TIMEOUT = float(os.getenv("BOT_RESPONSE_TIMEOUT", 6.0))
+BOT_RESPONSE_TIMEOUT = DynamicParameter("BOT_RESPONSE_TIMEOUT", 6.0, float, min_val=0.1)
 DEFAULT_RESULT_INDEX = int(os.getenv("DEFAULT_RESULT_INDEX", 0))
-BUTTON_CLICK_TIMEOUT = float(os.getenv("BUTTON_CLICK_TIMEOUT", 15.0))
-DOWNLOAD_MEDIA_TIMEOUT = float(os.getenv("DOWNLOAD_MEDIA_TIMEOUT", 120.0))
-TELEGRAM_ACTION_TIMEOUT = float(os.getenv("TELEGRAM_ACTION_TIMEOUT", 60.0))
-CONVERSION_TIMEOUT = float(os.getenv("CONVERSION_TIMEOUT", 30.0))
+BUTTON_CLICK_TIMEOUT = DynamicParameter("BUTTON_CLICK_TIMEOUT", 15.0, float, min_val=0.1)
+DOWNLOAD_MEDIA_TIMEOUT = DynamicParameter("DOWNLOAD_MEDIA_TIMEOUT", 120.0, float, min_val=0.1)
+TELEGRAM_ACTION_TIMEOUT = DynamicParameter("TELEGRAM_ACTION_TIMEOUT", 60.0, float, min_val=0.1)
+CONVERSION_TIMEOUT = DynamicParameter("CONVERSION_TIMEOUT", 30.0, float, min_val=0.1)
 
-GENERATE_IMAGE_TIMEOUT = float(os.getenv("GENERATE_IMAGE_TIMEOUT", 180.0))
-GENERATE_AUDIO_TIMEOUT = float(os.getenv("GENERATE_AUDIO_TIMEOUT", 120.0))
-GENERATE_VIDEO_TIMEOUT = float(os.getenv("GENERATE_VIDEO_TIMEOUT", 180.0))
-GOOGLE_UPLOAD_TIMEOUT = float(os.getenv("GOOGLE_UPLOAD_TIMEOUT", 120.0))
+GENERATE_IMAGE_TIMEOUT = DynamicParameter("GENERATE_IMAGE_TIMEOUT", 180.0, float, min_val=0.1)
+GENERATE_AUDIO_TIMEOUT = DynamicParameter("GENERATE_AUDIO_TIMEOUT", 120.0, float, min_val=0.1)
+GENERATE_VIDEO_TIMEOUT = DynamicParameter("GENERATE_VIDEO_TIMEOUT", 180.0, float, min_val=0.1)
+GOOGLE_UPLOAD_TIMEOUT = DynamicParameter("GOOGLE_UPLOAD_TIMEOUT", 120.0, float, min_val=0.1)
 DEFAULT_PUBLIC_UPLOAD_PROVIDER = os.getenv("DEFAULT_PUBLIC_UPLOAD_PROVIDER", "auto")
-PUBLIC_UPLOAD_TIMEOUT = float(os.getenv("PUBLIC_UPLOAD_TIMEOUT", 60.0))
+PUBLIC_UPLOAD_TIMEOUT = DynamicParameter("PUBLIC_UPLOAD_TIMEOUT", 60.0, float, min_val=0.1)
 
 # =====================================================================
 # SECTION 7: Proxy and Anonymization Settings (Tor & Proxy Controls)
@@ -196,11 +538,11 @@ TOR_HOST = os.getenv("TOR_HOST", "127.0.0.1")
 TOR_SOCKS_PORT = int(os.getenv("TOR_SOCKS_PORT", 9050))
 TOR_CONTROL_PORT = int(os.getenv("TOR_CONTROL_PORT", 9051))
 TOR_PASSWORD = os.getenv("TOR_PASSWORD", "")
-TOR_ROTATION_TIMEOUT = float(os.getenv("TOR_ROTATION_TIMEOUT", 15.0))
+TOR_ROTATION_TIMEOUT = DynamicParameter("TOR_ROTATION_TIMEOUT", 15.0, float, min_val=0.1)
 
-POLLINATIONS_MAX_ATTEMPTS = int(os.getenv("POLLINATIONS_MAX_ATTEMPTS", 8))
-TOR_MAX_CONSECUTIVE_FAILURES = int(os.getenv("TOR_MAX_CONSECUTIVE_FAILURES", 2))
-PROXY_CHECK_TIMEOUT = float(os.getenv("PROXY_CHECK_TIMEOUT", "3.0"))
+POLLINATIONS_MAX_ATTEMPTS = DynamicParameter("POLLINATIONS_MAX_ATTEMPTS", 8, int, min_val=1)
+TOR_MAX_CONSECUTIVE_FAILURES = DynamicParameter("TOR_MAX_CONSECUTIVE_FAILURES", 2, int, min_val=1)
+PROXY_CHECK_TIMEOUT = DynamicParameter("PROXY_CHECK_TIMEOUT", 3.0, float, min_val=0.1)
 PROXY_STRICT_CHECK = os.getenv("PROXY_STRICT_CHECK", "false").lower() == "true"
 
 def _parse_list(key: str, default: list = None) -> list:
@@ -244,7 +586,7 @@ def check_proxy_active(proxy_url_str: str) -> bool:
         port = parsed.port
         if not host or not port:
             return False
-        with socket.create_connection((host, port), timeout=PROXY_CHECK_TIMEOUT):
+        with socket.create_connection((host, port), timeout=float(PROXY_CHECK_TIMEOUT)):
             return True
     except Exception:
         return False
@@ -267,26 +609,26 @@ else:
 # =====================================================================
 # SECTION 8: Sandbox limits and Page Scrapers
 # =====================================================================
-SQL_SELECT_LIMIT = int(os.getenv("SQL_SELECT_LIMIT", 100))
-SQL_STDOUT_CHAR_LIMIT = int(os.getenv("SQL_STDOUT_CHAR_LIMIT", 3500))
-TELEGRAM_ACTION_CHAR_LIMIT = int(os.getenv("TELEGRAM_ACTION_CHAR_LIMIT", 5000))
-TELEGRAM_ACTION_CONFIRM_LIMIT = int(os.getenv("TELEGRAM_ACTION_CONFIRM_LIMIT", 500))
-VM_STDOUT_NOTICE_LIMIT = int(os.getenv("VM_STDOUT_NOTICE_LIMIT", 1500))
+SQL_SELECT_LIMIT = DynamicParameter("SQL_SELECT_LIMIT", 100, int, min_val=1)
+SQL_STDOUT_CHAR_LIMIT = DynamicParameter("SQL_STDOUT_CHAR_LIMIT", 3500, int, min_val=1)
+TELEGRAM_ACTION_CHAR_LIMIT = DynamicParameter("TELEGRAM_ACTION_CHAR_LIMIT", 5000, int, min_val=1)
+TELEGRAM_ACTION_CONFIRM_LIMIT = DynamicParameter("TELEGRAM_ACTION_CONFIRM_LIMIT", 500, int, min_val=1)
+VM_STDOUT_NOTICE_LIMIT = DynamicParameter("VM_STDOUT_NOTICE_LIMIT", 1500, int, min_val=1)
 SANDBOX_ALLOWED_FILES = _parse_list("SANDBOX_ALLOWED_FILES", ["all"])
 SANDBOX_BLOCKED_FILES = _parse_list("SANDBOX_BLOCKED_FILES", ["bot.py", "config.py", "db_manager.py", "key_manager.py", "gemini_manager.py", ".env", "tools.py", "sandbox.py", "utils.py", "downloader.py", "registry.py"])
-SANDBOX_COMMAND_CHAR_LIMIT = int(os.getenv("SANDBOX_COMMAND_CHAR_LIMIT", 3000))
+SANDBOX_COMMAND_CHAR_LIMIT = DynamicParameter("SANDBOX_COMMAND_CHAR_LIMIT", 3000, int, min_val=1)
 
 DEFAULT_IMAGE_NAME = os.getenv("DEFAULT_IMAGE_NAME", "generated_image.png")
 DEFAULT_AUDIO_NAME = os.getenv("DEFAULT_AUDIO_NAME", "generated_audio.mp3")
 DEFAULT_VIDEO_NAME = os.getenv("DEFAULT_VIDEO_NAME", "generated_video.mp4")
 
-WEB_SEARCH_RESULTS_LIMIT = int(os.getenv("WEB_SEARCH_RESULTS_LIMIT", 5))
-SCRAPE_CHAR_LIMIT = int(os.getenv("SCRAPE_CHAR_LIMIT", 4000))
-WEB_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", 10.0))
-WEB_MEDIA_SEARCH_TIMEOUT = float(os.getenv("WEB_SEARCH_TIMEOUT", 10.0))
+WEB_SEARCH_RESULTS_LIMIT = DynamicParameter("WEB_SEARCH_RESULTS_LIMIT", 5, int, min_val=1)
+SCRAPE_CHAR_LIMIT = DynamicParameter("SCRAPE_CHAR_LIMIT", 4000, int, min_val=1)
+WEB_SEARCH_TIMEOUT = DynamicParameter("WEB_SEARCH_TIMEOUT", 10.0, float, min_val=0.1)
+WEB_MEDIA_SEARCH_TIMEOUT = DynamicParameter("WEB_MEDIA_SEARCH_TIMEOUT", 10.0, float, min_val=0.1)
 MEDIA_SEARCH_AUTO_DOWNLOAD = os.getenv("MEDIA_SEARCH_AUTO_DOWNLOAD", "true").lower() == "true"
 MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE = os.getenv("MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE", "true").lower() == "true"
-SCRAPE_TIMEOUT = float(os.getenv("SCRAPE_TIMEOUT", 10.0))
+SCRAPE_TIMEOUT = DynamicParameter("SCRAPE_TIMEOUT", 10.0, float, min_val=0.1)
 
 TELEGRAM_CONNECTION_RETRIES = os.getenv("TELEGRAM_CONNECTION_RETRIES")
 TELEGRAM_CONNECTION_RETRIES = int(TELEGRAM_CONNECTION_RETRIES) if TELEGRAM_CONNECTION_RETRIES else 5
@@ -328,6 +670,7 @@ TRIGGER_ON_OUTGOING_DELETED_MESSAGES = os.getenv("TRIGGER_ON_OUTGOING_DELETED_ME
 ALLOWED_MESSAGE_TYPES = _parse_list("ALLOWED_MESSAGE_TYPES", ["text", "photo", "video", "voice", "audio", "poll", "sticker", "gif", "location", "document"])
 FILTER_POLICY = os.getenv("FILTER_POLICY", "blacklist_first").strip().lower()
 
+# Comma-separated regular expressions / keywords (optional)
 MSG_SAVE_WHITELIST = _parse_list("MSG_SAVE_WHITELIST", [])
 MSG_SAVE_BLACKLIST = _parse_list("MSG_SAVE_BLACKLIST", [])
 MSG_GEN_WHITELIST = _parse_list("MSG_GEN_WHITELIST", [])
@@ -349,6 +692,7 @@ REACTION_BLACKLIST = _parse_list("REACTION_BLACKLIST", [])
 SAVE_USER_METADATA = os.getenv("SAVE_USER_METADATA", "true").lower() == "true"
 SAVE_CHAT_METADATA = os.getenv("SAVE_CHAT_METADATA", "true").lower() == "true"
 
+# Comma-separated numerical IDs or @usernames
 USER_CACHE_WHITELIST = _parse_int_list("USER_CACHE_WHITELIST", [])
 USER_CACHE_BLACKLIST = _parse_int_list("USER_CACHE_BLACKLIST", [])
 CHAT_CACHE_WHITELIST = _parse_int_list("CHAT_CACHE_WHITELIST", [])
@@ -365,6 +709,7 @@ AI_BLOCKED_ROOT_TOOLS = _parse_list("AI_BLOCKED_ROOT_TOOLS", ["execute_python_co
 AI_ALLOWED_CUSTOM_TOOLS = _parse_list("AI_ALLOWED_CUSTOM_TOOLS", ["all"])
 AI_BLOCKED_CUSTOM_TOOLS = _parse_list("AI_BLOCKED_CUSTOM_TOOLS", [])
 
+# Custom dynamic tools permissions
 CUSTOM_TOOLS_ENABLE = os.getenv("CUSTOM_TOOLS_ENABLE", "true").lower() == "true"
 CUSTOM_TOOLS_ALLOW_VIEW = os.getenv("CUSTOM_TOOLS_ALLOW_VIEW", "true").lower() == "true"
 CUSTOM_TOOLS_ALLOW_CREATE = os.getenv("CUSTOM_TOOLS_ALLOW_CREATE", "true").lower() == "true"
@@ -378,9 +723,9 @@ CUSTOM_TOOLS_INVOKE_BLACKLIST = _parse_int_list("CUSTOM_TOOLS_INVOKE_BLACKLIST",
 CROSS_CHAT_CONTEXT = os.getenv("CROSS_CHAT_CONTEXT", "true").lower() == "true"
 STREAMING_GENERATION = os.getenv("STREAMING_GENERATION", "false").lower() == "true"
 STREAMING_INTERVAL = float(os.getenv("STREAMING_INTERVAL", 1.5))
-MESSAGE_POOL_LIMIT = int(os.getenv("MESSAGE_POOL_LIMIT", 50))
-PENDING_QUEUE_LIMIT = int(os.getenv("PENDING_QUEUE_LIMIT", 10))
-TEMP_MEDIA_CLEANUP_INTERVAL = float(os.getenv("TEMP_MEDIA_CLEANUP_INTERVAL", 3600.0))
+MESSAGE_POOL_LIMIT = DynamicParameter("MESSAGE_POOL_LIMIT", 50, int, min_val=1)
+PENDING_QUEUE_LIMIT = DynamicParameter("PENDING_QUEUE_LIMIT", 10, int, min_val=1)
+TEMP_MEDIA_CLEANUP_INTERVAL = DynamicParameter("TEMP_MEDIA_CLEANUP_INTERVAL", 3600.0, float, min_val=1.0)
 
 RE_SEQ_BLOCK = os.getenv("RE_SEQ_BLOCK", r"<(seq|par|bg)>(.*?)</\1>")
 RE_REPLY_TAG = os.getenv("RE_REPLY_TAG", r"(?<!\\)\[Reply(?:\s+to\s+message\s+#?|:\s*)(\d+)\]")
@@ -410,7 +755,7 @@ PACIFIC_STANDARD_TIME_OFFSET = int(os.getenv("PACIFIC_STANDARD_TIME_OFFSET", -8)
 PACIFIC_DAYLIGHT_TIME_OFFSET = int(os.getenv("PACIFIC_DAYLIGHT_TIME_OFFSET", -7))
 GEMINI_MIN_COOLDOWN_SECONDS = int(os.getenv("GEMINI_MIN_COOLDOWN_SECONDS", 5))
 GEMINI_DAILY_LIMIT_COOLDOWN = int(os.getenv("GEMINI_DAILY_LIMIT_COOLDOWN", 86400))
-RECURSIVE_REPLY_DEPTH_LIMIT = int(os.getenv("RECURSIVE_REPLY_DEPTH_LIMIT", 3))
+RECURSIVE_REPLY_DEPTH_LIMIT = DynamicParameter("RECURSIVE_REPLY_DEPTH_LIMIT", 3, int, min_val=1)
 
 SANDBOX_CONFIG_WHITELIST = _parse_list("SANDBOX_CONFIG_WHITELIST", ["all"])
 SANDBOX_CONFIG_BLACKLIST = _parse_list("SANDBOX_CONFIG_BLACKLIST", ["API_HASH", "TELEGRAM_API_HASH", "GEMINI_API_KEYS", "GEMINI_KEYS", "POLLINATIONS_KEYS", "TOR_PASSWORD", "ALL_PROXY", "all_proxy", "TELEGRAM_PROXIES", "GEMINI_PROXIES", "POLLINATIONS_PROXIES", "SCRAPER_PROXIES"])
@@ -499,7 +844,12 @@ async def reload_config_from_db(db):
                 parsed_val = json.loads(val)
             except Exception:
                 parsed_val = val
-            globals()[key] = parsed_val
+            
+            # Check if there is an existing DynamicParameter to set override for, keeping type safety
+            if key in globals() and isinstance(globals()[key], DynamicParameter):
+                globals()[key].set_override(parsed_val)
+            else:
+                globals()[key] = parsed_val
         
         # Security self-healing: if no custom keys exist, generate persistent random secure administrative token
         if not globals().get("WEB_SERVER_API_KEYS"):
