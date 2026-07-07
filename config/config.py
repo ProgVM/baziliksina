@@ -353,7 +353,7 @@ class DynamicParameter:
 # SYSTEM CENTRAL PARAMETERS REGISTRY & GETATTR ATTRIBUTE DISPATCHER
 # =====================================================================
 _PARAMS = {
-    # Секция 4: Pollinations
+    # Section 4: Pollinations
     "DEFAULT_IMAGE_WIDTH": DynamicParameter("DEFAULT_IMAGE_WIDTH", 1024, int, min_val=1),
     "DEFAULT_IMAGE_HEIGHT": DynamicParameter("DEFAULT_IMAGE_HEIGHT", 1024, int, min_val=1),
     "DEFAULT_VIDEO_DURATION": DynamicParameter("DEFAULT_VIDEO_DURATION", 5, int, min_val=1),
@@ -361,7 +361,7 @@ _PARAMS = {
     "POLLINATIONS_SEED_MAX": DynamicParameter("POLLINATIONS_SEED_MAX", 999999999, int, min_val=1),
     "POLLINATIONS_UPLOAD_JPEG_QUALITY": DynamicParameter("POLLINATIONS_UPLOAD_JPEG_QUALITY", 95, int, min_val=1, max_val=100),
 
-    # Секция 5: Database and Summarization
+    # Section 5: Database and Summarization
     "DIALOGS_LIMIT": DynamicParameter("DIALOGS_LIMIT", 50, int, min_val=1),
     "BOOTSTRAP_MESSAGES_LIMIT": DynamicParameter("BOOTSTRAP_MESSAGES_LIMIT", 20, int, min_val=1),
     "MISSED_MESSAGES_LIMIT": DynamicParameter("MISSED_MESSAGES_LIMIT", 50, int, min_val=1),
@@ -376,7 +376,7 @@ _PARAMS = {
     "MAX_TURNS": DynamicParameter("MAX_TURNS", 1000, int, min_val=1),
     "MEDIA_LIMIT": DynamicParameter("MEDIA_LIMIT", 15, int, min_val=1),
 
-    # Секция 6: Network and Timing Settings
+    # Section 6: Network and Timing Settings
     "TIMERS_LOOP_INTERVAL": DynamicParameter("TIMERS_LOOP_INTERVAL", 1.0, float, min_val=0.1),
     "KEEP_ALIVE_INTERVAL": DynamicParameter("KEEP_ALIVE_INTERVAL", 120, int, min_val=1),
     "CONNECTION_MONITOR_INTERVAL": DynamicParameter("CONNECTION_MONITOR_INTERVAL", 10, int, min_val=1),
@@ -403,13 +403,13 @@ _PARAMS = {
     "GOOGLE_UPLOAD_TIMEOUT": DynamicParameter("GOOGLE_UPLOAD_TIMEOUT", 120.0, float, min_val=0.1),
     "PUBLIC_UPLOAD_TIMEOUT": DynamicParameter("PUBLIC_UPLOAD_TIMEOUT", 60.0, float, min_val=0.1),
 
-    # Секция 7: Proxy and Anonymization
+    # Section 7: Proxy and Anonymization
     "TOR_ROTATION_TIMEOUT": DynamicParameter("TOR_ROTATION_TIMEOUT", 15.0, float, min_val=0.1),
     "POLLINATIONS_MAX_ATTEMPTS": DynamicParameter("POLLINATIONS_MAX_ATTEMPTS", 8, int, min_val=1),
     "TOR_MAX_CONSECUTIVE_FAILURES": DynamicParameter("TOR_MAX_CONSECUTIVE_FAILURES", 2, int, min_val=1),
     "PROXY_CHECK_TIMEOUT": DynamicParameter("PROXY_CHECK_TIMEOUT", 3.0, float, min_val=0.1),
 
-    # Секция 8: Sandbox limits and Page Scrapers
+    # Section 8: Sandbox limits and Page Scrapers
     "SQL_SELECT_LIMIT": DynamicParameter("SQL_SELECT_LIMIT", 100, int, min_val=1),
     "SQL_STDOUT_CHAR_LIMIT": DynamicParameter("SQL_STDOUT_CHAR_LIMIT", 3500, int, min_val=1),
     "TELEGRAM_ACTION_CHAR_LIMIT": DynamicParameter("TELEGRAM_ACTION_CHAR_LIMIT", 5000, int, min_val=1),
@@ -425,11 +425,25 @@ _PARAMS = {
     "TELEGRAM_RETRY_DELAY": DynamicParameter("TELEGRAM_RETRY_DELAY", 5.0, float, min_val=0.1),
     "TELEGRAM_TIMEOUT": DynamicParameter("TELEGRAM_TIMEOUT", 15.0, float, min_val=1.0),
 
-    # Секция 10: Advanced Configuration Matrix
+    # Section 10: Advanced Configuration Matrix
     "MESSAGE_POOL_LIMIT": DynamicParameter("MESSAGE_POOL_LIMIT", 50, int, min_val=1),
     "PENDING_QUEUE_LIMIT": DynamicParameter("PENDING_QUEUE_LIMIT", 10, int, min_val=1),
     "TEMP_MEDIA_CLEANUP_INTERVAL": DynamicParameter("TEMP_MEDIA_CLEANUP_INTERVAL", 3600.0, float, min_val=1.0),
-    "RECURSIVE_REPLY_DEPTH_LIMIT": DynamicParameter("RECURSIVE_REPLY_DEPTH_LIMIT", 3, int, min_val=1)
+    "RECURSIVE_REPLY_DEPTH_LIMIT": DynamicParameter("RECURSIVE_REPLY_DEPTH_LIMIT", 3, int, min_val=1),
+    "BOOTSTRAP_DATABASE": DynamicParameter("BOOTSTRAP_DATABASE", True, bool),
+    "DB_NAME": DynamicParameter("DB_NAME", "bot_context.db", str),
+    "BOT_AVATAR_NAME": DynamicParameter("BOT_AVATAR_NAME", "bot_avatar.jpg", str),
+    "SQLITE_JOURNAL_MODE": DynamicParameter("SQLITE_JOURNAL_MODE", "WAL", str),
+    "CONTEXT_LOCAL_RATIO": DynamicParameter("CONTEXT_LOCAL_RATIO", 0.7, float),
+    "EMOJI_CACHE_DIR_NAME": DynamicParameter("EMOJI_CACHE_DIR_NAME", "emoji_cache", str),
+    "AVATAR_CACHE_DIR_NAME": DynamicParameter("AVATAR_CACHE_DIR_NAME", "avatar_cache", str),
+    "GIFT_CACHE_DIR_NAME": DynamicParameter("GIFT_CACHE_DIR_NAME", "gift_cache", str),
+    "TEMP_MEDIA_DIR_NAME": DynamicParameter("TEMP_MEDIA_DIR_NAME", "temp_media", str),
+    "TELEGRAM_AUTO_RECONNECT": DynamicParameter("TELEGRAM_AUTO_RECONNECT", True, bool),
+    "DEFAULT_IMAGE_NAME": DynamicParameter("DEFAULT_IMAGE_NAME", "generated_image.png", str),
+    "DEFAULT_AUDIO_NAME": DynamicParameter("DEFAULT_AUDIO_NAME", "generated_audio.mp3", str),
+    "DEFAULT_VIDEO_NAME": DynamicParameter("DEFAULT_VIDEO_NAME", "generated_video.mp4", str),
+    "DEFAULT_RESULT_INDEX": DynamicParameter("DEFAULT_RESULT_INDEX", 0, int)
 }
 
 def __getattr__(name: str):
@@ -828,8 +842,10 @@ async def reload_config_from_db(db):
             except Exception:
                 parsed_val = val
             
-            # Check if there is an existing DynamicParameter to set override for, keeping type safety
-            if key in globals() and isinstance(globals()[key], DynamicParameter):
+            # Check both internal parameters registry and root namespace scope
+            if key in _PARAMS:
+                _PARAMS[key].set_override(parsed_val)
+            elif key in globals() and isinstance(globals()[key], DynamicParameter):
                 globals()[key].set_override(parsed_val)
             else:
                 globals()[key] = parsed_val
@@ -849,3 +865,6 @@ async def reload_config_from_db(db):
         logger.info("Tier 4 Config Overwrite successfully synchronized with database settings!")
     except Exception as e:
         logger.error(f"Error reloading config from DB settings table: {str(e)}")
+
+# Dynamic export helper for static analysis tooling
+__all__ = sorted(list(globals().keys()) + list(_PARAMS.keys()))
