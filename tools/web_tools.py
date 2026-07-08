@@ -47,11 +47,12 @@ class AIToolKitWeb:
             max_results: Max files to download/upload (defaults to system settings). You can alter this parameter dynamically based on the complexity or amount of results requested by the user.
         """
         if auto_download is None:
-            auto_download = getattr(config, "MEDIA_SEARCH_AUTO_DOWNLOAD", True)
+            auto_download = config.MEDIA_SEARCH_AUTO_DOWNLOAD
         if auto_upload_google is None:
-            auto_upload_google = getattr(config, "MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE", True)
+            auto_upload_google = config.MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE
         if max_results is None:
-            max_results = getattr(config, "MEDIA_SEARCH_MAX_RESULTS", 3)
+            max_results = config.WEB_MEDIA_SEARCH_RESULTS_LIMIT
+        search_limit = max(config.WEB_MEDIA_SEARCH_CANDIDATES_LIMIT, max_results)
 
         headers = {"User-Agent": USER_AGENT}
         search_query = query
@@ -79,7 +80,7 @@ class AIToolKitWeb:
                         api_resp = await client_httpx.get(api_url, params=params, headers=headers_api)
                         if api_resp.status_code == 200:
                             data = api_resp.json()
-                            for item in data.get("results", [])[:WEB_SEARCH_RESULTS_LIMIT]:
+                            for item in data.get("results", [])[:search_limit]:
                                 img_url = item.get("image")
                                 if img_url:
                                     results.append(img_url)
@@ -103,7 +104,7 @@ class AIToolKitWeb:
                     resp = await client_httpx.get(url, headers=headers)
                     if resp.status_code == 200:
                         soup = BeautifulSoup(resp.text, "html.parser")
-                        for link in soup.find_all("a", class_="result__url")[:WEB_SEARCH_RESULTS_LIMIT]:
+                        for link in soup.find_all("a", class_="result__url")[:search_limit]:
                             href = link.get("href", "")
                             if "uddg=" in href:
                                 actual_url = urllib.parse.unquote(href.split("uddg=")[1].split("&")[0])
@@ -123,7 +124,7 @@ class AIToolKitWeb:
                     downloaded_files = []
                     
                     # 5-turn self-healing verification loop
-                    for idx, candidate_url in enumerate(results[:5]):
+                    for idx, candidate_url in enumerate(results[:search_limit]):
                         if len(downloaded_files) >= max_results:
                             break
                         # 1. Pre-check Content-Type via a lightweight HEAD or GET request
