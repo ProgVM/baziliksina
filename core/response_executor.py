@@ -23,6 +23,7 @@ METADATA_CLEAN_PATTERNS = [
     re.compile(r'(?<!\\)\[Selected\s+fragment\s+/\s+Quote\]:\s*[^\n]+\s*\n?', re.IGNORECASE),
     re.compile(r'(?<!\\)\[Reactions\s+on\s+message\]:\s*[^\n]+\s*\n?', re.IGNORECASE),
     re.compile(r'(?<!\\)\[System\s+notification:\s*[^\]]+\]\s*\n?', re.IGNORECASE),
+    re.compile(r'(?<!\\)(?:└─|├─|│)?\s*\[Parent\s+Message\s+#?\d+\s+\([^)]+\)\]:\s*[^\n]*\r?\n?', re.IGNORECASE),
     re.compile(r'(?<!\\)\[Inline\s+buttons\s+[^\]]+\]:\s*[^\n]+\s*\n?', re.IGNORECASE),
     re.compile(r'(?<!\\)\[Reply\s+Keyboard\s+buttons\s+[^\]]+\]:\s*[^\n]+\s*\n?', re.IGNORECASE),
     re.compile(r'(?<!\\)\[Attached\s+Media\s+-\s*[^\]]+\]\s*\n?', re.IGNORECASE)
