@@ -233,10 +233,7 @@ class AIToolKitWeb:
                                             except Exception: pass
                                     else:
                                         if candidate_path.stat().st_size > 1024:
-                                            download_success = True
-                                            valid_filename = candidate_filename
-                                            download_success = True
-                                            valid_filename = candidate_filename
+                                            downloaded_files.append(candidate_filename)
                                             logger.info(f"Successfully downloaded and verified file candidate: {target_url}")
                                             break
                                         else:

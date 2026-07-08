@@ -172,8 +172,15 @@ class RootTagBlockHandlers:
         """Performs a media search and logs results to context."""
         query = data.get("query")
         m_type = data.get("type", "image")
+        limit_val = data.get("max_results") or data.get("limit")
+        max_results = None
+        if limit_val is not None:
+            try:
+                max_results = int(limit_val)
+            except ValueError:
+                pass
         if query:
-            res = await tools.toolkit.internet_media_search(query=query, media_type=m_type)
+            res = await tools.toolkit.internet_media_search(query=query, media_type=m_type, max_results=max_results)
             await db.save_message(str(chat_id), "user", f"[System: Media search results for '{query}']: {res}")
 
     async def draw(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
