@@ -431,8 +431,7 @@ class GeminiManager:
                                     function_call=types.FunctionCall(
                                         id=f"heal_{call['name'][:4]}_{int(time.time())}",
                                         name=call["name"],
-                                        args=call["args"],
-                                        thought_signature=b"healed"
+                                        args=call["args"]
                                     )
                                 )
                                 content_obj.parts.append(healed_part)
@@ -506,10 +505,16 @@ class GeminiManager:
                                     logger.error(f"Failed to bind universal tool part for {uri}: {str(uri_err)}")
                     
                     user_tool_resp_content = types.Content(role="user", parts=tool_responses)
-                    if additional_parts:
-                        user_tool_resp_content.parts.extend([types.Part.from_text(text="[System notification: Visual files found by search or generation tools]")] + additional_parts)
                     contents.append(user_tool_resp_content)
                     await self.db.save_message(chat_id, "user", content_obj=user_tool_resp_content)
+                    
+                    if additional_parts:
+                        user_media_content = types.Content(
+                            role="user",
+                            parts=[types.Part.from_text(text="[System notification: Visual files found by search or generation tools]")] + additional_parts
+                        )
+                        contents.append(user_media_content)
+                        await self.db.save_message(chat_id, "user", content_obj=user_media_content)
                     
                     if should_ignore:
                         typing_task.cancel()
