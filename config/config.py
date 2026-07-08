@@ -438,6 +438,8 @@ _PARAMS = {
     "WEB_SEARCH_RESULTS_LIMIT": DynamicParameter("WEB_SEARCH_RESULTS_LIMIT", 50, int, min_val=1),
     "WEB_MEDIA_SEARCH_RESULTS_LIMIT": DynamicParameter("WEB_MEDIA_SEARCH_RESULTS_LIMIT", 3, int, min_val=1, max_val=30),
     "WEB_MEDIA_SEARCH_CANDIDATES_LIMIT": DynamicParameter("WEB_MEDIA_SEARCH_CANDIDATES_LIMIT", 50, int, min_val=1, max_val=100),
+    "WEB_DEEP_SEARCH_CANDIDATES_LIMIT": DynamicParameter("WEB_DEEP_SEARCH_CANDIDATES_LIMIT", 3, int, min_val=1, max_val=10),
+    "WEB_DEEP_SEARCH_CHAR_LIMIT": DynamicParameter("WEB_DEEP_SEARCH_CHAR_LIMIT", 10000, int, min_val=1000, max_val=50000),
     "SCRAPE_CHAR_LIMIT": DynamicParameter("SCRAPE_CHAR_LIMIT", 4000, int, min_val=1),
     "WEB_SEARCH_TIMEOUT": DynamicParameter("WEB_SEARCH_TIMEOUT", 10.0, float, min_val=0.1),
     "WEB_MEDIA_SEARCH_TIMEOUT": DynamicParameter("WEB_MEDIA_SEARCH_TIMEOUT", 10.0, float, min_val=0.1),

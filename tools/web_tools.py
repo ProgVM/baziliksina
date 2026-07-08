@@ -256,10 +256,85 @@ class AIToolKitWeb:
                                     output_msg += f"\n[Auto-Upload]: Failed to upload '{f_name}' to Google File API."
                     else:
                         output_msg += f"\n\n[Auto-Download]: All search results failed to deliver valid files."
-                return output_msg
+            return output_msg
         except Exception as e:
             logger.error(f"Error searching for media: {str(e)}")
             return f"Error searching for media: {str(e)}"
+
+    async def internet_deep_search(self, query: str, timeout: float = None, max_candidates: int = None, **kwargs) -> str:
+        """
+        Performs a deep Web search by querying DuckDuckGo, gathering top site candidate URLs,
+        visiting each site concurrently to scrape their full text content, and returning a detailed aggregated context.
+        
+        Args:
+            query: Factual search terms or questions.
+            timeout: Max network timeout in seconds.
+            max_candidates: Number of websites to visit and extract text from (defaults to system settings).
+        """
+        import asyncio
+        if timeout is None:
+            timeout = config.WEB_SEARCH_TIMEOUT
+        if max_candidates is None:
+            max_candidates = config.WEB_DEEP_SEARCH_CANDIDATES_LIMIT
+        char_limit = config.WEB_DEEP_SEARCH_CHAR_LIMIT
+
+        headers = {"User-Agent": USER_AGENT}
+        url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+        from proxy_manager import proxy_rotator
+        proxy_url = proxy_rotator.get_proxy("scraper")
+
+        results = []
+        try:
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout) as client_httpx:
+                resp = await client_httpx.get(url, headers=headers)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    for link in soup.find_all("a", class_="result__url")[:max_candidates]:
+                        href = link.get("href", "")
+                        if "uddg=" in href:
+                                actual_url = urllib.parse.unquote(href.split("uddg=")[1].split("&")[0])
+                                results.append(actual_url)
+        except Exception as search_ex:
+            return f"Deep search failed during index phase: {str(search_ex)}"
+
+        if not results:
+            return "Deep search found no relevant website candidates."
+
+        logger.info(f"Deep search index phase completed. Scraping {len(results)} candidate pages concurrently...")
+
+        async def scrape_one_page(cand_url: str) -> tuple:
+            try:
+                async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout, follow_redirects=True) as client_scrape:
+                    p_resp = await client_scrape.get(cand_url, headers=headers)
+                    if p_resp.status_code == 200:
+                        p_soup = BeautifulSoup(p_resp.text, "html.parser")
+                        for script in p_soup(["script", "style", "nav", "header", "footer", "iframe"]):
+                                script.decompose()
+                        p_text = p_soup.get_text(separator=" ", strip=True)
+                        p_text = re.sub(r'\s+', ' ', p_text).strip()
+                        return cand_url, p_text[:config.SCRAPE_CHAR_LIMIT]
+                    return cand_url, f"Failed to load, status: {p_resp.status_code}"
+            except Exception as e:
+                return cand_url, f"Error: {str(e)}"
+
+        scraped_pages = await asyncio.gather(*[scrape_one_page(u) for u in results], return_exceptions=True)
+
+        output_parts = [f"Deep Search Results for query: '{query}'"]
+        current_len = len(output_parts[0])
+
+        for res in scraped_pages:
+            if isinstance(res, tuple) and len(res) == 2:
+                page_url, page_text = res
+                if page_text.strip():
+                    remaining_space = char_limit - current_len
+                    if remaining_space <= 100:
+                        break
+                    text_chunk = page_text[:remaining_space]
+                    block = f"\n\nSource: {page_url}\nContent Snippet:\n{text_chunk}"
+                    output_parts.append(block)
+                    current_len += len(block)
+
+        return "".join(output_parts)
 
     async def scrape_url(self, url: str, timeout: float = SCRAPE_TIMEOUT, **kwargs) -> str:
         """Extracts clean text content of a web page at the specified URL."""

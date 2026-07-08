@@ -54,6 +54,7 @@ ROOT_TOOL_CATEGORIES = {
     "download_content_from_url": "Category 1: File System and Sandbox (Workspace File Management)",
     "internet_search": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
     "internet_media_search": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
+    "internet_deep_search": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
     "scrape_url": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
     "send_agent_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "execute_telegram_action": "Category 3: Telegram Automation (Telegram Automation Actions)",

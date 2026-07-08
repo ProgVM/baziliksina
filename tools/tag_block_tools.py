@@ -311,6 +311,7 @@ def register_system_tags_blocks():
         "python": "execute_python_code",
         "sql": "execute_sql_query",
         "scrape": "scrape_url",
+        "deepsearch": "internet_deep_search",
         "search": "internet_search",
         "mediasearch": "internet_media_search",
         "draw": "generate_image",
