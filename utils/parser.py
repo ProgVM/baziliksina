@@ -443,6 +443,16 @@ async def parse_message_payload(client, db, message) -> str:
     """
     meta_parts = []
     text = message.text or ""
+    
+    # Shield incoming user brackets and tags to prevent context spoofing and prompt injection
+    try:
+        me = await client.get_me()
+        if message.sender_id != me.id and text:
+            text = text.replace("[", r"\[").replace("]", r"\]")
+            text = text.replace("<", r"\<").replace(">", r"\>")
+    except Exception:
+        pass
+
     chat_id = str(message.chat_id)
     msg_id = message.id
 
