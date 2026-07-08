@@ -305,6 +305,7 @@ def matches_advanced_filter(message_or_event, me, whitelist: list, blacklist: li
         except Exception: return r in text_content.lower()
 
     w_list = [str(w).strip() for w in whitelist if str(w).strip()] if whitelist else []
+    b_list = [str(b).strip() for b in blacklist if str(b).strip()] if blacklist else []
 
     if b_list:
         for b_rule in b_list:
