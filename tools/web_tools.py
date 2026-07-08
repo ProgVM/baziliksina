@@ -34,7 +34,7 @@ class AIToolKitWeb:
         except Exception as e:
             return f"Search error: {str(e)}"
 
-    async def internet_media_search(self, query: str, media_type: str = "image", timeout: float = WEB_MEDIA_SEARCH_TIMEOUT, auto_download: bool = None, auto_upload_google: bool = None, **kwargs) -> str:
+    async def internet_media_search(self, query: str, media_type: str = "image", timeout: float = WEB_MEDIA_SEARCH_TIMEOUT, auto_download: bool = None, auto_upload_google: bool = None, max_results: int = 3, **kwargs) -> str:
         """
         Performs a search for multimedia files, videos, gifs, audio, or any document/file format on the Internet via DuckDuckGo.
         If auto_download is True, automatically downloads the first result to the workspace.
@@ -104,8 +104,6 @@ class AIToolKitWeb:
                 if not results:
                     logger.warning(f"No results found for query: '{search_query}'")
                     return "Multimedia not found."
-                
-                logger.info(f"Found {len(results)} search result URLs. Proceeding to candidate extraction.")
                 output_msg = f"Search Results for '{query}' ({media_type}):\n" + "\n".join(f"- {url}" for url in results)
                 
                 if auto_download:
@@ -114,11 +112,12 @@ class AIToolKitWeb:
                     from utils import sanitize_filename
                     from tools import download_content_from_url, upload_file_to_google
                     
-                    download_success = False
-                    valid_filename = None
+                    downloaded_files = []
                     
                     # 5-turn self-healing verification loop
                     for idx, candidate_url in enumerate(results[:5]):
+                        if len(downloaded_files) >= max_results:
+                            break
                         # 1. Pre-check Content-Type via a lightweight HEAD or GET request
                         is_html = False
                         content_type = ""
@@ -129,7 +128,6 @@ class AIToolKitWeb:
                                 if head_resp.status_code == 200:
                                     content_type = head_resp.headers.get("Content-Type", "").lower()
                                 else:
-                                    # Fallback to GET if HEAD method is not supported
                                     head_resp = await client_get.get(candidate_url)
                                     content_type = head_resp.headers.get("Content-Type", "").lower()
                         except Exception as head_err:
@@ -142,6 +140,10 @@ class AIToolKitWeb:
                         scraped_image_urls = []
                         if is_html:
                             try:
+                                def is_valid_img(img_url):
+                                    u_low = img_url.lower()
+                                    return any(ext in u_low for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"]) and not any(skip in u_low for skip in ["avatar", "icon", "logo", "spinner", "badge", "default", "placeholder", "default_open_graph", "header", "footer", "button", "sprite"])
+
                                 logger.info(f"Candidate #{idx+1} is HTML. Scraping embedded image tags and metadata...")
                                 async with httpx.AsyncClient(timeout=5.0, follow_redirects=True, headers=headers) as client_get:
                                     page_resp = await client_get.get(candidate_url)
@@ -151,11 +153,15 @@ class AIToolKitWeb:
                                         # A. Extract OpenGraph and Twitter images (highly reliable preview banners!)
                                         og_meta = page_soup.find("meta", property=re.compile(r"og:image", re.I)) or page_soup.find("meta", attrs={"name": re.compile(r"og:image", re.I)})
                                         if og_meta and og_meta.get("content"):
-                                            scraped_image_urls.append(urllib.parse.urljoin(candidate_url, og_meta["content"]))
+                                            og_url = urllib.parse.join(candidate_url, og_meta["content"]) if hasattr(urllib.parse, 'join') else urllib.parse.urljoin(candidate_url, og_meta["content"])
+                                            if is_valid_img(og_url):
+                                                scraped_image_urls.append(og_url)
                                             
                                         tw_meta = page_soup.find("meta", attrs={"name": re.compile(r"twitter:image", re.I)}) or page_soup.find("meta", property=re.compile(r"twitter:image", re.I))
                                         if tw_meta and tw_meta.get("content"):
-                                            scraped_image_urls.append(urllib.parse.urljoin(candidate_url, tw_meta["content"]))
+                                            tw_url = urllib.parse.join(candidate_url, tw_meta["content"]) if hasattr(urllib.parse, 'join') else urllib.parse.urljoin(candidate_url, tw_meta["content"])
+                                            if is_valid_img(tw_url):
+                                                scraped_image_urls.append(tw_url)
                                             
                                         # B. Extract inline img tags
                                         for img_tag in page_soup.find_all("img"):
@@ -163,17 +169,12 @@ class AIToolKitWeb:
                                             if img_src:
                                                 if "," in img_src:
                                                     img_src = img_src.split(",")[0].strip().split(" ")[0]
-                                                full_img_url = urllib.parse.urljoin(candidate_url, img_src)
-                                                full_img_url = full_img_url.split("?")[0]
-                                                
-                                                # Simple path/name heuristics to filter out low-res junk, logos, and icons
-                                                if any(ext in full_img_url.lower() for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif"]):
-                                                    if not any(skip in full_img_url.lower() for skip in ["avatar", "icon", "logo", "spinner", "badge"]):
-                                                        scraped_image_urls.append(full_img_url)
+                                                full_img_url = urllib.parse.join(candidate_url, img_src) if hasattr(urllib.parse, 'join') else urllib.parse.urljoin(candidate_url, img_src)
+                                                if is_valid_img(full_img_url):
+                                                    scraped_image_urls.append(full_img_url)
                             except Exception as scrape_err:
                                 logger.warning(f"Error scraping images from HTML page {candidate_url}: {str(scrape_err)}")
                         else:
-                            # Direct media file link
                             scraped_image_urls.append(candidate_url)
                         
                         logger.info(f"Candidate #{idx+1} yielded {len(scraped_image_urls)} prospective media target URLs.")
@@ -195,6 +196,8 @@ class AIToolKitWeb:
                         
                         # 3. Iterate through extracted image URLs and try to download/validate
                         for img_idx, target_url in enumerate(scraped_image_urls[:8]):
+                            if len(downloaded_files) >= max_results:
+                                break
                             try:
                                 parsed_path = urllib.parse.urlparse(target_url).path
                                 url_ext = os.path.splitext(parsed_path)[1].lower()
@@ -212,16 +215,17 @@ class AIToolKitWeb:
                                         try:
                                             with Image.open(candidate_path) as img:
                                                 img.verify()
-                                            download_success = True
-                                            valid_filename = candidate_filename
+                                            downloaded_files.append(candidate_filename)
                                             logger.info(f"Successfully downloaded and verified image candidate: {target_url}")
-                                            break
+                                            break # Break to move to next candidate site for variety!
                                         except Exception as img_err:
                                             logger.warning(f"Candidate image failed validation: {str(img_err)}")
                                             try: candidate_path.unlink()
                                             except Exception: pass
                                     else:
                                         if candidate_path.stat().st_size > 1024:
+                                            download_success = True
+                                            valid_filename = candidate_filename
                                             download_success = True
                                             valid_filename = candidate_filename
                                             logger.info(f"Successfully downloaded and verified file candidate: {target_url}")
@@ -231,20 +235,18 @@ class AIToolKitWeb:
                                             except Exception: pass
                             except Exception as dl_err:
                                 logger.warning(f"Failed to process media candidate {target_url}: {str(dl_err)}")
-                        
-                        if download_success:
-                            break
                     
-                    if download_success and valid_filename:
-                        output_msg += f"\n\n[Auto-Download]: Successfully downloaded verified result to workspace as '{valid_filename}'."
+                    if downloaded_files:
+                        output_msg += f"\n\n[Auto-Download]: Successfully downloaded {len(downloaded_files)} verified results to workspace: {', '.join(downloaded_files)}."
                         if auto_upload_google:
-                            up_res = await upload_file_to_google(valid_filename)
-                            if isinstance(up_res, dict) and up_res.get("status") == "success":
-                                output_msg += f"\n[Auto-Upload]: Successfully uploaded to Google File API. URI: {up_res.get('google_uri')} (Mime-type: {up_res.get('mime_type')}). You can view this file in the history!"
-                            else:
-                                output_msg += f"\n[Auto-Upload]: Failed to upload to Google File API: {up_res.get('message') if isinstance(up_res, dict) else str(up_res)}"
+                            for f_idx, f_name in enumerate(downloaded_files):
+                                up_res = await upload_file_to_google(f_name)
+                                if isinstance(up_res, dict) and up_res.get("status") == "success":
+                                    output_msg += f"\n[Auto-Upload]: Successfully uploaded candidate #{f_idx+1} '{f_name}' to Google File API. URI: {up_res.get('google_uri')} (Mime-type: {up_res.get('mime_type')}). You can view this file in the history!"
+                                else:
+                                    output_msg += f"\n[Auto-Upload]: Failed to upload '{f_name}' to Google File API."
                     else:
-                        output_msg += f"\n\n[Auto-Download]: All search results failed to deliver a valid, non-corrupted media file."
+                        output_msg += f"\n\n[Auto-Download]: All search results failed to deliver valid files."
                 return output_msg
         except Exception as e:
             logger.error(f"Error searching for media: {str(e)}")

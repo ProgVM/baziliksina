@@ -16,7 +16,7 @@ import tools
 logger = logging.getLogger("ResponseExecutor")
 
 METADATA_CLEAN_PATTERNS = [
-    re.compile(r'(?<!\\)\[Chat:\s*-?\d+\s*\|\s*Message ID:\s*(?:\d+|unknown)(?:\s*\|\s*Date:[^\]]+)?\]\s*\n?', re.IGNORECASE),
+    re.compile(r'(?<!\\)\[Chat:\s*[^|\]]+\s*\|\s*Message ID:\s*(?:\d+|unknown)(?:\s*\|\s*Date:[^\]]+)?\]\s*\n?', re.IGNORECASE),
     re.compile(r'(?<!\\)\[Original\s+text\s+\([^)]+\):\s*.*?\]\s*\n?', re.IGNORECASE),
     re.compile(r'(?<!\\)\[Reply\s+to\s+message\s+#?\d+(?:\s+in\s+[^\]]+)?\]\s*\n?', re.IGNORECASE),
     re.compile(r'(?<!\\)\[Selected\s+fragment\s+/\s+Quote\]:\s*[\'"].*?[\'"]\s*\n?', re.IGNORECASE),

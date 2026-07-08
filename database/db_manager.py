@@ -66,6 +66,33 @@ def dict_to_content(data: dict) -> types.Content:
         restored_data["parts"] = []
     return types.Content.model_validate(restored_data)
 
+def normalize_chat_id(chat_id) -> str:
+    if chat_id is None:
+        return ""
+    cid_str = str(chat_id).strip()
+    import re
+    if "channel_id=" in cid_str:
+        m = re.search(r'channel_id=(-?\d+)', cid_str)
+        if m:
+            val = m.group(1)
+            return f"-100{val.replace('-', '')}" if not val.startswith("-100") else val
+    if "chat_id=" in cid_str:
+        m = re.search(r'chat_id=(-?\d+)', cid_str)
+        if m:
+            val = m.group(1)
+            return f"-{val.replace('-', '')}" if not val.startswith("-") else val
+    if "user_id=" in cid_str:
+        m = re.search(r'user_id=(-?\d+)', cid_str)
+        if m:
+            return m.group(1)
+    if hasattr(chat_id, "channel_id"):
+        return f"-100{abs(chat_id.channel_id)}"
+    if hasattr(chat_id, "chat_id"):
+        return f"-{abs(chat_id.chat_id)}"
+    if hasattr(chat_id, "user_id"):
+        return str(chat_id.user_id)
+    return cid_str
+
 
 class DBManager:
     def __init__(self):
@@ -238,6 +265,7 @@ class DBManager:
         await self.db.commit()
 
     async def save_message(self, chat_id: str, role: str, text: str = None, media_info: str = None, msg_id: int = None, content_obj: types.Content = None):
+        chat_id = normalize_chat_id(chat_id)
         if content_obj:
             raw_json = json.dumps(content_to_dict(content_obj))
             role = content_obj.role
@@ -256,9 +284,9 @@ class DBManager:
             VALUES (?, ?, ?, ?, ?, ?)
         """, (str(chat_id), role, text, raw_json, media_info, msg_id))
         await self.db.commit()
-
     async def save_msg_meta(self, chat_id: str, msg_id: int, meta_text: str = None, raw_meta_dict: dict = None):
         """Saves accompanying visual/structural information about the message to the msgs_meta table."""
+        chat_id = normalize_chat_id(chat_id)
         raw_json = json.dumps(clean_for_json(raw_meta_dict)) if raw_meta_dict else None
         await self.db.execute("""
             INSERT INTO msgs_meta (chat_id, msg_id, meta_text, raw_meta_json)
@@ -271,6 +299,7 @@ class DBManager:
 
     async def get_msg_meta(self, chat_id: str, msg_id: int) -> dict:
         """Retrieves visual metadata of a specific message."""
+        chat_id = normalize_chat_id(chat_id)
         async with self.db.execute("SELECT meta_text, raw_meta_json FROM msgs_meta WHERE chat_id = ? AND msg_id = ?", (str(chat_id), int(msg_id))) as cursor:
             row = await cursor.fetchone()
             if row:
@@ -281,6 +310,7 @@ class DBManager:
             return None
 
     async def update_message_text(self, chat_id: str, msg_id: int, new_text: str, new_media_info: str = None):
+        chat_id = normalize_chat_id(chat_id)
         await self.db.execute(
             "UPDATE messages SET text = ?, media_info = ? WHERE chat_id = ? AND msg_id = ?",
             (new_text, new_media_info, str(chat_id), int(msg_id))
@@ -288,6 +318,7 @@ class DBManager:
         await self.db.commit()
 
     async def get_history(self, chat_id: str, limit: int = None) -> list:
+        chat_id = normalize_chat_id(chat_id)
         if limit is None: limit = config.MESSAGES_LIMIT
         """
         Extracts end-to-end message history with split local and global contexts.
