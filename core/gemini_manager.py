@@ -507,7 +507,7 @@ class GeminiManager:
                     
                     user_tool_resp_content = types.Content(role="user", parts=tool_responses)
                     if additional_parts:
-                        user_tool_resp_content.parts.extend([types.Part.from_text(text="[System: Below are the actual visual files found by the search/generation tools]")] + additional_parts)
+                        user_tool_resp_content.parts.extend([types.Part.from_text(text="[System notification: Visual files found by search or generation tools]")] + additional_parts)
                     contents.append(user_tool_resp_content)
                     await self.db.save_message(chat_id, "user", content_obj=user_tool_resp_content)
                     
