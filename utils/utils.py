@@ -186,6 +186,138 @@ def safe_telegram_html(text: str) -> str:
     return ''.join(parts)
 
 
+def matches_advanced_filter(message_or_event, me, whitelist: list, blacklist: list, is_trigger_fired: bool = False, default_allow: bool = True) -> bool:
+    """
+    An advanced, unified filter evaluation engine that processes structured prefix rules
+    (peer:, type:, trigger:, user:, chat:, text:, caption:) and standard text regex matches.
+    """
+    import re
+    from parser import get_media_type_description
+    from telethon.tl import types as tl_types
+    import config
+
+    msg = message_or_event.message if hasattr(message_or_event, "message") else message_or_event
+    if not msg:
+        return default_allow
+
+    if msg.sender_id == me.id and not whitelist and not blacklist:
+        return default_allow
+
+    # 1. Resolve text and caption states
+    text_content = msg.message or ""
+    is_caption = msg.media is not None
+    
+    # 2. Extract message type
+    m_type = (get_media_type_description(msg) or "text").lower()
+    if "voice" in m_type:
+        m_type_norm = "voice"
+    elif "video note" in m_type:
+        m_type_norm = "video"
+    elif "file" in m_type or "document" in m_type:
+        m_type_norm = "document"
+    elif "todo" in m_type or "list" in m_type:
+        m_type_norm = "list"
+    else:
+        m_type_norm = m_type
+
+    # 3. Standardize peer type
+    is_private = getattr(message_or_event, 'is_private', False) or (msg.is_private if hasattr(msg, 'is_private') else isinstance(msg.peer_id, tl_types.PeerUser))
+    is_group = getattr(message_or_event, 'is_group', False) or (msg.is_group if hasattr(msg, 'is_group') else isinstance(msg.peer_id, tl_types.PeerChat))
+    is_channel = getattr(message_or_event, 'is_channel', False) or (msg.is_channel if hasattr(msg, 'is_channel') else isinstance(msg.peer_id, tl_types.PeerChannel))
+    
+    peer_type = "private" if is_private else ("group" if is_group else "channel")
+
+    # 4. Resolve sender and chat IDs/usernames
+    sender_id = str(msg.sender_id) if msg.sender_id else ""
+    chat_id = str(msg.chat_id) if msg.chat_id else ""
+    
+    sender_username = ""
+    chat_username = ""
+    if hasattr(msg, "sender") and msg.sender and getattr(msg.sender, "username", None):
+        sender_username = f"@{msg.sender.username.lower()}"
+    if hasattr(message_or_event, "chat") and message_or_event.chat and getattr(message_or_event.chat, "username", None):
+        chat_username = f"@{message_or_event.chat.username.lower()}"
+
+    # 5. Standardize trigger details
+    trigger_state = "trigger:none"
+    if is_trigger_fired:
+        trigger_state = "trigger:all"
+        t_lower = text_content.lower()
+        
+        first_name_val = (me.first_name or "").lower()
+        last_name_val = (me.last_name or "").lower()
+        full_name_val = f"{first_name_val} {last_name_val}".strip()
+        
+        if first_name_val and first_name_val in t_lower:
+            trigger_state = "trigger:first_name"
+        elif last_name_val and last_name_val in t_lower:
+            trigger_state = "trigger:last_name"
+        elif full_name_val and full_name_val in t_lower:
+            trigger_state = "trigger:full_name"
+        elif me.username and f"@{me.username.lower()}" in t_lower:
+            trigger_state = "trigger:username"
+        elif getattr(message_or_event, "mentioned", False):
+            trigger_state = "trigger:mentioned"
+        elif msg.is_reply:
+            trigger_state = "trigger:reply_to_me"
+
+    def matches_rule(rule_item: str) -> bool:
+        r = rule_item.strip().lower()
+        if not r:
+            return False
+        if r in ["all", "any", "*"]:
+            return True
+        if r == "none":
+            return False
+        if r.startswith("peer:"):
+            p_val = r.split(":", 1)[1]
+            return peer_type == p_val or (p_val == "group" and is_group) or (p_val == "channel" and is_channel) or (p_val == "private" and is_private)
+        if r.startswith("type:"):
+            return m_type_norm == r.split(":", 1)[1]
+        if r.startswith("user:") or r.startswith("sender:"):
+            u_val = r.split(":", 1)[1]
+            return sender_id == u_val or (sender_username and u_val == sender_username)
+        if r.startswith("chat:"):
+            c_val = r.split(":", 1)[1]
+            return chat_id == c_val or (chat_username and c_val == chat_username)
+        if r.startswith("trigger:"):
+            t_val = r.split(":", 1)[1]
+            if t_val == "all": return is_trigger_fired
+            if t_val == "none": return not is_trigger_fired
+            if t_val in ["name", "first_name"] and trigger_state in ["trigger:name", "trigger:first_name"]:
+                return True
+            return trigger_state == f"trigger:{t_val}"
+        if r.startswith("text:"):
+            t_val = r.split(":", 1)[1]
+            if is_caption: return False
+            try: return bool(re.search(t_val, text_content, re.IGNORECASE))
+            except Exception: return t_val in text_content.lower()
+        if r.startswith("caption:"):
+            c_val = r.split(":", 1)[1]
+            if not is_caption: return False
+            try: return bool(re.search(c_val, text_content, re.IGNORECASE))
+            except Exception: return c_val in text_content.lower()
+        if r.replace("-", "").isdigit():
+            return r in [sender_id, chat_id]
+        if r.startswith("@"):
+            return r in [sender_username, chat_username]
+        try: return bool(re.search(rule_item, text_content, re.IGNORECASE))
+        except Exception: return r in text_content.lower()
+
+    w_list = [str(w).strip() for w in whitelist if str(w).strip()] if whitelist else []
+
+    if b_list:
+        for b_rule in b_list:
+            if matches_rule(b_rule):
+                return False
+
+    if w_list:
+        for w_rule in w_list:
+            if matches_rule(w_rule):
+                return True
+        return False
+    return default_allow
+
 async def should_process_message_event(event, me, action_type="save", db=None) -> bool:
     """
     Evaluates whether an incoming or outgoing message event should be processed
@@ -253,10 +385,33 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
     # 4. Check Message Whitelist / Blacklist (Regex or Raw Values)
     text_content = event.message.message or ""
 
+    is_triggered = False
+    text_lower = text_content.lower()
+    first_name_val = (me.first_name or "").lower()
+    last_name_val = (me.last_name or "").lower()
+    full_name_val = f"{first_name_val} {last_name_val}".strip()
+    
+    is_private = event.is_private
+    if is_private:
+        is_triggered = True
+    else:
+        if first_name_val and first_name_val in text_lower:
+            is_triggered = True
+        elif last_name_val and last_name_val in text_lower:
+            is_triggered = True
+        elif full_name_val and full_name_val in text_lower:
+            is_triggered = True
+        elif me.username and f"@{me.username.lower()}" in text_lower:
+            is_triggered = True
+        elif getattr(event, "mentioned", False):
+            is_triggered = True
+        elif event.message.is_reply:
+            is_triggered = True
+
     whitelist = config.MSG_SAVE_WHITELIST if action_type == "save" else config.MSG_GEN_WHITELIST
     blacklist = config.MSG_SAVE_BLACKLIST if action_type == "save" else config.MSG_GEN_BLACKLIST
 
-    if not matches_filter(text_content, whitelist, blacklist, default_allow=True):
+    if not matches_advanced_filter(event, me, whitelist, blacklist, is_trigger_fired=is_triggered, default_allow=True):
         logger.info(f"[Message {event.message.id}] Skipping: Message text matches blacklist or doesn't match whitelist.")
         return False
 
@@ -272,7 +427,6 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
 
     # 5. Additional Generation Triggers check
     if action_type == "trigger" and not is_outgoing:
-        is_private = event.is_private
         is_group = event.is_group or (event.is_channel and getattr(event.chat, 'megagroup', False))
         is_channel = event.is_channel and not getattr(event.chat, 'megagroup', False)
 
@@ -292,18 +446,24 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
             triggered = True
         else:
             triggered = False
-            text_lower = text_content.lower()
-            if "name" in config.AI_RESPONSE_TRIGGERS:
-                me_name = (me.first_name or "").lower()
-                if me_name and me_name in text_lower:
-                    triggered = True
+            has_name_trigger = False
+            if "name" in config.AI_RESPONSE_TRIGGERS or "first_name" in config.AI_RESPONSE_TRIGGERS:
+                if first_name_val and first_name_val in text_lower:
+                    has_name_trigger = True
+            if "last_name" in config.AI_RESPONSE_TRIGGERS:
+                if last_name_val and last_name_val in text_lower:
+                    has_name_trigger = True
+            if "full_name" in config.AI_RESPONSE_TRIGGERS:
+                if full_name_val and full_name_val in text_lower:
+                    has_name_trigger = True
+            if has_name_trigger:
+                triggered = True
             if "username" in config.AI_RESPONSE_TRIGGERS and me.username:
                 if f"@{me.username.lower()}" in text_lower:
                     triggered = True
             if "mentioned" in config.AI_RESPONSE_TRIGGERS and event.mentioned:
                 triggered = True
             if "reply_to_me" in config.AI_RESPONSE_TRIGGERS and event.message.is_reply:
-                # Strictly verify if the replied-to message belongs to the model (the userbot)
                 if event.message.reply_to and db:
                     reply_to_msg_id = event.message.reply_to.reply_to_msg_id
                     async with db.db.execute(
@@ -354,111 +514,6 @@ def load_feedback_template(section_name: str, default_text: str) -> str:
     path = config.BASE_DIR / "config" / "feedback_prompt.txt"
     if not path.exists():
         return default_text
-
-async def should_send_read_acknowledge(message_or_event, me, db=None, is_trigger_fired: bool = False) -> bool:
-    """
-    Dynamically checks whether an incoming message should be marked as read
-    based on granular white/black lists inside configuration parameters.
-    Supports flexible wildcards, trigger states, message types, and peer classes.
-    """
-    import config
-    from parser import get_media_type_description
-    from telethon.tl import types as tl_types
-    
-    msg = message_or_event.message if hasattr(message_or_event, "message") else message_or_event
-    if not msg:
-        return False
-        
-    if msg.sender_id == me.id:
-        return False
-
-    # 1. Standardize message type
-    m_type = (get_media_type_description(msg) or "text").lower()
-    if "voice" in m_type:
-        m_type_norm = "voice"
-    elif "video note" in m_type:
-        m_type_norm = "video"
-    elif "file" in m_type or "document" in m_type:
-        m_type_norm = "document"
-    elif "todo" in m_type or "list" in m_type:
-        m_type_norm = "list"
-    else:
-        m_type_norm = m_type
-
-    # 2. Standardize peer type
-    u_low = str(message_or_event.chat_id)
-    is_private = getattr(message_or_event, 'is_private', False) or (msg.is_private if hasattr(msg, 'is_private') else isinstance(msg.peer_id, tl_types.PeerUser))
-    is_group = getattr(message_or_event, 'is_group', False) or (msg.is_group if hasattr(msg, 'is_group') else isinstance(msg.peer_id, tl_types.PeerChat))
-    is_channel = getattr(message_or_event, 'is_channel', False) or (msg.is_channel if hasattr(msg, 'is_channel') else isinstance(msg.peer_id, tl_types.PeerChannel))
-    
-    peer_type = "private" if is_private else ("group" if is_group else "channel")
-
-    # 3. Resolve metadata details
-    sender_id = str(msg.sender_id) if msg.sender_id else ""
-    chat_id = str(msg.chat_id) if msg.chat_id else ""
-    
-    sender_username = ""
-    chat_username = ""
-    if hasattr(msg, "sender") and msg.sender and getattr(msg.sender, "username", None):
-        sender_username = f"@{msg.sender.username.lower()}"
-    if hasattr(message_or_event, "chat") and message_or_event.chat and getattr(message_or_event.chat, "username", None):
-        chat_username = f"@{message_or_event.chat.username.lower()}"
-
-    # 4. Standardize trigger details
-    trigger_state = "trigger:none"
-    if is_trigger_fired:
-        trigger_state = "trigger:all"
-        t_lower = (msg.message or "").lower()
-        if me.first_name and me.first_name.lower() in t_lower:
-            trigger_state = "trigger:name"
-        elif me.username and f"@{me.username.lower()}" in t_lower:
-            trigger_state = "trigger:username"
-        elif getattr(message_or_event, "mentioned", False):
-            trigger_type = "trigger:mentioned"
-        elif msg.is_reply:
-            trigger_state = "trigger:reply_to_me"
-
-    def matches_rule(rule_item: str) -> bool:
-        r = rule_item.strip().lower()
-        if not r:
-            return False
-        if r in ["all", "any", "*"]:
-            return True
-        if r == "none":
-            return False
-        if r.startswith("peer:"):
-            return peer_type == r.split(":", 1)[1]
-        if r.startswith("type:"):
-            return m_type_norm == r.split(":", 1)[1]
-        if r.startswith("user:") or r.startswith("sender:"):
-            u_val = r.split(":", 1)[1]
-            return sender_id == u_val or (sender_username and u_val == sender_username)
-        if r.startswith("chat:"):
-            c_val = r.split(":", 1)[1]
-            return chat_id == c_val or (chat_username and c_val == chat_username)
-        if r.startswith("trigger:"):
-            t_val = r.split(":", 1)[1]
-            if t_val == "all": return is_trigger_fired
-            if t_val == "none": return not is_trigger_fired
-            return trigger_state == f"trigger:{t_val}"
-        if r.replace("-", "").isdigit():
-            return r in [sender_id, chat_id]
-        if r.startswith("@"):
-            return r in [sender_username, chat_username]
-        return False
-
-    if config.READ_ACK_BLACKLIST:
-        for b_rule in config.READ_ACK_BLACKLIST:
-            if matches_rule(b_rule):
-                return False
-
-    if config.READ_ACK_WHITELIST:
-        for w_rule in config.READ_ACK_WHITELIST:
-            if matches_rule(w_rule):
-                return True
-        return False
-
-    return True
     try:
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -468,3 +523,7 @@ async def should_send_read_acknowledge(message_or_event, me, db=None, is_trigger
     except Exception:
         pass
     return default_text
+
+async def should_send_read_acknowledge(message_or_event, me, db=None, is_trigger_fired: bool = False) -> bool:
+    import config
+    return matches_advanced_filter(message_or_event, me, config.READ_ACK_WHITELIST, config.READ_ACK_BLACKLIST, is_trigger_fired=is_trigger_fired, default_allow=True)
