@@ -34,16 +34,24 @@ class AIToolKitWeb:
         except Exception as e:
             return f"Search error: {str(e)}"
 
-    async def internet_media_search(self, query: str, media_type: str = "image", timeout: float = WEB_MEDIA_SEARCH_TIMEOUT, auto_download: bool = None, auto_upload_google: bool = None, max_results: int = 3, **kwargs) -> str:
+    async def internet_media_search(self, query: str, media_type: str = "image", timeout: float = WEB_MEDIA_SEARCH_TIMEOUT, auto_download: bool = None, auto_upload_google: bool = None, max_results: int = None, **kwargs) -> str:
         """
         Performs a search for multimedia files, videos, gifs, audio, or any document/file format on the Internet via DuckDuckGo.
-        If auto_download is True, automatically downloads the first result to the workspace.
-        If auto_upload_google is True, also uploads the downloaded media to Google File API so the AI can see it.
+        
+        Args:
+            query: Search keywords or terms.
+            media_type: Category of file to locate ('image', 'gif', 'video', 'audio', 'document').
+            timeout: Max network timeout in seconds.
+            auto_download: Downloads matches to local sandbox if set to True.
+            auto_upload_google: Uploads cached workspace files to Google File API if set to True.
+            max_results: Max files to download/upload (defaults to system settings). You can alter this parameter dynamically based on the complexity or amount of results requested by the user.
         """
         if auto_download is None:
             auto_download = getattr(config, "MEDIA_SEARCH_AUTO_DOWNLOAD", True)
         if auto_upload_google is None:
             auto_upload_google = getattr(config, "MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE", True)
+        if max_results is None:
+            max_results = getattr(config, "MEDIA_SEARCH_MAX_RESULTS", 3)
 
         headers = {"User-Agent": USER_AGENT}
         search_query = query

@@ -394,6 +394,7 @@ _PARAMS = {
     "MEDIA_LIMIT": DynamicParameter("MEDIA_LIMIT", 15, int, min_val=1),
     "MEDIA_SEARCH_AUTO_DOWNLOAD": DynamicParameter("MEDIA_SEARCH_AUTO_DOWNLOAD", True, bool),
     "MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE": DynamicParameter("MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE", True, bool),
+    "MEDIA_SEARCH_MAX_RESULTS": DynamicParameter("MEDIA_SEARCH_MAX_RESULTS", 3, int, min_val=1, max_val=10),
 
     # Section 6: Network and Timing Settings
     "TIMERS_LOOP_INTERVAL": DynamicParameter("TIMERS_LOOP_INTERVAL", 1.0, float, min_val=0.1),
