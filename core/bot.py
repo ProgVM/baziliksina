@@ -441,26 +441,7 @@ async def on_new_message(event):
             chat_ent = await event.get_chat()
             asyncio.create_task(parse_and_cache_chat_metadata(client, db, chat_ent))
 
-    # 3. Synchronous management of buffering timers (STRICTLY BEFORE ANY AWAIT)
-    global debounce_counter
-    debounce_counter += 1
-    current_trigger_id = debounce_counter
-    
-    # If the chat is already busy generating, queue the parameters directly.
-    # This prevents the active conversation flow from delaying or canceling the queue.
-    if chat_id in generating_chats:
-        logger.info(f"Chat {chat_id} is busy generating. Queuing message {msg_id} directly.")
-        pending_buffers[chat_id] = {"entity": input_chat_entity, "trigger_msg_id": msg_id}
-        return
-        
-    if chat_id not in message_buffers:
-        message_buffers[chat_id] = {}
-        
-    message_buffers[chat_id]["last_time"] = current_trigger_id
-    message_buffers[chat_id]["entity"] = input_chat_entity
-    message_buffers[chat_id]["trigger_msg_id"] = msg_id # Capture the triggering message ID
-
-    # 4. Processing incoming messages
+        # 4. Processing incoming messages
     text = await parse_message_payload(client, db, event.message)
     media_info = await download_and_cache_media(client, event.message, is_private, mentioned)
     if media_info:
@@ -521,6 +502,24 @@ async def on_new_message(event):
     # Global filter check: should we trigger AI generation on this message?
     if not await should_process_message_event(event, me, "trigger", db):
         return
+
+    # Synchronous management of buffering timers (STRICTLY AFTER TRIGGER PASSED)
+    global debounce_counter
+    debounce_counter += 1
+    current_trigger_id = debounce_counter
+    
+    # If the chat is already busy generating, queue the parameters directly.
+    if chat_id in generating_chats:
+        logger.info(f"Chat {chat_id} is busy generating. Queuing message {msg_id} directly.")
+        pending_buffers[chat_id] = {"entity": input_chat_entity, "trigger_msg_id": msg_id}
+        return
+        
+    if chat_id not in message_buffers:
+        message_buffers[chat_id] = {}
+        
+    message_buffers[chat_id]["last_time"] = current_trigger_id
+    message_buffers[chat_id]["entity"] = input_chat_entity
+    message_buffers[chat_id]["trigger_msg_id"] = msg_id # Capture the triggering message ID
 
     # Start Debounce generation of AI response in all chats during activity lull
     async def wait_and_send(cid, trigger_time):
