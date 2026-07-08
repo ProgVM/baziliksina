@@ -178,6 +178,21 @@ class AIToolKitWeb:
                         
                         logger.info(f"Candidate #{idx+1} yielded {len(scraped_image_urls)} prospective media target URLs.")
                         
+                        # Score and sort image URLs dynamically to deprioritize covers and icons without hard-blocking them
+                        def score_url(cand_url: str) -> int:
+                            score = 0
+                            cand_lower = cand_url.lower()
+                            for word in query.lower().split():
+                                if word in cand_lower:
+                                    score += 15
+                            if any(x in cand_lower for x in ["cover", "preview", "thumbnail", "default_open_graph", "og_image"]):
+                                score -= 30
+                            if any(x in cand_lower for x in ["avatar", "icon", "logo", "spinner", "badge", "banner"]):
+                                score -= 50
+                            return score
+
+                        scraped_image_urls.sort(key=score_url, reverse=True)
+                        
                         # 3. Iterate through extracted image URLs and try to download/validate
                         for img_idx, target_url in enumerate(scraped_image_urls[:8]):
                             try:
