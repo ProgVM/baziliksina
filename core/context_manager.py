@@ -183,7 +183,7 @@ class AIContextManager:
         media_count = 0
         
         GOOGLE_FILE_URI_REGEX = re.compile(
-            r"(https://generativelanguage\.googleapis\.com/(?:upload/)?v1beta/files/[a-zA-Z0-9_-]+)",
+            r"(https://generativelanguage\.googleapis\.com/(?:upload/)?v[0-9a-zA-Z_]+/files/[a-zA-Z0-9_-]+)",
             re.IGNORECASE
         )
         

@@ -21,7 +21,7 @@ import tools
 logger = logging.getLogger("Tools.Media")
 
 class AIToolKitMedia:
-    async def generate_image(self, prompt: str, model: str = DEFAULT_IMAGE_MODEL, width: int = DEFAULT_IMAGE_WIDTH, height: int = DEFAULT_IMAGE_HEIGHT, seed: int = -1, reference_image_url: str = None, timeout: float = GENERATE_IMAGE_TIMEOUT, **kwargs) -> str:
+    async def generate_image(self, prompt: str, model: str = DEFAULT_IMAGE_MODEL, width: int = DEFAULT_IMAGE_WIDTH, height: int = DEFAULT_IMAGE_HEIGHT, seed: int = -1, reference_image_url: str = None, timeout: float = GENERATE_IMAGE_TIMEOUT, auto_download: bool = None, auto_upload_google: bool = None, **kwargs) -> str:
         """Generates high-quality images from a text description on Pollinations.ai."""
         encoded_prompt = urllib.parse.quote(prompt)
         url = f"https://gen.pollinations.ai/image/{encoded_prompt}"
@@ -43,6 +43,16 @@ class AIToolKitMedia:
         if kwargs:
             params.update(kwargs)
 
+        if auto_download is None:
+            auto_download = getattr(config, "IMAGE_GEN_AUTO_DOWNLOAD", True)
+        if auto_upload_google is None:
+            auto_upload_google = getattr(config, "IMAGE_GEN_AUTO_UPLOAD_TO_GOOGLE", True)
+
+        if not auto_download:
+            query_str = urllib.parse.urlencode(params)
+            generated_url = f"{url}?{query_str}"
+            return f"Image generated successfully on Pollinations.ai!\nDirect link: {generated_url}"
+
         try:
             resp = await tools.call_pollinations_api(url, params, timeout=timeout)
             if resp.status_code != 200:
@@ -53,15 +63,24 @@ class AIToolKitMedia:
             with open(out_path, "wb") as f:
                 f.write(image_bytes)
             cid = tools.current_chat_id.get()
-            return (
-                f"Image generated and saved as '{out_filename}'.\n"
-                f"To send the file, call the function:\n"
-                f"execute_telegram_action(method_name='send_file', args_json='{{\"entity\": {cid}, \"file\": \"{out_filename}\", \"caption\": \"Your prompt\"}}')"
+            msg = (
+            f"Image generated and saved as '{out_filename}'.\n"
+            f"To send the file, call the function:\n"
+            f"execute_telegram_action(method_name='send_file', args_json='{{\"entity\": {cid}, \"file\": \"{out_filename}\", \"caption\": \"Your prompt\"}}')"
             )
+            if auto_upload_google:
+                from tools import upload_file_to_google
+                up_res = await upload_file_to_google(out_filename)
+                if isinstance(up_res, dict) and up_res.get("status") == "success":
+                    msg += f"\n[Auto-Upload]: Successfully uploaded to Google File API. URI: {up_res.get('google_uri')} (Mime-type: {up_res.get('mime_type')}). You can view this file in the history!"
+                else:
+                    msg += f"\n[Auto-Upload]: Failed to upload to Google File API: {up_res.get('message') if isinstance(up_res, dict) else str(up_res)}"
+            return msg
         except Exception as e:
             return f"Image generation error: {str(e)}"
 
-    async def generate_audio(self, prompt: str, voice: str = DEFAULT_AUDIO_VOICE, model: str = DEFAULT_AUDIO_MODEL, timeout: float = GENERATE_AUDIO_TIMEOUT, **kwargs) -> str:
+
+    async def generate_audio(self, prompt: str, voice: str = DEFAULT_AUDIO_VOICE, model: str = DEFAULT_AUDIO_MODEL, timeout: float = GENERATE_AUDIO_TIMEOUT, auto_download: bool = None, auto_upload_google: bool = None, **kwargs) -> str:
         """Synthesizes high-quality speech or music from a text description on Pollinations.ai."""
         encoded_prompt = urllib.parse.quote(prompt)
         url = f"https://gen.pollinations.ai/audio/{encoded_prompt}"
@@ -72,6 +91,17 @@ class AIToolKitMedia:
         }
         if kwargs:
             params.update(kwargs)
+
+        if auto_download is None:
+            auto_download = getattr(config, "AUDIO_GEN_AUTO_DOWNLOAD", True)
+        if auto_upload_google is None:
+            auto_upload_google = getattr(config, "AUDIO_GEN_AUTO_UPLOAD_TO_GOOGLE", True)
+
+        if not auto_download:
+            query_str = urllib.parse.urlencode(params)
+            generated_url = f"{url}?{query_str}"
+            return f"Audio generated successfully on Pollinations.ai!\nDirect link: {generated_url}"
+
         try:
             logger.info("Launching audio synthesis...")
             resp = await tools.call_pollinations_api(url, params, timeout=timeout)
@@ -82,15 +112,24 @@ class AIToolKitMedia:
             with open(WORKSPACE_DIR / out_filename, "wb") as f:
                 f.write(audio_bytes)
             cid = tools.current_chat_id.get()
-            return (
-                f"Speech synthesized and saved as '{out_filename}'.\n"
-                f"To send, call the function:\n"
-                f"execute_telegram_action(method_name='send_file', args_json='{{\"entity\": {cid}, \"file\": \"{out_filename}\", \"voice\": true}}')"
+            msg = (
+            f"Speech synthesized and saved as '{out_filename}'.\n"
+            f"To send, call the function:\n"
+            f"execute_telegram_action(method_name='send_file', args_json='{{\"entity\": {cid}, \"file\": \"{out_filename}\", \"voice\": true}}')"
             )
+            if auto_upload_google:
+                from tools import upload_file_to_google
+                up_res = await upload_file_to_google(out_filename)
+                if isinstance(up_res, dict) and up_res.get("status") == "success":
+                    msg += f"\n[Auto-Upload]: Successfully uploaded to Google File API. URI: {up_res.get('google_uri')} (Mime-type: {up_res.get('mime_type')}). You can view this file in the history!"
+                else:
+                    msg += f"\n[Auto-Upload]: Failed to upload to Google File API: {up_res.get('message') if isinstance(up_res, dict) else str(up_res)}"
+            return msg
         except Exception as e:
             return f"Audio synthesis error: {str(e)}"
 
-    async def generate_video(self, prompt: str, model: str = DEFAULT_VIDEO_MODEL, duration: int = DEFAULT_VIDEO_DURATION, aspect_ratio: str = DEFAULT_VIDEO_ASPECT_RATIO, seed: int = -1, timeout: float = GENERATE_VIDEO_TIMEOUT, **kwargs) -> str:
+
+    async def generate_video(self, prompt: str, model: str = DEFAULT_VIDEO_MODEL, duration: int = DEFAULT_VIDEO_DURATION, aspect_ratio: str = DEFAULT_VIDEO_ASPECT_RATIO, seed: int = -1, timeout: float = GENERATE_VIDEO_TIMEOUT, auto_download: bool = None, auto_upload_google: bool = None, **kwargs) -> str:
         """Generates a short video animation from a text description on Pollinations.ai."""
         encoded_prompt = urllib.parse.quote(prompt)
         url = f"https://gen.pollinations.ai/video/{encoded_prompt}"
@@ -104,6 +143,17 @@ class AIToolKitMedia:
         else:
             params["seed"] = random.randint(config.POLLINATIONS_SEED_MIN, config.POLLINATIONS_SEED_MAX)
         if kwargs:params.update(kwargs)
+
+        if auto_download is None:
+            auto_download = getattr(config, "VIDEO_GEN_AUTO_DOWNLOAD", True)
+        if auto_upload_google is None:
+            auto_upload_google = getattr(config, "VIDEO_GEN_AUTO_UPLOAD_TO_GOOGLE", True)
+
+        if not auto_download:
+            query_str = urllib.parse.urlencode(params)
+            generated_url = f"{url}?{query_str}"
+            return f"Video generated successfully on Pollinations.ai!\nDirect link: {generated_url}"
+
         try:
             logger.info("Launching video generation...")
             resp = await tools.call_pollinations_api(url, params, timeout=timeout)
@@ -114,11 +164,19 @@ class AIToolKitMedia:
             with open(WORKSPACE_DIR / out_filename, "wb") as f:
                 f.write(video_bytes)
             cid = tools.current_chat_id.get()
-            return (
-                f"Video clip generated and saved as '{out_filename}'.\n"
-                f"To send, call the function:\n"
-                f"execute_telegram_action(method_name='send_file', args_json='{{\"entity\": {cid}, \"file\": \"{out_filename}\", \"caption\": \"Your video\"}}')"
+            msg = (
+            f"Video clip generated and saved as '{out_filename}'.\n"
+            f"To send, call the function:\n"
+            f"execute_telegram_action(method_name='send_file', args_json='{{\"entity\": {cid}, \"file\": \"{out_filename}\", \"caption\": \"Your video\"}}')"
             )
+            if auto_upload_google:
+                from tools import upload_file_to_google
+                up_res = await upload_file_to_google(out_filename)
+                if isinstance(up_res, dict) and up_res.get("status") == "success":
+                    msg += f"\n[Auto-Upload]: Successfully uploaded to Google File API. URI: {up_res.get('google_uri')} (Mime-type: {up_res.get('mime_type')}). You can view this file in the history!"
+                else:
+                    msg += f"\n[Auto-Upload]: Failed to upload to Google File API: {up_res.get('message') if isinstance(up_res, dict) else str(up_res)}"
+            return msg
         except Exception as e:
             return f"Video generation error: {str(e)}"
 

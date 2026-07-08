@@ -371,6 +371,12 @@ _PARAMS = {
     "POLLINATIONS_SEED_MIN": DynamicParameter("POLLINATIONS_SEED_MIN", 1, int, min_val=1),
     "POLLINATIONS_SEED_MAX": DynamicParameter("POLLINATIONS_SEED_MAX", 999999999, int, min_val=1),
     "POLLINATIONS_UPLOAD_JPEG_QUALITY": DynamicParameter("POLLINATIONS_UPLOAD_JPEG_QUALITY", 95, int, min_val=1, max_val=100),
+    "IMAGE_GEN_AUTO_DOWNLOAD": DynamicParameter("IMAGE_GEN_AUTO_DOWNLOAD", True, bool),
+    "IMAGE_GEN_AUTO_UPLOAD_TO_GOOGLE": DynamicParameter("IMAGE_GEN_AUTO_UPLOAD_TO_GOOGLE", True, bool),
+    "AUDIO_GEN_AUTO_DOWNLOAD": DynamicParameter("AUDIO_GEN_AUTO_DOWNLOAD", True, bool),
+    "AUDIO_GEN_AUTO_UPLOAD_TO_GOOGLE": DynamicParameter("AUDIO_GEN_AUTO_UPLOAD_TO_GOOGLE", True, bool),
+    "VIDEO_GEN_AUTO_DOWNLOAD": DynamicParameter("VIDEO_GEN_AUTO_DOWNLOAD", True, bool),
+    "VIDEO_GEN_AUTO_UPLOAD_TO_GOOGLE": DynamicParameter("VIDEO_GEN_AUTO_UPLOAD_TO_GOOGLE", True, bool),
 
     # Section 5: Database and Summarization
     "DIALOGS_LIMIT": DynamicParameter("DIALOGS_LIMIT", 50, int, min_val=1),
