@@ -143,6 +143,26 @@ async def catch_up_missed_messages(client, db, workspace_dir, processed_msg_ids,
                     parsed_text = await parse_message_payload(client, db, msg)
                     await db.save_message(chat_id, role, parsed_text, None, msg.id)
                     newly_saved_count += 1
+                    
+                    # Auto-read missed messages in Telegram based on config filter matrix
+                    if newly_saved_count > 0:
+                        try:
+                            from utils import should_send_read_acknowledge
+                            should_read = False
+                            for m in missed_messages:
+                                if m.sender_id != me.id:
+                                    is_m_triggered = m.is_private or m.mentioned
+                                    if not is_m_triggered:
+                                        m_text = (m.message or "").lower()
+                                        if me.first_name and me.first_name.lower() in m_text: is_m_triggered = True
+                                        elif me.username and f"@{me.username.lower()}" in m_text: is_m_triggered = True
+                                    if await should_send_read_acknowledge(m, me, db, is_trigger_fired=is_m_triggered):
+                                        should_read = True
+                                        break
+                            if should_read:
+                                await client.send_read_acknowledge(dialog.entity, max_id=missed_messages[-1].id)
+                        except Exception as read_ex:
+                            logger.debug(f"Failed to mark caught-up messages as read: {str(read_ex)}")
                 
                 # If new messages are caught up and there are incoming ones among them, schedule a debounce
                 if newly_saved_count > 0:

@@ -460,6 +460,8 @@ _PARAMS = {
     "GIFT_CACHE_DIR_NAME": DynamicParameter("GIFT_CACHE_DIR_NAME", "gift_cache", str),
     "TEMP_MEDIA_DIR_NAME": DynamicParameter("TEMP_MEDIA_DIR_NAME", "temp_media", str),
     "TELEGRAM_AUTO_RECONNECT": DynamicParameter("TELEGRAM_AUTO_RECONNECT", True, bool),
+    "READ_ACK_WHITELIST": DynamicParameter("READ_ACK_WHITELIST", "all", str),
+    "READ_ACK_BLACKLIST": DynamicParameter("READ_ACK_BLACKLIST", "", str),
     "DEFAULT_IMAGE_NAME": DynamicParameter("DEFAULT_IMAGE_NAME", "generated_image.png", str),
     "DEFAULT_AUDIO_NAME": DynamicParameter("DEFAULT_AUDIO_NAME", "generated_audio.mp3", str),
     "DEFAULT_VIDEO_NAME": DynamicParameter("DEFAULT_VIDEO_NAME", "generated_video.mp4", str),
@@ -722,6 +724,8 @@ CHAT_CACHE_BLACKLIST = _parse_int_list("CHAT_CACHE_BLACKLIST", [])
 
 CHAT_WHITELIST = _parse_int_list("CHAT_WHITELIST", [])
 CHAT_BLACKLIST = _parse_int_list("CHAT_BLACKLIST", [])
+READ_ACK_WHITELIST = _parse_list("READ_ACK_WHITELIST", ["all"])
+READ_ACK_BLACKLIST = _parse_list("READ_ACK_BLACKLIST", [])
 
 AI_OUTPUT_WHITELIST_REGEX = _parse_list("AI_OUTPUT_WHITELIST_REGEX", [])
 AI_OUTPUT_BLACKLIST_REGEX = _parse_list("AI_OUTPUT_BLACKLIST_REGEX", [])

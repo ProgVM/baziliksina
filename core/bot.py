@@ -384,13 +384,28 @@ async def on_new_message(event):
     # Global filter check: should we save this message event?
     if not await should_process_message_event(event, me, "save", db):
         return
-
-    # Auto-read incoming messages (only if PM or mentioned)
-    if is_private or mentioned:
-        try:
+        
+    # Auto-read incoming messages based on config filter matrix
+    try:
+        from utils import should_send_read_acknowledge
+        is_triggered = False
+        if is_private:
+            is_triggered = True
+        else:
+            t_lower = (event.message.message or "").lower()
+            if "name" in config.AI_RESPONSE_TRIGGERS and me.first_name and me.first_name.lower() in t_lower:
+                is_triggered = True
+            elif "username" in config.AI_RESPONSE_TRIGGERS and me.username and f"@{me.username.lower()}" in t_lower:
+                is_triggered = True
+            elif "mentioned" in config.AI_RESPONSE_TRIGGERS and event.mentioned:
+                is_triggered = True
+            elif "reply_to_me" in config.AI_RESPONSE_TRIGGERS and event.message.is_reply:
+                is_triggered = True
+        
+        if await should_send_read_acknowledge(event, me, db, is_trigger_fired=is_triggered):
             await event.mark_read()
-        except Exception as e:
-            logger.debug(f"Failed to mark message as read: {str(e)}")
+    except Exception as e:
+        logger.debug(f"Failed to mark message as read: {str(e)}")
 
     # 2. Universal processing and detailed saving of ALL outgoing messages
     if event.sender_id == me.id:

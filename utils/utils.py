@@ -354,6 +354,111 @@ def load_feedback_template(section_name: str, default_text: str) -> str:
     path = config.BASE_DIR / "config" / "feedback_prompt.txt"
     if not path.exists():
         return default_text
+
+async def should_send_read_acknowledge(message_or_event, me, db=None, is_trigger_fired: bool = False) -> bool:
+    """
+    Dynamically checks whether an incoming message should be marked as read
+    based on granular white/black lists inside configuration parameters.
+    Supports flexible wildcards, trigger states, message types, and peer classes.
+    """
+    import config
+    from parser import get_media_type_description
+    from telethon.tl import types as tl_types
+    
+    msg = message_or_event.message if hasattr(message_or_event, "message") else message_or_event
+    if not msg:
+        return False
+        
+    if msg.sender_id == me.id:
+        return False
+
+    # 1. Standardize message type
+    m_type = (get_media_type_description(msg) or "text").lower()
+    if "voice" in m_type:
+        m_type_norm = "voice"
+    elif "video note" in m_type:
+        m_type_norm = "video"
+    elif "file" in m_type or "document" in m_type:
+        m_type_norm = "document"
+    elif "todo" in m_type or "list" in m_type:
+        m_type_norm = "list"
+    else:
+        m_type_norm = m_type
+
+    # 2. Standardize peer type
+    u_low = str(message_or_event.chat_id)
+    is_private = getattr(message_or_event, 'is_private', False) or (msg.is_private if hasattr(msg, 'is_private') else isinstance(msg.peer_id, tl_types.PeerUser))
+    is_group = getattr(message_or_event, 'is_group', False) or (msg.is_group if hasattr(msg, 'is_group') else isinstance(msg.peer_id, tl_types.PeerChat))
+    is_channel = getattr(message_or_event, 'is_channel', False) or (msg.is_channel if hasattr(msg, 'is_channel') else isinstance(msg.peer_id, tl_types.PeerChannel))
+    
+    peer_type = "private" if is_private else ("group" if is_group else "channel")
+
+    # 3. Resolve metadata details
+    sender_id = str(msg.sender_id) if msg.sender_id else ""
+    chat_id = str(msg.chat_id) if msg.chat_id else ""
+    
+    sender_username = ""
+    chat_username = ""
+    if hasattr(msg, "sender") and msg.sender and getattr(msg.sender, "username", None):
+        sender_username = f"@{msg.sender.username.lower()}"
+    if hasattr(message_or_event, "chat") and message_or_event.chat and getattr(message_or_event.chat, "username", None):
+        chat_username = f"@{message_or_event.chat.username.lower()}"
+
+    # 4. Standardize trigger details
+    trigger_state = "trigger:none"
+    if is_trigger_fired:
+        trigger_state = "trigger:all"
+        t_lower = (msg.message or "").lower()
+        if me.first_name and me.first_name.lower() in t_lower:
+            trigger_state = "trigger:name"
+        elif me.username and f"@{me.username.lower()}" in t_lower:
+            trigger_state = "trigger:username"
+        elif getattr(message_or_event, "mentioned", False):
+            trigger_type = "trigger:mentioned"
+        elif msg.is_reply:
+            trigger_state = "trigger:reply_to_me"
+
+    def matches_rule(rule_item: str) -> bool:
+        r = rule_item.strip().lower()
+        if not r:
+            return False
+        if r in ["all", "any", "*"]:
+            return True
+        if r == "none":
+            return False
+        if r.startswith("peer:"):
+            return peer_type == r.split(":", 1)[1]
+        if r.startswith("type:"):
+            return m_type_norm == r.split(":", 1)[1]
+        if r.startswith("user:") or r.startswith("sender:"):
+            u_val = r.split(":", 1)[1]
+            return sender_id == u_val or (sender_username and u_val == sender_username)
+        if r.startswith("chat:"):
+            c_val = r.split(":", 1)[1]
+            return chat_id == c_val or (chat_username and c_val == chat_username)
+        if r.startswith("trigger:"):
+            t_val = r.split(":", 1)[1]
+            if t_val == "all": return is_trigger_fired
+            if t_val == "none": return not is_trigger_fired
+            return trigger_state == f"trigger:{t_val}"
+        if r.replace("-", "").isdigit():
+            return r in [sender_id, chat_id]
+        if r.startswith("@"):
+            return r in [sender_username, chat_username]
+        return False
+
+    if config.READ_ACK_BLACKLIST:
+        for b_rule in config.READ_ACK_BLACKLIST:
+            if matches_rule(b_rule):
+                return False
+
+    if config.READ_ACK_WHITELIST:
+        for w_rule in config.READ_ACK_WHITELIST:
+            if matches_rule(w_rule):
+                return True
+        return False
+
+    return True
     try:
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
