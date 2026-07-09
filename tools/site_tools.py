@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import shutil
+import asyncio
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -78,8 +79,18 @@ class AIToolKitSites:
             exec_timeout = config.SITE_TIMEOUT_DEFAULT
             config_dict["timeout"] = exec_timeout
 
-        # Check and write files inside isolated workspace
+        # Setup safe transactional backup to support non-destructive updates
         site_dir = config.WORKSPACE_DIR / "sites" / clean_name
+        backup_dir = config.WORKSPACE_DIR / "sites" / f"{clean_name}_backup_{int(time.time())}"
+        has_backup = False
+        
+        if site_dir.exists():
+            try:
+                shutil.move(str(site_dir), str(backup_dir))
+                has_backup = True
+            except Exception as backup_err:
+                logger.warning(f"Failed to create transactional backup for '{clean_name}': {str(backup_err)}")
+                
         site_dir.mkdir(parents=True, exist_ok=True)
 
         if not modules_list:
@@ -113,50 +124,61 @@ class AIToolKitSites:
             out_file.parent.mkdir(parents=True, exist_ok=True)
             
             with open(out_file, "w", encoding="utf-8") as f:
-                f.write(mod_code)
 
-        # --- AUTOMATED DEVOPS DRY-RUN VALIDATION ---
-        test_module = None
-        for mod in modules_list:
-            m_path = mod.get("path", "")
-            if m_path in ["index.py", "index"]:
-            test_module = mod
-            break
-        if not test_module and modules_list:
-            test_module = modules_list[0]
-            
-        if test_module:
-            test_code = test_module.get("code", "")
-            test_code = test_code.replace("\\\\r\\\\n", "\n").replace("\\\\n", "\n").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
-            mock_local_vars = {
-            "__import__": __import__,
-            "open": lambda *a, **k: None,
-            "request": {
-                "method": "GET",
-                "headers": {},
-                "query": {},
-                "body": "",
-                "json": {},
-                "client_ip": "127.0.0.1",
-                "cookies": {}
-            },
-            "print": lambda *a: None,
-            "response": {
-                "status": 200,
-                "body": "",
-                "headers": {}
-            }
-            }
+                # --- AUTOMATED DEVOPS DRY-RUN VALIDATION ---
+                test_module = None
+                for mod in modules_list:
+                    m_path = mod.get("path", "")
+                    if m_path in ["index.py", "index"]:
+                        test_module = mod
+                        break
+                if not test_module and modules_list:
+                    test_module = modules_list[0]
+                    
+                if test_module:
+                    test_code = test_module.get("code", "")
+                    test_code = test_code.replace("\\\\r\\\\n", "\n").replace("\\\\n", "\n").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
+                    mock_local_vars = {
+                        "__import__": __import__,
+                        "open": lambda *a, **k: None,
+                        "request": {
+                            "method": "GET",
+                            "headers": {},
+                            "query": {},
+                            "body": "",
+                            "json": {},
+                            "client_ip": "127.0.0.1",
+                            "cookies": {}
+                        },
+                        "print": lambda *a: None,
+                        "response": {
+                            "status": 200,
+                            "body": "",
+                            "headers": {}
+                        }
+                    }
+                    try:
+                        indented_test = "\n".join(f"    {line}" for line in test_code.splitlines())
+                        wrapper_test = f"async def __run_module():\n{indented_test}"
+                        exec(wrapper_test, mock_local_vars, mock_local_vars)
+                        await asyncio.wait_for(mock_local_vars["__run_module"](), timeout=2.0)
+                    except Exception as test_err:
+                        # Clean up the broken files
+                        if site_dir.exists():
+                            shutil.rmtree(site_dir)
+                        # Rollback: Restore previous stable site directory if backup exists
+                        if has_backup and backup_dir.exists():
+                            shutil.move(str(backup_dir), str(site_dir))
+                        import traceback
+                        return f"Error: Site code dry-run failed with a runtime error! Transaction rolled back to the previous stable state.\nTraceback error details:\n{traceback.format_exc()}"
+            return f"Error: Site code dry-run failed with a runtime error! Transaction rolled back to the previous stable state.\nTraceback error details:\n{traceback.format_exc()}"
+
+        # Clean up backup directory upon successful validation
+        if has_backup and backup_dir.exists():
             try:
-            indented_test = "\n".join(f"    {line}" for line in test_code.splitlines())
-            wrapper_test = f"async def __run_module():\n{indented_test}"
-            exec(wrapper_test, mock_local_vars, mock_local_vars)
-            await asyncio.wait_for(mock_local_vars["__run_module"](), timeout=2.0)
-            except Exception as test_err:
-            if site_dir.exists():
-                shutil.rmtree(site_dir)
-            import traceback
-            return f"Error: Site code dry-run failed with a runtime error! Please fix your Python script before deploying.\nTraceback error details:\n{traceback.format_exc()}"
+            shutil.rmtree(backup_dir)
+            except Exception as clean_err:
+            logger.warning(f"Failed to remove backup folder '{backup_dir}': {str(clean_err)}")
 
         # Apply disk limits check
         # Calculate size of site directory
