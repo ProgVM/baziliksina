@@ -425,6 +425,8 @@ class BaziliksinaWebServer:
 
         # 3. Setup sandbox and execute code
         code = module_obj.get("code", "")
+        # Safe normalization of escaped newlines to support both raw and serialized inputs perfectly!
+        code = code.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
         execution_timeout = float(site_config.get("timeout", config.SITE_TIMEOUT_DEFAULT))
         
         # Read request parameters
