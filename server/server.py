@@ -516,6 +516,11 @@ class BaziliksinaWebServer:
             resolved = Path(file).resolve()
             if not str(resolved).startswith(str(site_dir.resolve())):
                 raise PermissionError("Security Policy Error: Attempted to access a directory outside the site isolated workspace.")
+            
+            # Automatically initialize nested parent directories for dynamic writing and appending modes
+            if any(char in mode for char in ['w', 'a', 'x']):
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+                
             return open(resolved, mode, *args, **kwargs)
 
         # Custom site output printer redirecting directly to a dedicated local log file inside site isolated directory!
