@@ -556,6 +556,21 @@ class BaziliksinaWebServer:
             exec(wrapper, local_vars, local_vars)
             await asyncio.wait_for(local_vars["__run_module"](), timeout=execution_timeout)
             
+            # Smart entrypoint resolver: detect and execute handler functions if defined
+            entrypoint = None
+            for name in ["handle", "handler", "main", "index", "get", "post"]:
+                if name in local_vars and callable(local_vars[name]):
+                    entrypoint = local_vars[name]
+                    break
+            if entrypoint:
+                import inspect
+                if inspect.iscoroutinefunction(entrypoint):
+                    res_val = await entrypoint(local_vars["request"])
+                else:
+                    res_val = entrypoint(local_vars["request"])
+                if res_val:
+                    local_vars["response"] = res_val
+            
             resp_data = local_vars.get("response", {})
             if isinstance(resp_data, str):
                 resp_data = {"status": 200, "body": resp_data, "headers": {"Content-Type": "text/html"}}

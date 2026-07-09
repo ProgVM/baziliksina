@@ -186,6 +186,19 @@ class AIToolKitSites:
                 wrapper_test = f"async def __run_module():\n{indented_test}"
                 exec(wrapper_test, mock_local_vars, mock_local_vars)
                 await asyncio.wait_for(mock_local_vars["__run_module"](), timeout=2.0)
+                
+                # Dry-run execution of entrypoint handlers inside site validation step
+                entrypoint = None
+                for name in ["handle", "handler", "main", "index", "get", "post"]:
+                    if name in mock_local_vars and callable(mock_local_vars[name]):
+                        entrypoint = mock_local_vars[name]
+                        break
+                if entrypoint:
+                    import inspect
+                    if inspect.iscoroutinefunction(entrypoint):
+                        await entrypoint(mock_local_vars["request"])
+                    else:
+                        entrypoint(mock_local_vars["request"])
             except Exception as test_err:
                 # Clean up the broken files
                 if site_dir.exists():
