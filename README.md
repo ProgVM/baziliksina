@@ -79,13 +79,15 @@ baziliksina/
 
 ### 4. Isolated Sandboxed Dynamic Site Hosting (AI DevOps) 🌐
 *   **Dynamic Micro-Websites:** AI and administrators can build, compile, and hot-update isolated Python-driven web applications and mockups on the fly.
-*   **Absolute Resource & Storage Jailing:** Security limits enforce strict disk limits (up to 50MB), execution script timeouts (up to 30s), whitelisted import libraries (IP/module whitelists), and IP access control lists (IP ACLs).
-*   **Dedicated Environment & Logs:** Each site operates in a separate subdirectory. Console print outputs and tracebacks are piped to `site.log`, which can be dynamically read and debugged by administrators or autonomously by the AI via log tools to self-heal.
+*   **Double-Tier Sandbox Security:** Enforces strict disk jailing (up to 50MB), script execution timeouts (up to 30s), whitelist/blacklist filters with wildcard pattern checks (`matches_filter`) for both Python library imports and HTTP methods, and IP Access Control lists (IP ACLs).
+*   **DevOps Auto-Testing & Rollbacks:** Code is validated via a dry-run test execution before deployment. If validation fails, files are cleanly wiped and restored to the previous stable state from a transactional backup.
+*   **Isolated CLI Terminals:** Supports independent bash/shell command execution in the site's directory via the AI terminal tool or secure REST APIs.
+*   **Dedicated Log Rotation:** Directs site prints and raw exception tracebacks to `site.log`, with auto-rotation capping log size at 5MB to defend against disk-filling attacks.
 
 ### 5. RESTful Web Server Administrative Panel 📊
 *   **Host auto-detection:** If no host is specified in the configurations, the web server dynamically resolves your network interface IP address and binds to it.
 *   **IP Whitelisting & ACL Middleware:** Automatically validates incoming connections on network socket level.
-*   **30 control points:** Fully authorized REST endpoints to update RAM config parameters, fetch log files, execute raw SQL statements, manage dynamic sandboxed websites, track site-specific logs, and perform hot restarts.
+*   **32 control points:** Fully authorized REST endpoints to update RAM configurations in memory, retrieve logs, execute SQL/shell commands, orchestrate dynamic micro-websites, run isolated terminal commands, and perform hot restarts.
 
 ---
 
@@ -98,16 +100,31 @@ Baziliksina supports on-the-fly hosting of isolated Python micro-apps.
 *   `POST /api/sites/add` — Create or update a dynamic site (payload requires `name`, `config`, `modules`).
 *   `GET /api/sites/details/{name}` — Retrieve precise configuration and module code of a specific site.
 *   `GET /api/sites/logs/{name}` — Read or stream console prints and tracebacks for troubleshooting.
+*   `POST /api/sites/command/{name}` — Execute a shell command inside the site's isolated subdirectory.
 *   `DELETE /api/sites/delete/{name}` — Remove database records and permanently wipe the site's folder.
 
-### Simple Python Site Module Example (index.py)
+### Advanced Python Site Module Example (index.py)
 ```python
-# Dynamically parses JSON payload, prints IP, and returns HTML
-ip = request["client_ip"]
-print(f"Request received from client IP: {ip}")
+# Imports standard allowed libraries, prints debug info, and returns HTML output
+import random
+import datetime
+
+client_ip = request["client_ip"]
+print(f"[{datetime.datetime.now()}] Dynamic visit from IP: {client_ip}")
+
+rand_val = random.randint(100, 999)
 
 response["status"] = 200
-response["body"] = f"<h1>Hello World from Baziliksina Sandboxed Engine!</h1><p>IP: {ip}</p>"
+response["body"] = f"""
+<html>
+<head><title>Baziliksina App</title></head>
+<body style="font-family: sans-serif; padding: 40px; background: #fafafa;">
+  <h1>Hello World from Baziliksina Sandboxed Engine! 🌸</h1>
+  <p>Your client IP: <b>{client_ip}</b></p>
+  <p>Auto-generated secure verification token: <code>{rand_val}</code></p>
+</body>
+</html>
+"""
 response["headers"] = {"Content-Type": "text/html; charset=utf-8"}
 ```
 
