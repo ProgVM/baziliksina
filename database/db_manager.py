@@ -48,7 +48,7 @@ def dict_to_content(data: dict) -> types.Content:
         if isinstance(obj, dict):
             new_dict = {}
             for k, v in obj.items():
-                if k in ["thought_signature", "thought"] and isinstance(v, str):
+                if k in ["thought_signature", "thoughtSignature", "thought"] and isinstance(v, str):
                     try:
                         new_dict[k] = base64.b64decode(v)
                     except Exception as b_err:

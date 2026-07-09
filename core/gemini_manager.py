@@ -427,6 +427,22 @@ class GeminiManager:
                     if healed_calls:
                         if response.candidates and response.candidates[0].content:
                             content_obj = response.candidates[0].content
+                            
+                            # Извлекаем оригинальную подпись thought_signature перед модификацией частей
+                            orig_thought_sig = None
+                            if content_obj.parts:
+                                for p in content_obj.parts:
+                                    if hasattr(p, "thought_signature") and p.thought_signature:
+                                        orig_thought_sig = p.thought_signature
+                                        break
+                                    elif hasattr(p, "thoughtSignature") and p.thoughtSignature:
+                                        orig_thought_sig = p.thoughtSignature
+                                        break
+
+                            # Если оригинальная подпись отсутствует, используем официальный bypass-маркер Google
+                            if not orig_thought_sig:
+                                orig_thought_sig = b"skip_thought_signature_validator"
+
                             if content_obj.parts is None:
                                 content_obj.parts = []
                             content_obj.parts = [p for p in content_obj.parts if not p.text]
@@ -437,7 +453,8 @@ class GeminiManager:
                                         id=f"heal_{call['name'][:4]}_{int(time.time())}",
                                         name=call["name"],
                                         args=call["args"]
-                                    )
+                                    ),
+                                    thought_signature=orig_thought_sig
                                 )
                                 content_obj.parts.append(healed_part)
                                 if call["name"] == "no_op_ignore":
