@@ -254,6 +254,18 @@ class DBManager:
                 )
             """)
 
+            # 13. Dynamic Web Sites with isolation settings
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS dynamic_sites (
+                    name TEXT PRIMARY KEY,
+                    status TEXT DEFAULT 'active',
+                    created_at INTEGER NOT NULL,
+                    expires_at INTEGER DEFAULT NULL,
+                    config_json TEXT NOT NULL,
+                    modules_json TEXT NOT NULL
+                )
+            """)
+
             # --- INDEXES FOR ULTRA-HIGH QUERY OPTIMIZATION ---
             await cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_msg ON messages(chat_id, msg_id)")
             await cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)")
@@ -706,6 +718,63 @@ class DBManager:
         """Removes a dynamic setting override from the database."""
         await self.db.execute("DELETE FROM settings WHERE key = ?", (key,))
         await self.db.commit()
+
+
+    # --- DYNAMIC WEB SITES MANAGEMENT ---
+    async def save_dynamic_site(self, name: str, config_dict: dict, modules_list: list, expires_at: int = None, status: str = 'active'):
+        """Saves or updates a dynamic website with isolation configuration and custom modules."""
+        import time
+        created_at = int(time.time())
+        config_str = json.dumps(config_dict, ensure_ascii=False)
+        modules_str = json.dumps(modules_list, ensure_ascii=False)
+        await self.db.execute("""
+            INSERT INTO dynamic_sites (name, status, created_at, expires_at, config_json, modules_json)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                status = excluded.status,
+                expires_at = COALESCE(excluded.expires_at, expires_at),
+                config_json = excluded.config_json,
+                modules_json = excluded.modules_json
+        """, (name, status, created_at, expires_at, config_str, modules_str))
+        await self.db.commit()
+
+    async def get_dynamic_site(self, name: str) -> dict:
+        """Retrieves configuration and module code of a specific dynamic site by name."""
+        async with self.db.execute("SELECT name, status, created_at, expires_at, config_json, modules_json FROM dynamic_sites WHERE name = ?", (name,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "name": row[0],
+                "status": row[1],
+                "created_at": row[2],
+                "expires_at": row[3],
+                "config_json": row[4],
+                "modules_json": row[5]
+            }
+
+    async def get_all_dynamic_sites(self) -> list:
+        """Returns a list of all registered dynamic web sites."""
+        async with self.db.execute("SELECT name, status, created_at, expires_at, config_json, modules_json FROM dynamic_sites") as cursor:
+            rows = await cursor.fetchall()
+            return [{
+                "name": r[0],
+                "status": r[1],
+                "created_at": r[2],
+                "expires_at": r[3],
+                "config_json": r[4],
+                "modules_json": r[5]
+            } for r in rows]
+
+    async def delete_dynamic_site(self, name: str) -> bool:
+        """Deletes a dynamic website from the SQLite database."""
+        async with self.db.execute("SELECT 1 FROM dynamic_sites WHERE name = ?", (name,)) as cursor:
+            exists = await cursor.fetchone()
+        if not exists:
+            return False
+        await self.db.execute("DELETE FROM dynamic_sites WHERE name = ?", (name,))
+        await self.db.commit()
+        return True
 
     async def close(self):
         """Closes the active database connection."""

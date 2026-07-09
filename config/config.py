@@ -468,7 +468,16 @@ _PARAMS = {
     "DEFAULT_IMAGE_NAME": DynamicParameter("DEFAULT_IMAGE_NAME", "generated_image.png", str),
     "DEFAULT_AUDIO_NAME": DynamicParameter("DEFAULT_AUDIO_NAME", "generated_audio.mp3", str),
     "DEFAULT_VIDEO_NAME": DynamicParameter("DEFAULT_VIDEO_NAME", "generated_video.mp4", str),
-    "DEFAULT_RESULT_INDEX": DynamicParameter("DEFAULT_RESULT_INDEX", 0, int)
+    "DEFAULT_RESULT_INDEX": DynamicParameter("DEFAULT_RESULT_INDEX", 0, int),
+    "SITE_STORAGE_LIMIT_DEFAULT": DynamicParameter("SITE_STORAGE_LIMIT_DEFAULT", 10 * 1024 * 1024, int, min_val=1),
+    "SITE_TIMEOUT_DEFAULT": DynamicParameter("SITE_TIMEOUT_DEFAULT", 5.0, float, min_val=0.1),
+    "SITE_ALLOWED_IMPORTS_DEFAULT": DynamicParameter("SITE_ALLOWED_IMPORTS_DEFAULT", "json,math,random,urllib,hashlib,datetime", str),
+    "SITE_ALLOWED_METHODS_DEFAULT": DynamicParameter("SITE_ALLOWED_METHODS_DEFAULT", "GET,POST,PUT,DELETE,OPTIONS", str),
+    "SITE_MAX_REQUEST_SIZE_DEFAULT": DynamicParameter("SITE_MAX_REQUEST_SIZE_DEFAULT", 1048576, int, min_val=1),
+    "SITE_STORAGE_LIMIT_MAX": DynamicParameter("SITE_STORAGE_LIMIT_MAX", 52428800, int, min_val=1),
+    "SITE_TIMEOUT_MAX": DynamicParameter("SITE_TIMEOUT_MAX", 30.0, float, min_val=0.1),
+    "SITE_BLOCKED_IMPORTS_DEFAULT": DynamicParameter("SITE_BLOCKED_IMPORTS_DEFAULT", "os,sys,subprocess,shutil,builtins", str),
+    "SITE_BLOCKED_METHODS_DEFAULT": DynamicParameter("SITE_BLOCKED_METHODS_DEFAULT", "", str)
 }
 
 def __getattr__(name: str):

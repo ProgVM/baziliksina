@@ -32,6 +32,8 @@ class SandboxedClient:
         self._workspace = workspace_dir
 
     def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError("Access to private attributes is blocked inside the sandbox.")
         attr = getattr(self._original, name)
         if callable(attr):
             if name in ["download_media", "download_profile_photo", "upload_file", "send_file"]:
@@ -73,6 +75,8 @@ class SandboxedConfig:
         self._original = original_config
 
     def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError("Access to private attributes is blocked inside the sandbox.")
         from utils import matches_filter
         import config
         whitelist = getattr(config, "SANDBOX_CONFIG_WHITELIST", [])
@@ -99,8 +103,8 @@ class AsyncSandbox:
         if isinstance(file, str) and not os.path.isabs(file):
             file = os.path.join(str(self.workspace), file)
         
-        resolved_path = os.path.abspath(file)
-        if not resolved_path.startswith(str(self.workspace)):
+        resolved_path = Path(file).resolve()
+        if not str(resolved_path).startswith(str(self.workspace)):
             raise PermissionError("Security error: Attempted to access a directory outside the AI sandbox.")
         
         filename = os.path.basename(resolved_path)

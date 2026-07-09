@@ -162,6 +162,8 @@ class AIToolKitSystem:
 
     async def run_sandboxed_command(self, command: str, **kwargs) -> str:
         """Runs a standard system bash/shell command securely in the sandbox."""
+        if FORBIDDEN_SHELL_REGEX.search(command):
+            return "Security error: This shell command contains blocked terms or attempts to access restricted files."
         from utils import matches_filter
         if not matches_filter(command, config.SANDBOX_COMMAND_WHITELIST, config.SANDBOX_COMMAND_BLACKLIST):
             return "Security error: This shell command contains blocked terms."
@@ -320,6 +322,9 @@ class AIToolKitSystem:
         """Creates a new or updates an existing custom dynamic AI tool at runtime."""
         if not tools.db:
             return "Error: Database is not initialized."
+        from utils import matches_filter
+        if not matches_filter(code, config.SANDBOX_PYTHON_WHITELIST, config.SANDBOX_PYTHON_BLACKLIST):
+            return "Security error: This Python code is blocked by the custom tool security policy."
         try:
             parameters_schema = kwargs.get("parameters_schema")
             await tools.db.save_custom_tool(name, category, description, code, parameters_schema)

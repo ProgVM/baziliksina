@@ -25,6 +25,7 @@ from tools.telegram_tools import *
 from tools.scheduler_tools import *
 from tools.media_tools import *
 from tools.tag_block_tools import *
+from tools.site_tools import *
 
 ROOT_TOOL_CATEGORIES = {
     "send_media_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
@@ -88,7 +89,12 @@ ROOT_TOOL_CATEGORIES = {
     "get_telegram_message_details": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
     "execute_sql_query": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
     "create_or_update_custom_tool": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
-    "delete_custom_tool": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)"
+    "delete_custom_tool": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "create_or_update_site": "Category 8: Dynamic Sites Management",
+    "list_sites": "Category 8: Dynamic Sites Management",
+    "get_site_details": "Category 8: Dynamic Sites Management",
+    "delete_site": "Category 8: Dynamic Sites Management",
+    "get_site_logs": "Category 8: Dynamic Sites Management"
 }
 
 class ModularToolKit:

@@ -297,16 +297,21 @@ class GeminiManager:
                             function_calls_to_execute.append(part.function_call)
 
                 # 4. Auto-Heal Interceptor (Resolves plain-text output leaks)
-                if response.text:
+                try:
+                    resp_text = response.text
+                except Exception:
+                    resp_text = None
+
+                if resp_text:
                     import ast
                     import time
                     healed_calls = []
                     
-                    json_blocks = re.findall(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', response.text)
+                    json_blocks = re.findall(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', resp_text)
                     if not json_blocks:
                         bracket_count = 0
                         start_idx = -1
-                        for idx, char in enumerate(response.text):
+                        for idx, char in enumerate(resp_text):
                             if char == '{':
                                 if bracket_count == 0:
                                     start_idx = idx
@@ -314,7 +319,7 @@ class GeminiManager:
                             elif char == '}':
                                 bracket_count -= 1
                                 if bracket_count == 0 and start_idx != -1:
-                                    candidate = response.text[start_idx:idx+1]
+                                    candidate = resp_text[start_idx:idx+1]
                                     try:
                                         parsed = json.loads(candidate)
                                         if isinstance(parsed, dict):
@@ -401,7 +406,7 @@ class GeminiManager:
                             pass
 
                     if not healed_calls:
-                        tool_matches = self.tool_pattern.findall(response.text)
+                        tool_matches = self.tool_pattern.findall(resp_text)
                         for fn_name, args_str in tool_matches:
                             kwargs_dict = {}
                             try:
@@ -445,9 +450,9 @@ class GeminiManager:
                                     function_calls_to_execute.append(part.function_call)
 
                 # 5. Hand over text response executing block-level tags dynamically to ResponseExecutor
-                if response.text and not function_calls_to_execute and not should_ignore:
+                if resp_text and not function_calls_to_execute and not should_ignore:
                     typing_task.cancel()
-                    should_ignore, should_continue = await self.executor.execute_response(response.text, chat_entity, reply_to_id, chat_id)
+                    should_ignore, should_continue = await self.executor.execute_response(resp_text, chat_entity, reply_to_id, chat_id)
                     if should_continue:
                         continue
 

@@ -77,12 +77,39 @@ baziliksina/
 *   **Secrets masking:** Any VM scripts trying to read configuration files, environment variables, or tokens return `[REDACTED_SECURITY_SENSITIVE_DATA]`.
 *   **Self-healing scope:** Any syntax crashes or memory leaks during runtime code execution are safely isolated without affecting the userbot instance.
 
-### 4. RESTful Web Server Administrative Panel
+### 4. Isolated Sandboxed Dynamic Site Hosting (AI DevOps) 🌐
+*   **Dynamic Micro-Websites:** AI and administrators can build, compile, and hot-update isolated Python-driven web applications and mockups on the fly.
+*   **Absolute Resource & Storage Jailing:** Security limits enforce strict disk limits (up to 50MB), execution script timeouts (up to 30s), whitelisted import libraries (IP/module whitelists), and IP access control lists (IP ACLs).
+*   **Dedicated Environment & Logs:** Each site operates in a separate subdirectory. Console print outputs and tracebacks are piped to `site.log`, which can be dynamically read and debugged by administrators or autonomously by the AI via log tools to self-heal.
+
+### 5. RESTful Web Server Administrative Panel 📊
 *   **Host auto-detection:** If no host is specified in the configurations, the web server dynamically resolves your network interface IP address and binds to it.
 *   **IP Whitelisting & ACL Middleware:** Automatically validates incoming connections on network socket level.
-*   **24 control points:** Fully authorizedREST endpoints to update RAM config parameters, fetch log files, execute raw SQL statements, and perform hot restarts.
+*   **30 control points:** Fully authorized REST endpoints to update RAM config parameters, fetch log files, execute raw SQL statements, manage dynamic sandboxed websites, track site-specific logs, and perform hot restarts.
 
 ---
+
+## Dynamic Sites Management 🌐
+
+Baziliksina supports on-the-fly hosting of isolated Python micro-apps.
+
+### REST API Endpoints (Bearer Authorized)
+*   `GET /api/sites` — List all registered dynamic websites, statuses, and disk usage.
+*   `POST /api/sites/add` — Create or update a dynamic site (payload requires `name`, `config`, `modules`).
+*   `GET /api/sites/details/{name}` — Retrieve precise configuration and module code of a specific site.
+*   `GET /api/sites/logs/{name}` — Read or stream console prints and tracebacks for troubleshooting.
+*   `DELETE /api/sites/delete/{name}` — Remove database records and permanently wipe the site's folder.
+
+### Simple Python Site Module Example (index.py)
+```python
+# Dynamically parses JSON payload, prints IP, and returns HTML
+ip = request["client_ip"]
+print(f"Request received from client IP: {ip}")
+
+response["status"] = 200
+response["body"] = f"<h1>Hello World from Baziliksina Sandboxed Engine!</h1><p>IP: {ip}</p>"
+response["headers"] = {"Content-Type": "text/html; charset=utf-8"}
+```
 
 ## Installation & Launch 🚀
 

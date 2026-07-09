@@ -404,10 +404,13 @@ class AIResponseExecutor:
         if not ranges_to_strip:
             clean_text = cleaned_text
             # Universal robust regex tag stripper to clean any action or block tags instantly
-            clean_text = re.compile(
-                r'</?(?:reply|reply_msg|msg|react|attach|edit|delete|pin|unpin|mute|unmute|kick|ban|unban|search|mediasearch|draw|noop|no_op_ignore|tool|seq|par|bg|python|sql|scrape|voice|video)\b[^>]*>',
-                re.IGNORECASE
-            ).sub("", clean_text)
+            from registry import tag_block_registry
+            known_tags = [t.name for t in tag_block_registry.get_all()]
+            known_tags.extend(["reply_msg", "msg", "noop", "no_op_ignore", "python", "sql", "scrape", "deepsearch", "voice", "video"])
+            tags_pattern = "|".join(re.escape(t) for t in sorted(list(set(known_tags)), key=len, reverse=True))
+            tag_strip_regex = re.compile(f'</?(?:{tags_pattern})\\b[^>]*>', re.IGNORECASE)
+            
+            clean_text = tag_strip_regex.sub("", clean_text)
             final_text = clean_text.strip()
             logger.info(f"parse_execute_and_strip_tags (no blocks): Cleaned output: '{final_text[:60]}...'")
             return final_text
@@ -419,10 +422,12 @@ class AIResponseExecutor:
             last_idx = end
         clean_parts.append(cleaned_text[last_idx:])
         final_stripped = "".join(clean_parts).strip()
-        final_stripped = re.compile(
-            r'</?(?:reply|reply_msg|msg|react|attach|edit|delete|pin|unpin|mute|unmute|kick|ban|unban|search|mediasearch|draw|noop|no_op_ignore|tool|seq|par|bg|python|sql|scrape|voice|video)\b[^>]*>',
-            re.IGNORECASE
-        ).sub("", final_stripped)
+        from registry import tag_block_registry
+        known_tags = [t.name for t in tag_block_registry.get_all()]
+        known_tags.extend(["reply_msg", "msg", "noop", "no_op_ignore", "python", "sql", "scrape", "deepsearch", "voice", "video"])
+        tags_pattern = "|".join(re.escape(t) for t in sorted(list(set(known_tags)), key=len, reverse=True))
+        tag_strip_regex = re.compile(f'</?(?:{tags_pattern})\\b[^>]*>', re.IGNORECASE)
+        final_stripped = tag_strip_regex.sub("", final_stripped)
         final_stripped = final_stripped.replace(r'\[', '[').replace(r'\]', ']')
         final_stripped = final_stripped.replace(r'\<', '<').replace(r'\>', '>')
         logger.info(f"parse_execute_and_strip_tags (with blocks): Cleaned output: '{final_stripped[:60]}...'")

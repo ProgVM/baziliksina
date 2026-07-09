@@ -67,6 +67,7 @@ class BaziliksinaWebServer:
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/health", self.handle_health)
         self.app.router.add_get("/ping", self.handle_ping)
+        self.app.router.add_route("*", "/site/{site_name}/{module_name:.*}", self.handle_dynamic_site_request)
 
         # 2. Private endpoints (Bearer token authorization required)
         self.app.router.add_get("/api/keys", self.api_get_keys)
@@ -103,6 +104,161 @@ class BaziliksinaWebServer:
         self.app.router.add_get("/api/system/stats", self.api_system_stats)
         self.app.router.add_get("/api/system/logs", self.api_system_logs)
         self.app.router.add_post("/api/system/restart", self.api_system_restart)
+        
+        # Dynamic Sites REST-API Endpoints
+        self.app.router.add_get("/api/sites", self.api_get_sites)
+        self.app.router.add_post("/api/sites/add", self.api_add_site)
+        self.app.router.add_get("/api/sites/details/{name}", self.api_get_site_details)
+        self.app.router.add_delete("/api/sites/delete/{name}", self.api_delete_site)
+        self.app.router.add_get("/api/sites/logs/{name}", self.api_get_site_logs)
+
+
+    @auth_required
+    async def api_get_sites(self, request):
+        """Lists all registered dynamic websites with sizes and statuses."""
+        try:
+            sites = await self.db.get_all_dynamic_sites()
+            results = []
+            now = int(time.time())
+            for s in sites:
+                name = s["name"]
+                
+                # Calculate size
+                site_dir = config.WORKSPACE_DIR / "sites" / name
+                size = 0
+                if site_dir.exists():
+                    size = sum(f.stat().st_size for f in site_dir.glob('**/*') if f.is_file())
+                
+                expires_at = s["expires_at"]
+                remaining = None
+                if expires_at:
+                    remaining = max(0, expires_at - now)
+                    
+                results.append({
+                    "name": name,
+                    "status": s["status"],
+                    "created_at": s["created_at"],
+                    "expires_at": expires_at,
+                    "expires_in_seconds": remaining,
+                    "storage_size_bytes": size
+                })
+            return web.json_response({"status": "success", "count": len(results), "sites": results})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_add_site(self, request):
+        """Registers or updates a dynamic site programmatically."""
+        try:
+            data = await request.json()
+            name = data.get("name")
+            config_dict = data.get("config")
+            modules_list = data.get("modules")
+            expires_in_seconds = data.get("expires_in_seconds")
+            
+            if not name or not config_dict:
+                return web.json_response({"status": "error", "message": "Missing 'name' or 'config' dictionary."}, status=400)
+            
+            from tools.site_tools import toolkit_sites
+            res_msg = await toolkit_sites.create_or_update_site(
+                name=name,
+                config_dict=config_dict,
+                modules_list=modules_list,
+                expires_in_seconds=expires_in_seconds
+            )
+            
+            if "Success" in res_msg:
+                return web.json_response({"status": "success", "message": res_msg})
+            else:
+                return web.json_response({"status": "error", "message": res_msg}, status=400)
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_get_site_details(self, request):
+        """Returns details, configuration, and modules of a specific site."""
+        try:
+            name = request.match_info["name"]
+            clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
+            if clean_name != name.lower():
+                return web.json_response({"status": "error", "message": "Invalid site name format."}, status=400)
+                
+            site_data = await self.db.get_dynamic_site(clean_name)
+            if not site_data:
+                return web.json_response({"status": "error", "message": f"Site '{clean_name}' not found."}, status=404)
+                
+            try:
+                site_config = json.loads(site_data["config_json"])
+                modules = json.loads(site_data["modules_json"])
+            except Exception as parse_err:
+                return web.json_response({"status": "error", "message": f"Malformed site files: {str(parse_err)}"}, status=500)
+                
+            site_dir = config.WORKSPACE_DIR / "sites" / clean_name
+            size = 0
+            if site_dir.exists():
+                size = sum(f.stat().st_size for f in site_dir.glob('**/*') if f.is_file())
+                
+            return web.json_response({
+                "status": "success",
+                "name": clean_name,
+                "site_status": site_data["status"],
+                "created_at": site_data["created_at"],
+                "expires_at": site_data["expires_at"],
+                "storage_size_bytes": size,
+                "config": site_config,
+                "modules": modules
+            })
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_delete_site(self, request):
+        """Completely deletes a dynamic site, wipes its folder and database records."""
+        try:
+            name = request.match_info["name"]
+            clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
+            if clean_name != name.lower():
+                return web.json_response({"status": "error", "message": "Invalid site name format."}, status=400)
+                
+            from tools.site_tools import toolkit_sites
+            res_msg = await toolkit_sites.delete_site(clean_name)
+            if "Success" in res_msg:
+                return web.json_response({"status": "success", "message": res_msg})
+            else:
+                return web.json_response({"status": "error", "message": res_msg}, status=404)
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_get_site_logs(self, request):
+        """Returns log entries of a specific dynamic sandboxed site."""
+        try:
+            name = request.match_info["name"]
+            clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
+            if clean_name != name.lower():
+                return web.json_response({"status": "error", "message": "Invalid site name format."}, status=400)
+                
+            site_dir = config.WORKSPACE_DIR / "sites" / clean_name
+            log_file = site_dir / "site.log"
+            if not log_file.exists():
+                return web.json_response({"status": "success", "name": clean_name, "logs_count": 0, "logs": []})
+                
+            limit = int(request.query.get("limit", 150))
+            try:
+                with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()
+                logs = [l.strip() for l in lines[-limit:] if l.strip()]
+            except Exception as io_err:
+                return web.json_response({"status": "error", "message": f"Failed to read logs: {str(io_err)}"}, status=500)
+                
+            return web.json_response({
+                "status": "success",
+                "name": clean_name,
+                "logs_count": len(logs),
+                "logs": logs
+            })
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     # =====================================================================
     # PUBLIC ENDPOINT HANDLERS
@@ -157,6 +313,248 @@ class BaziliksinaWebServer:
 
     async def handle_ping(self, request):
         return web.json_response({"ping": "pong"})
+
+    async def handle_dynamic_site_request(self, request):
+        """
+        Dynamically handles HTTP requests to created sites.
+        Supports both path prefix (/site/{site_name}/{module_name}) 
+        and custom subdomains ({site_name}.domain.com).
+        """
+        import time
+        # 1. Resolve site name
+        site_name = request.match_info.get("site_name")
+        module_name = request.match_info.get("module_name", "index")
+        
+        host_header = request.headers.get("Host", "")
+        # Check if hostname has a subdomain that is registered as a site
+        if not site_name and host_header:
+            parts = host_header.split(":")[0].split(".")
+            if len(parts) > 2:
+                possible_site = parts[0]
+                site_data = await self.db.get_dynamic_site(possible_site)
+                if site_data:
+                    site_name = possible_site
+                    module_name = request.path.lstrip("/")
+        
+        if not site_name:
+            return web.json_response({"status": "error", "message": "Site not specified."}, status=400)
+            
+        # Security sanitization to strictly prevent directory traversal inside URL request parameter
+        clean_site_name = "".join(c for c in site_name if c.isalnum() or c in ["_", "-"]).strip().lower()
+        if clean_site_name != site_name.lower():
+            return web.json_response({"status": "error", "message": "Invalid site name format."}, status=400)
+            
+        if not module_name or module_name == "/":
+            module_name = "index"
+
+        # 2. Get site from DB
+        site_data = await self.db.get_dynamic_site(clean_site_name)
+        if not site_data:
+            return web.json_response({"status": "error", "message": f"Site '{clean_site_name}' not found."}, status=404)
+            
+        if site_data.get("status") != "active":
+            return web.json_response({"status": "error", "message": f"Site '{clean_site_name}' is stopped or disabled."}, status=403)
+
+        # Check expiration
+        now = int(time.time())
+        expires_at = site_data.get("expires_at")
+        if expires_at and now > expires_at:
+            await self.db.delete_dynamic_site(clean_site_name)
+            # Remove site directory
+            import shutil
+            site_dir = config.WORKSPACE_DIR / "sites" / clean_site_name
+            if site_dir.exists():
+                shutil.rmtree(site_dir)
+            return web.json_response({"status": "error", "message": "Site has expired and was removed."}, status=410)
+
+        # Parse config and modules
+        try:
+            site_config = json.loads(site_data["config_json"])
+            modules = json.loads(site_data["modules_json"])
+        except Exception as err:
+            return web.json_response({"status": "error", "message": f"Failed to parse site configuration: {str(err)}"}, status=500)
+
+        # Resolve real client IP considering reverse proxies (Cloudflare, Nginx, etc.)
+        client_ip = request.headers.get("CF-Connecting-IP") or \
+                    request.headers.get("X-Real-IP") or \
+                    request.headers.get("X-Forwarded-For")
+        if client_ip:
+            client_ip = client_ip.split(",")[0].strip()
+        else:
+            peername = request.transport.get_extra_info('peername')
+            client_ip = peername[0] if peername else "127.0.0.1"
+
+        # Check IP ACL
+        allowed_ips = site_config.get("allowed_ips", "all")
+        if allowed_ips != "all":
+            allowed_list = [ip.strip() for ip in allowed_ips.split(",") if ip.strip()]
+            if client_ip not in allowed_list:
+                return web.json_response({"status": "error", "message": "Access denied by IP policy."}, status=403)
+
+        # Check HTTP method (with robust Whitelists & Blacklists policy!)
+        allowed_methods_raw = site_config.get("allowed_methods", config.SITE_ALLOWED_METHODS_DEFAULT)
+        blocked_methods_raw = site_config.get("blocked_methods", config.SITE_BLOCKED_METHODS_DEFAULT)
+        
+        allowed_methods = [m.strip() for m in allowed_methods_raw.split(",") if m.strip()] if isinstance(allowed_methods_raw, str) else (allowed_methods_raw or [])
+        blocked_methods = [m.strip() for m in blocked_methods_raw.split(",") if m.strip()] if isinstance(blocked_methods_raw, str) else (blocked_methods_raw or [])
+        
+        from utils import matches_filter
+        if not matches_filter(request.method, allowed_methods, blocked_methods):
+            return web.json_response({"status": "error", "message": f"Method {request.method} is blocked by site policy."}, status=405)
+
+        # Check request size
+        max_size = int(site_config.get("max_request_size", config.SITE_MAX_REQUEST_SIZE_DEFAULT))
+        if request.content_length and request.content_length > max_size:
+            return web.json_response({"status": "error", "message": "Request entity too large."}, status=413)
+
+        # Match module by path (e.g. index, api/user)
+        module_obj = None
+        module_key = module_name
+        if not module_key.endswith(".py"):
+            module_key += ".py"
+            
+        for mod in modules:
+            m_path = mod.get("path", "")
+            if m_path == module_name or m_path == module_key or m_path.replace(".py", "") == module_name:
+                module_obj = mod
+                break
+                
+        if not module_obj:
+            return web.json_response({"status": "error", "message": f"Module '{module_name}' not found on site '{clean_site_name}'."}, status=404)
+
+        # 3. Setup sandbox and execute code
+        code = module_obj.get("code", "")
+        execution_timeout = float(site_config.get("timeout", config.SITE_TIMEOUT_DEFAULT))
+        
+        # Read request parameters
+        req_params = dict(request.query)
+        req_body = ""
+        req_json = {}
+        if request.can_read_body:
+            try:
+                if "application/json" in request.content_type:
+                    req_json = await request.json()
+                    req_body = json.dumps(req_json)
+                else:
+                    req_body = await request.text()
+            except Exception:
+                pass
+
+        # Sandbox Namespace setup (with robust Whitelists & Blacklists wildcard policy!)
+        allowed_imports_raw = site_config.get("allowed_imports", config.SITE_ALLOWED_IMPORTS_DEFAULT)
+        blocked_imports_raw = site_config.get("blocked_imports", config.SITE_BLOCKED_IMPORTS_DEFAULT)
+        
+        allowed_imports = [imp.strip() for imp in allowed_imports_raw.split(",") if imp.strip()] if isinstance(allowed_imports_raw, str) else (allowed_imports_raw or [])
+        blocked_imports = [imp.strip() for imp in blocked_imports_raw.split(",") if imp.strip()] if isinstance(blocked_imports_raw, str) else (blocked_imports_raw or [])
+        
+        def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+            root_name = name.split(".")[0]
+            from utils import matches_filter
+            # 1. Enforce site-specific custom white/black lists
+            if not matches_filter(root_name, allowed_imports, blocked_imports):
+                raise ImportError(f"Security Policy Error: Import of module '{name}' is restricted for this site.")
+            # 2. Enforce global sandbox security whitelists & blacklists as an absolute fallback guard!
+            if not matches_filter(root_name, config.SANDBOX_PYTHON_WHITELIST, config.SANDBOX_PYTHON_BLACKLIST):
+                raise ImportError(f"Security Policy Error: Import of module '{name}' is blocked by server policy.")
+            return __import__(name, globals, locals, fromlist, level)
+
+        site_dir = config.WORKSPACE_DIR / "sites" / clean_site_name
+        site_dir.mkdir(parents=True, exist_ok=True)
+
+        def safe_site_open(file, mode='r', *args, **kwargs):
+            if not os.path.isabs(file):
+                file = site_dir / file
+            resolved = Path(file).resolve()
+            if not str(resolved).startswith(str(site_dir.resolve())):
+                raise PermissionError("Security Policy Error: Attempted to access a directory outside the site isolated workspace.")
+            return open(resolved, mode, *args, **kwargs)
+
+        # Custom site output printer redirecting directly to a dedicated local log file inside site isolated directory!
+        def site_print(*args):
+            log_line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] " + " ".join(str(a) for a in args) + "\\n"
+            try:
+                log_file = site_dir / "site.log"
+                if log_file.exists() and log_file.stat().st_size > 5 * 1024 * 1024:
+                    with open(log_file, "r", encoding="utf-8", errors="ignore") as lf:
+                        lines = lf.readlines()
+                    with open(log_file, "w", encoding="utf-8") as lf:
+                        lf.writelines(lines[-500:])
+                with open(log_file, "a", encoding="utf-8") as lf:
+                    lf.write(log_line)
+            except Exception:
+                pass
+            logger.info(f"[Site '{clean_site_name}' Print]: " + " ".join(str(a) for a in args))
+
+        # Pre-inject global variables
+        local_vars = {
+            "__import__": safe_import,
+            "open": safe_site_open,
+            "request": {
+                "method": request.method,
+                "headers": dict(request.headers),
+                "query": req_params,
+                "body": req_body,
+                "json": req_json,
+                "client_ip": client_ip,
+                "cookies": dict(request.cookies)
+            },
+            "print": site_print,
+            "response": {
+                "status": 200,
+                "body": "Hello from Baziliksina Dynamic Site!",
+                "headers": {"Content-Type": "text/html; charset=utf-8"}
+            }
+        }
+
+        # Inject requested globals if allowed
+        allowed_globals = site_config.get("allowed_globals", [])
+        if "db" in allowed_globals:
+            local_vars["db"] = self.db
+        if "client" in allowed_globals:
+            from sandbox import SandboxedClient
+            local_vars["client"] = SandboxedClient(self.client, site_dir)
+
+        # Add environment configurations to namespace
+        for k, v in site_config.get("env_variables", {}).items():
+            local_vars[k] = v
+
+        try:
+            indented = "\\n".join(f"    {line}" for line in code.splitlines())
+            wrapper = f"async def __run_module():\\n{indented}"
+            
+            exec(wrapper, local_vars, local_vars)
+            await asyncio.wait_for(local_vars["__run_module"](), timeout=execution_timeout)
+            
+            resp_data = local_vars.get("response", {})
+            if isinstance(resp_data, str):
+                resp_data = {"status": 200, "body": resp_data, "headers": {"Content-Type": "text/html; charset=utf-8"}}
+            elif isinstance(resp_data, dict):
+                if "body" not in resp_data:
+                    resp_data["body"] = json.dumps(resp_data)
+                    resp_data["headers"] = {"Content-Type": "application/json; charset=utf-8"}
+            else:
+                resp_data = {"status": 200, "body": str(resp_data), "headers": {"Content-Type": "text/plain; charset=utf-8"}}
+
+            status = resp_data.get("status", 200)
+            body = resp_data.get("body", "")
+            headers = dict(resp_data.get("headers", {}))
+            
+            for kh, vh in site_config.get("custom_headers", {}).items():
+                headers[kh] = vh
+
+            content_type = headers.pop("Content-Type", "text/html; charset=utf-8")
+            return web.Response(text=body, status=status, headers=headers, content_type=content_type)
+
+        except asyncio.TimeoutError:
+            timeout_msg = f"Execution timeout of {execution_timeout}s exceeded."
+            site_print(f"TIMEOUT EXCEEDED: {timeout_msg}")
+            return web.json_response({"status": "error", "message": timeout_msg}, status=504)
+        except Exception as exec_err:
+            import traceback
+            tb_str = traceback.format_exc()
+            site_print(f"EXCEPTION CRASH:\\n{tb_str}")
+            return web.json_response({"status": "error", "message": f"Module Execution Error: {str(exec_err)}"}, status=500)
+
 
     # =====================================================================
     # PRIVATE API HANDLERS (AUTHENTICATED)
