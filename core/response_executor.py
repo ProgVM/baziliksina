@@ -112,7 +112,7 @@ class AIResponseExecutor:
                     all_matches.append((match.start(), match.end(), name, data))
                     
             # 1. Universal Content Tags: <tag key="val">content</tag>
-            universal_content_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)(?:\s+([^>]*))?>(.*?)</\1>', re.IGNORECASE | re.DOTALL)
+            universal_content_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)(?:\s+((?:"[^"]*"|\'[^\']*\'|[^>])*))?>(.*?)</\1>', re.IGNORECASE | re.DOTALL)
             for match in universal_content_regex.finditer(b_content):
                 tag_name = match.group(1).lower()
                 attrs_str = match.group(2) or ""
@@ -130,7 +130,7 @@ class AIResponseExecutor:
                 all_matches.append((match.start(), match.end(), tag_name, attrs))
                 
             # 2. Universal Self-Closing Tags: <tag key="val" />
-            universal_self_closing_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)\s+([^>]*)\s*/>', re.IGNORECASE)
+            universal_self_closing_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)\s+((?:"[^"]*"|\'[^\']*\'|[^>])*)\s*/>', re.IGNORECASE)
             for match in universal_self_closing_regex.finditer(b_content):
                 tag_name = match.group(1).lower()
                 attrs_str = match.group(2) or ""
@@ -323,7 +323,7 @@ class AIResponseExecutor:
                     all_matches.append((match.start(), match.end(), name, data))
                     
             # 1. Universal Content Tags: <tag key="val">content</tag>
-            universal_content_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)(?:\s+([^>]*))?>(.*?)</\1>', re.IGNORECASE | re.DOTALL)
+            universal_content_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)(?:\s+((?:"[^"]*"|\'[^\']*\'|[^>])*))?>(.*?)</\1>', re.IGNORECASE | re.DOTALL)
             for match in universal_content_regex.finditer(b_content):
                 tag_name = match.group(1).lower()
                 attrs_str = match.group(2) or ""
@@ -341,7 +341,7 @@ class AIResponseExecutor:
                 all_matches.append((match.start(), match.end(), tag_name, attrs))
                 
             # 2. Universal Self-Closing Tags: <tag key="val" />
-            universal_self_closing_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)\s+([^>]*)\s*/>', re.IGNORECASE)
+            universal_self_closing_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)\s+((?:"[^"]*"|\'[^\']*\'|[^>])*)\s*/>', re.IGNORECASE)
             for match in universal_self_closing_regex.finditer(b_content):
                 tag_name = match.group(1).lower()
                 attrs_str = match.group(2) or ""

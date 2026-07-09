@@ -151,7 +151,7 @@ Instead of writing standard brackets, you are highly encouraged to enclose your 
 4. Edit Message: <edit id="MSG_ID">New text content</edit> (Edit your own previous message)
 5. Delete Message: <delete id="MSG_ID" /> (Delete own or someone else's message)
 6. Ignore: <noop reason="spam" continue="false" /> (Silent ignore. If continue="true", doesn't break the reasoning loop)
-7. Call Tool: <tool name="internet_search" query="pocket code" /> (Trigger any system or custom tool)
+ 7. Call Tool: <internet_search query="pocket code" /> or <tool_name key="val" /> (Trigger any system or custom tool directly using its name as the XML tag name. Avoid nesting, and write attributes cleanly inside the tag)
 
 UNIVERSAL EMBEDDED TAGS & BLOCKS RULE: The XML/HTML actions and reasoning blocks (<seq>, <par>, <bg>) are completely universal. You can embed any reaction, deletion, or tool tags directly inside any text arguments of other tools (such as file captions, list titles, or custom comment messages). The system will asynchronously execute all embedded actions, schedule their order based on container blocks, and cleanly strip the tags out before delivery to the chat.
 
