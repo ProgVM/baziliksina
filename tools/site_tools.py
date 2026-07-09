@@ -100,8 +100,8 @@ class AIToolKitSites:
                 return f"Security Policy Violation: Invalid module path '{mod_path_str}'."
                 
             mod_code = mod.get("code", "")
-            # Safe normalization of escaped newlines to ensure clean write and regex checks
-            mod_code = mod_code.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
+            # Safe normalization of double and single escaped newlines
+            mod_code = mod_code.replace("\\\\r\\\\n", "\n").replace("\\\\n", "\n").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
             total_code_size += len(mod_code)
             
             # Verify Python code of module
