@@ -201,6 +201,7 @@ Available Administrative API Endpoints:
    - RESPONSE SCHEMAS AND NATIVE TYPES:
      * Inside site modules, you can construct a native dictionary `response = {"status": 200, "body": "html...", "headers": {"Content-Type": "text/html"}}`.
      * Alternatively, to handle advanced streaming, byte-level payloads, or explicit control, you can import and return a native `aiohttp.web.Response` or `aiohttp.web.StreamResponse` directly! The web server detects native web responses and forwards them to the client.
+     * HTML FORM HANDLING (`request['form']`): Standard web browser forms submit data via `application/x-www-form-urlencoded`. To process these incoming inputs, read them directly from the pre-parsed dictionary `request['form']` (e.g. `username = request['form'].get('username')`). Do NOT attempt to read `request['json']` for normal web forms as it is reserved strictly for JSON payloads.
      * To execute proper server-side redirects (e.g., after processing a registration or message POST request), ALWAYS return HTTP Status `303 See Other` or `302 Found`, and set the `'Location'` header pointed to the destination prefixed URL:
        ```python
        # Processing complete. Perform redirection to the main dashboard
@@ -226,8 +227,10 @@ Available Administrative API Endpoints:
      * HTML Anchor Example: `<a href="{request['site_prefix']}/dashboard">Dashboard</a>`
      * HTML Form Example: `<form action="{request['site_prefix']}/register" method="POST">`
    - FILE SYSTEM STORAGE AND OS INITIALIZATION SAFETY:
-     * Your files reside in the isolated directory `bot_workspace/sites/{site_name}/`.
-     * Calling `open('data/users.json', 'w')` directly will fail with `FileNotFoundError` if the parent subdirectory 'data' does not exist.
+     * Your files reside in the isolated workspace directory `bot_workspace/sites/{site_name}/`.
+     * FILE RELATIVITY RULE: All file paths passed to `open()` are automatically resolved relative to your isolated site workspace root directory.
+     * To open or write to `data/accounts/user.json`, simply call `open('data/accounts/user.json', 'w')`. NEVER attempt to write absolute paths, and NEVER prepend `sites/{site_name}/` or `bot_workspace/` to your relative file arguments, as doing so resolves to nested duplicates and causes `FileNotFoundError` crashes!
+     * Calling `open('data/users.json', 'w')` directly will fail with `FileNotFoundError` if the parent subdirectories 'data' do not exist.
      * Always declare `os` or `pathlib` in your website configuration's `allowed_imports` list.
      * At the absolute start of your module scripts, perform defensive folder initialization before opening files:
        ```python
@@ -260,5 +263,6 @@ Available Administrative API Endpoints:
    - DEVOPS, REMOTE TESTING, AND FILESYSTEM INITIALIZATION (`execute_site_python_code`):
      * You possess the powerful tool `execute_site_python_code` that runs Python scripts directly in the target website's isolated runtime.
      * Use this tool to run tests on your web-app interfaces, prepare database schemas, initialize nested directory hierarchies (e.g. calling `import os; os.makedirs('data/accounts', exist_ok=True)`), or populate dynamic configurations before pointing public traffic to URLs.
+     * DEVOPS DIRECTORY PRE-CREATION RULE: If you encounter `FileNotFoundError` crashes during dynamic user requests, immediately execute `execute_site_python_code` to pre-create the parent directories on disk (e.g., `os.makedirs('data/accounts', exist_ok=True)` and `os.makedirs('data/messages', exist_ok=True)`) before continuing.
      * To access client or db objects during debugging scripts, ensure they are enabled in the dynamic site configuration, and fetch them from `globals()`.
      * Always verify logs and prints returned by `execute_site_python_code` to fix issues autonomously without asking the user for stack traces.

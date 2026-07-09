@@ -475,11 +475,17 @@ class BaziliksinaWebServer:
         req_params = dict(request.query)
         req_body = ""
         req_json = {}
+        req_form = {}
         if request.can_read_body:
             try:
                 if "application/json" in request.content_type:
                     req_json = await request.json()
                     req_body = json.dumps(req_json)
+                elif "application/x-www-form-urlencoded" in request.content_type:
+                    req_body = await request.text()
+                    import urllib.parse
+                    parsed = urllib.parse.parse_qs(req_body)
+                    req_form = {k: v[0] if isinstance(v, list) and v else v for k, v in parsed.items()}
                 else:
                     req_body = await request.text()
             except Exception:
@@ -547,6 +553,7 @@ class BaziliksinaWebServer:
                 "query": req_params,
                 "body": req_body,
                 "json": req_json,
+                "form": req_form,
                 "client_ip": client_ip,
                 "cookies": dict(request.cookies),
                 "site_prefix": site_prefix,
