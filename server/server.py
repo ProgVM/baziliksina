@@ -373,6 +373,11 @@ class BaziliksinaWebServer:
         if clean_site_name != site_name.lower():
             return web.json_response({"status": "error", "message": "Invalid site name format."}, status=400)
             
+        # Auto-redirect root-level access to enforce a trailing slash.
+        # This normalizes browser relative paths context inside client-side assets.
+        if request.path == f"/site/{clean_site_name}":
+            return web.HTTPPermanentRedirect(f"/site/{clean_site_name}/")
+
         if not module_name or module_name == "/":
             module_name = "index"
 
@@ -436,15 +441,24 @@ class BaziliksinaWebServer:
         if request.content_length and request.content_length > max_size:
             return web.json_response({"status": "error", "message": "Request entity too large."}, status=413)
 
-        # Match module by path (e.g. index, api/user)
+        # Match module with maximum route flexibility (with or without .py extensions and leading/trailing slashes)
         module_obj = None
-        module_key = module_name
-        if not module_key.endswith(".py"):
-            module_key += ".py"
-            
+        req_clean = module_name.strip().lower().replace("\\", "/").lstrip("/").rstrip("/")
+        if not req_clean:
+            req_clean = "index"
+
+        req_with_py = req_clean if req_clean.endswith(".py") else f"{req_clean}.py"
+        req_no_py = req_clean[:-3] if req_clean.endswith(".py") else req_clean
+
         for mod in modules:
-            m_path = mod.get("path", "")
-            if m_path == module_name or m_path == module_key or m_path.replace(".py", "") == module_name:
+            m_path = mod.get("path", "").strip().lower().replace("\\", "/").lstrip("/").rstrip("/")
+            if not m_path:
+                continue
+            m_with_py = m_path if m_path.endswith(".py") else f"{m_path}.py"
+            m_no_py = m_path[:-3] if m_path.endswith(".py") else m_path
+
+            # Match via absolute naming, appended file extensions, or clean URL routing
+            if m_path == req_clean or m_with_py == req_with_py or m_no_py == req_no_py:
                 module_obj = mod
                 break
                 
@@ -470,6 +484,10 @@ class BaziliksinaWebServer:
                     req_body = await request.text()
             except Exception:
                 pass
+
+        # Pre-compute path contexts for portable routing
+        site_prefix = f"/site/{clean_site_name}"
+        base_url = f"{request.scheme}://{request.host}{site_prefix}"
 
         # Sandbox Namespace setup (with robust Whitelists & Blacklists wildcard policy!)
         allowed_imports_raw = site_config.get("allowed_imports", config.SITE_ALLOWED_IMPORTS_DEFAULT)
@@ -502,7 +520,7 @@ class BaziliksinaWebServer:
 
         # Custom site output printer redirecting directly to a dedicated local log file inside site isolated directory!
         def site_print(*args):
-            log_line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] " + " ".join(str(a) for a in args) + "\\n"
+            log_line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] " + " ".join(str(a) for a in args) + "\n"
             try:
                 log_file = site_dir / "site.log"
                 if log_file.exists() and log_file.stat().st_size > 5 * 1024 * 1024:
@@ -527,7 +545,10 @@ class BaziliksinaWebServer:
                 "body": req_body,
                 "json": req_json,
                 "client_ip": client_ip,
-                "cookies": dict(request.cookies)
+                "cookies": dict(request.cookies),
+                "site_prefix": site_prefix,
+                "base_url": base_url,
+                "module_path": module_name
             },
             "print": site_print,
             "response": {
@@ -545,14 +566,13 @@ class BaziliksinaWebServer:
             from sandbox import SandboxedClient
             local_vars["client"] = SandboxedClient(self.client, site_dir)
 
-        # Add environment configurations to namespace
         for k, v in site_config.get("env_variables", {}).items():
             local_vars[k] = v
 
         try:
             import ast
             import types
-            # Compile code directly as a module with top-level await support (resolves local scope trap)
+            # Compile code as a module with top-level await support to prevent local function scope trap
             compiled_code = compile(code, f"<site_{clean_site_name}>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
             
             async def run_compiled():
@@ -560,6 +580,7 @@ class BaziliksinaWebServer:
                 if isinstance(res, types.CoroutineType):
                     await res
             await asyncio.wait_for(run_compiled(), timeout=execution_timeout)
+            
             # Smart entrypoint resolver: detect and execute handler functions if defined
             entrypoint = None
             for name in ["handle", "handler", "main", "index", "get", "post"]:
@@ -613,7 +634,7 @@ class BaziliksinaWebServer:
         except Exception as exec_err:
             import traceback
             tb_str = traceback.format_exc()
-            site_print(f"EXCEPTION CRASH:\\n{tb_str}")
+            site_print(f"EXCEPTION CRASH:\n{tb_str}")
             return web.json_response({"status": "error", "message": f"Module Execution Error: {str(exec_err)}"}, status=500)
 
 
