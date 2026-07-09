@@ -268,6 +268,12 @@ class GeminiManager:
                         await self.key_manager.handle_error_exhausted(str(e))
                         gemini_client = await self.key_manager.rotate_key_async(str(e))
                         continue
+                    elif e.code == 401 or "unauthenticated" in str(e).lower() or "credentials" in str(e).lower():
+                        active_key = self.key_manager.keys[self.key_manager.current_key_index]
+                        logger.error(f"Gemini API 401 Invalid Credentials on key: '{active_key[:10]}...'. Rotating pools...")
+                        await self.key_manager.mark_key_exhausted(str(e))
+                        gemini_client = await self.key_manager.rotate_key_async(str(e))
+                        continue
                     elif e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
                         logger.warning("Gemini API 403 error caught during generation. Healing context...")
                         file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)

@@ -111,65 +111,76 @@ class GeminiKeyManager:
         recovery_time = GEMINI_PRO_RECOVERY_TIME if is_pro else GEMINI_FREE_RECOVERY_TIME
 
         now = int(time.time())
-        active_key = None
         
-        # Looking for the first working active key taking into account the dynamic cooldown
-        for i in range(len(self.keys)):
-            idx = (self.current_key_index + i) % len(self.keys)
-            key = self.keys[idx]
-            meta = await self.db.get_key_meta(key) if self.db else None
-            
-            if meta and meta.get("status") == "exhausted":
-                ex_at = meta.get("exhausted_at") or 0
+        # Traverse through key pools to find and validate the first authenticated key
+        for attempt in range(len(self.keys)):
+            active_key = None
+            for i in range(len(self.keys)):
+                idx = (self.current_key_index + i) % len(self.keys)
+                key = self.keys[idx]
+                meta = await self.db.get_key_meta(key) if self.db else None
                 
-                # Retrieve dynamic cooldown if saved in raw_info_json
-                cooldown = recovery_time
-                raw_info_raw = meta.get("raw_info_json")
-                if raw_info_raw:
-                    try:
-                        raw_info = json.loads(raw_info_raw)
-                        if raw_info.get("cooldown_duration"):
-                            cooldown = int(raw_info["cooldown_duration"])
-                    except Exception:
-                        pass
-                
-                if (now - ex_at) >= cooldown:
-                    logger.info(f"Gemini key limits {key[:10]}... updated (cooldown of {cooldown}s expired). Resetting status to active.")
-                    await self.db.save_key_meta(key, "gemini", status="active", exhausted_at=None)
+                if meta and meta.get("status") == "exhausted":
+                    ex_at = meta.get("exhausted_at") or 0
+                    cooldown = recovery_time
+                    raw_info_raw = meta.get("raw_info_json")
+                    if raw_info_raw:
+                        try:
+                            raw_info = json.loads(raw_info_raw)
+                            if raw_info.get("cooldown_duration"):
+                                cooldown = int(raw_info["cooldown_duration"])
+                        except Exception:
+                            pass
+                    
+                    if (now - ex_at) >= cooldown:
+                        logger.info(f"Gemini key limits {key[:10]}... updated (cooldown of {cooldown}s expired). Resetting status to active.")
+                        await self.db.save_key_meta(key, "gemini", status="active", exhausted_at=None)
+                        active_key = key
+                        self.current_key_index = idx
+                        break
+                else:
                     active_key = key
                     self.current_key_index = idx
                     break
-            else:
-                active_key = key
-                self.current_key_index = idx
-                break
-                
-        if not active_key:
-            logger.warning("All Gemini keys are marked as exhausted. Fallback to the first key.")
-            active_key = self.keys[0]
-            self.current_key_index = 0
+                    
+            if not active_key:
+                active_key = self.keys[0]
+                self.current_key_index = 0
 
-        self._client = genai.Client(api_key=active_key)
-        if self.db:
-            await self.db.save_key_meta(active_key, "gemini", last_used_at=now)
-
-        current_model_str = self.get_model()
-        try:
-            model_info = self._client.models.get(model=current_model_str)
-            if INPUT_TOKEN_LIMIT is None:
-                self.input_token_limit = getattr(model_info, 'input_token_limit', 1000000)
-            if OUTPUT_LENGTH is None:
-                self.output_token_limit = getattr(model_info, 'output_token_limit', 8192)
-            
+            self._client = genai.Client(api_key=active_key)
             if self.db:
-                raw_info = {"input_limit": self.input_token_limit, "output_limit": self.output_token_limit}
-                await self.db.save_key_meta(active_key, "gemini", raw_info_json=json.dumps(raw_info))
-        except Exception as e:
-            logger.warning(f"Failed to get metadata for model '{current_model_str}': {str(e)}")
-            if self.input_token_limit is None:
-                self.input_token_limit = 1000000
-            if self.output_token_limit is None:
-                self.output_token_limit = 8192
+                await self.db.save_key_meta(active_key, "gemini", last_used_at=now)
+
+            current_model_str = self.get_model()
+            try:
+                # Query model metadata to actively validate the key's credentials
+                model_info = self._client.models.get(model=current_model_str)
+                if INPUT_TOKEN_LIMIT is None:
+                    self.input_token_limit = getattr(model_info, 'input_token_limit', 1000000)
+                if OUTPUT_LENGTH is None:
+                    self.output_token_limit = getattr(model_info, 'output_token_limit', 8192)
+                
+                if self.db:
+                    raw_info = {"input_limit": self.input_token_limit, "output_limit": self.output_token_limit}
+                    await self.db.save_key_meta(active_key, "gemini", raw_info_json=json.dumps(raw_info))
+                
+                # Connection validated successfully. Exit the verification loop.
+                break
+            except Exception as e:
+                e_str = str(e).lower()
+                if "unauthenticated" in e_str or "credentials" in e_str or "401" in e_str or "api_key_invalid" in e_str:
+                    logger.error(f"Gemini API Key '{active_key[:10]}...' is INVALID (401). Disabling permanently and rotating...")
+                    if self.db:
+                        dead_info = {"error": f"Invalid Key (401): {str(e)}", "cooldown_duration": int(config.GEMINI_DEAD_KEY_COOLDOWN)}
+                        await self.db.save_key_meta(active_key, "gemini", status="exhausted", exhausted_at=now, raw_info_json=json.dumps(dead_info))
+                    self.current_key_index = (self.current_key_index + 1) % len(self.keys)
+                else:
+                    logger.warning(f"Transient error validating key '{active_key[:10]}...': {str(e)}")
+                    if self.input_token_limit is None:
+                        self.input_token_limit = 1000000
+                    if self.output_token_limit is None:
+                        self.output_token_limit = 8192
+                    break
 
     def get_client(self):
         return self._client

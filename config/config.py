@@ -407,6 +407,7 @@ _PARAMS = {
     "API_ERROR_SLEEP": DynamicParameter("API_ERROR_SLEEP", 2.0, float, min_val=0.1),
     "GEMINI_FREE_RECOVERY_TIME": DynamicParameter("GEMINI_FREE_RECOVERY_TIME", 18000, int, min_val=1),
     "GEMINI_PRO_RECOVERY_TIME": DynamicParameter("GEMINI_PRO_RECOVERY_TIME", 86400, int, min_val=1),
+    "GEMINI_DEAD_KEY_COOLDOWN": DynamicParameter("GEMINI_DEAD_KEY_COOLDOWN", 31536000, int, min_val=1),
     "POLLINATIONS_KEY_RECOVERY_TIME": DynamicParameter("POLLINATIONS_KEY_RECOVERY_TIME", 3600, int, min_val=1),
     "KEY_INFO_TIMEOUT": DynamicParameter("KEY_INFO_TIMEOUT", 10.0, float, min_val=0.1),
     "PROFILE_UPDATE_INTERVAL": DynamicParameter("PROFILE_UPDATE_INTERVAL", 3600, int, min_val=1),
