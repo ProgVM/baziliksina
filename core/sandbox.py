@@ -157,14 +157,15 @@ class AsyncSandbox:
         for tool in registry.get_all_tools():
             local_vars[tool.name] = tool.callable
 
-        # Wrap the code in an internal asynchronous function
-        indented_code = "\n".join(f"    {line}" for line in code_string.splitlines())
-        wrapper_code = f"async def __run_sandbox_code():\n{indented_code}"
-
         try:
-            # Isolated compilation and executing sequence (Crash-Recovery VM State)
-            exec(wrapper_code, local_vars, local_vars)
-            await local_vars["__run_sandbox_code"]()
+            import ast
+            import types
+            # Compile code directly as a module with top-level await support (resolves local scope trap)
+            compiled_sandbox = compile(code_string, "<sandbox_vm>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+            
+            res_val = eval(compiled_sandbox, local_vars, local_vars)
+            if isinstance(res_val, types.CoroutineType):
+                await res_val
             
             res = local_vars.get("result")
             if res is None:

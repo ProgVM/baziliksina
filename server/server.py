@@ -550,12 +550,16 @@ class BaziliksinaWebServer:
             local_vars[k] = v
 
         try:
-            indented = "\n".join(f"    {line}" for line in code.splitlines())
-            wrapper = f"async def __run_module():\n{indented}"
+            import ast
+            import types
+            # Compile code directly as a module with top-level await support (resolves local scope trap)
+            compiled_code = compile(code, f"<site_{clean_site_name}>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
             
-            exec(wrapper, local_vars, local_vars)
-            await asyncio.wait_for(local_vars["__run_module"](), timeout=execution_timeout)
-            
+            async def run_compiled():
+                res = eval(compiled_code, local_vars, local_vars)
+                if isinstance(res, types.CoroutineType):
+                    await res
+            await asyncio.wait_for(run_compiled(), timeout=execution_timeout)
             # Smart entrypoint resolver: detect and execute handler functions if defined
             entrypoint = None
             for name in ["handle", "handler", "main", "index", "get", "post"]:

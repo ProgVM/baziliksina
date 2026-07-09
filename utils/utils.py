@@ -153,7 +153,7 @@ def safe_telegram_html(text: str) -> str:
         'details', 'summary', 'sub', 'sup', 'mark', 'time'
     ]
     
-    tag_pattern = re.compile(r'<(/?)(\\w+)([^>]*)>')
+    tag_pattern = re.compile(r'<(/?)(\w+)([^>]*)>')
     
     parts = []
     last_idx = 0

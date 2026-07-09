@@ -60,10 +60,11 @@ def parse_gemini_error_cooldown(ex_str: str, default_cooldown: int = 18000) -> i
                         pass
                 if "@type" in detail and "QuotaFailure" in detail["@type"]:
                     violations = detail.get("violations", [])
-                    if "PerDay" in str(v.get("quotaId", "")):
-                        cooldown = get_seconds_until_pacific_midnight()
-                        logger.warning(f"Gemini Daily limit exceeded. Applying Pacific midnight cooldown: {cooldown}s.")
-                        return cooldown
+                    for v in violations:
+                        if "PerDay" in str(v.get("quotaId", "")):
+                            cooldown = get_seconds_until_pacific_midnight()
+                            logger.warning(f"Gemini Daily limit exceeded. Applying Pacific midnight cooldown: {cooldown}s.")
+                            return cooldown
     except Exception:
         return default_cooldown if 'default_cooldown' in locals() else 18000
         pass
@@ -201,13 +202,10 @@ class GeminiKeyManager:
             raw_info = {"cooldown_duration": cooldown_duration} if cooldown_duration else {}
             await self.db.save_key_meta(active_key, "gemini", status="exhausted", exhausted_at=int(time.time()), raw_info_json=json.dumps(raw_info))
         
+        if len(self.keys) > 1:
+            self.current_key_index = (self.current_key_index + 1) % len(self.keys)
         if len(self.models) > 1:
             self.current_model_index = (self.current_model_index + 1) % len(self.models)
-            if self.current_model_index == 0 and len(self.keys) > 1:
-                self.current_key_index = (self.current_key_index + 1) % len(self.keys)
-        else:
-            if len(self.keys) > 1:
-                self.current_key_index = (self.current_key_index + 1) % len(self.keys)
 
         if self.db:
             try:

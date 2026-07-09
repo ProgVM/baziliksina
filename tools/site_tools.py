@@ -120,14 +120,14 @@ class AIToolKitSites:
         total_code_size = 0
         for mod in modules_list:
             mod_path_str = mod.get("path", "").strip()
-            # Clean and prevent directory traversal
-            clean_mod_path = Path(mod_path_str).relative_to(Path(mod_path_str).anchor)
-            if ".." in str(clean_mod_path) or clean_mod_path.is_absolute():
+            # Perform absolute physical path resolution and prefix checking to strictly prevent directory traversal
+            resolved_mod_path = (site_dir / mod_path_str).resolve()
+            if not str(resolved_mod_path).startswith(str(site_dir.resolve())):
                 if site_dir.exists():
                     shutil.rmtree(site_dir)
                 if has_backup and backup_dir.exists():
                     shutil.move(str(backup_dir), str(site_dir))
-                return f"Security Policy Violation: Invalid module path '{mod_path_str}'."
+                return f"Security Policy Violation: Invalid module path '{mod_path_str}' attempts to escape site boundary."
                 
             mod_code = mod.get("code", "")
             # Safe normalization of double and single escaped newlines
@@ -143,7 +143,7 @@ class AIToolKitSites:
                 return f"Security Policy Violation: Module '{mod_path_str}' code contains terms blocked by sandbox policy."
 
             # Save file physically to sandbox
-            out_file = site_dir / clean_mod_path
+            out_file = resolved_mod_path
             out_file.parent.mkdir(parents=True, exist_ok=True)
             
             with open(out_file, "w", encoding="utf-8") as f:
@@ -182,11 +182,15 @@ class AIToolKitSites:
                 }
             }
             try:
-                indented_test = "\n".join(f"    {line}" for line in test_code.splitlines())
-                wrapper_test = f"async def __run_module():\n{indented_test}"
-                exec(wrapper_test, mock_local_vars, mock_local_vars)
-                await asyncio.wait_for(mock_local_vars["__run_module"](), timeout=2.0)
-                
+                import ast
+                import types
+                # Compile index module with top-level await during Automated DevOps dry-run validation
+                compiled_test = compile(test_code, "<test_site>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+                async def run_test():
+                    res = eval(compiled_test, mock_local_vars, mock_local_vars)
+                    if isinstance(res, types.CoroutineType):
+                        await res
+                await asyncio.wait_for(run_test(), timeout=2.0)
                 # Dry-run execution of entrypoint handlers inside site validation step
                 entrypoint = None
                 for name in ["handle", "handler", "main", "index", "get", "post"]:
