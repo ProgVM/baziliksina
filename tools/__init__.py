@@ -94,7 +94,8 @@ ROOT_TOOL_CATEGORIES = {
     "list_sites": "Category 8: Dynamic Sites Management",
     "get_site_details": "Category 8: Dynamic Sites Management",
     "delete_site": "Category 8: Dynamic Sites Management",
-    "get_site_logs": "Category 8: Dynamic Sites Management"
+    "get_site_logs": "Category 8: Dynamic Sites Management",
+    "run_site_command": "Category 8: Dynamic Sites Management"
 }
 
 class ModularToolKit:

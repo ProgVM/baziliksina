@@ -16,6 +16,21 @@ logger = logging.getLogger("Tools.Sites")
 
 # Default values are retrieved dynamically from the central config module
 
+def check_site_command_allowed(command: str) -> bool:
+    import re
+    from utils import matches_filter
+    if config.SITE_COMMAND_REGEX_BLACKLIST:
+        pattern_black = re.compile(config.SITE_COMMAND_REGEX_BLACKLIST, re.IGNORECASE)
+        if pattern_black.search(command):
+            return False
+    if config.SITE_COMMAND_REGEX_WHITELIST:
+        pattern_white = re.compile(config.SITE_COMMAND_REGEX_WHITELIST, re.IGNORECASE)
+        if not pattern_white.search(command):
+            return False
+    whitelist = [w.strip() for w in config.SITE_COMMAND_WHITELIST.split(",") if w.strip()] if isinstance(config.SITE_COMMAND_WHITELIST, str) else config.SITE_COMMAND_WHITELIST
+    blacklist = [b.strip() for b in config.SITE_COMMAND_BLACKLIST.split(",") if b.strip()] if isinstance(config.SITE_COMMAND_BLACKLIST, str) else config.SITE_COMMAND_BLACKLIST
+    return matches_filter(command, whitelist, blacklist)
+
 class AIToolKitSites:
     async def create_or_update_site(self, name: str, config_dict: Dict[str, Any], modules_list: List[Dict[str, Any]] = None, expires_in_seconds: int = None, **kwargs) -> str:
         """
@@ -108,6 +123,10 @@ class AIToolKitSites:
             # Clean and prevent directory traversal
             clean_mod_path = Path(mod_path_str).relative_to(Path(mod_path_str).anchor)
             if ".." in str(clean_mod_path) or clean_mod_path.is_absolute():
+                if site_dir.exists():
+                    shutil.rmtree(site_dir)
+                if has_backup and backup_dir.exists():
+                    shutil.move(str(backup_dir), str(site_dir))
                 return f"Security Policy Violation: Invalid module path '{mod_path_str}'."
                 
             mod_code = mod.get("code", "")
@@ -117,6 +136,10 @@ class AIToolKitSites:
             
             # Verify Python code of module
             if not matches_filter(mod_code, config.SANDBOX_PYTHON_WHITELIST, config.SANDBOX_PYTHON_BLACKLIST):
+                if site_dir.exists():
+                    shutil.rmtree(site_dir)
+                if has_backup and backup_dir.exists():
+                    shutil.move(str(backup_dir), str(site_dir))
                 return f"Security Policy Violation: Module '{mod_path_str}' code contains terms blocked by sandbox policy."
 
             # Save file physically to sandbox
@@ -124,61 +147,61 @@ class AIToolKitSites:
             out_file.parent.mkdir(parents=True, exist_ok=True)
             
             with open(out_file, "w", encoding="utf-8") as f:
+                f.write(mod_code)
 
-                # --- AUTOMATED DEVOPS DRY-RUN VALIDATION ---
-                test_module = None
-                for mod in modules_list:
-                    m_path = mod.get("path", "")
-                    if m_path in ["index.py", "index"]:
-                        test_module = mod
-                        break
-                if not test_module and modules_list:
-                    test_module = modules_list[0]
-                    
-                if test_module:
-                    test_code = test_module.get("code", "")
-                    test_code = test_code.replace("\\\\r\\\\n", "\n").replace("\\\\n", "\n").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
-                    mock_local_vars = {
-                        "__import__": __import__,
-                        "open": lambda *a, **k: None,
-                        "request": {
-                            "method": "GET",
-                            "headers": {},
-                            "query": {},
-                            "body": "",
-                            "json": {},
-                            "client_ip": "127.0.0.1",
-                            "cookies": {}
-                        },
-                        "print": lambda *a: None,
-                        "response": {
-                            "status": 200,
-                            "body": "",
-                            "headers": {}
-                        }
-                    }
-                    try:
-                        indented_test = "\n".join(f"    {line}" for line in test_code.splitlines())
-                        wrapper_test = f"async def __run_module():\n{indented_test}"
-                        exec(wrapper_test, mock_local_vars, mock_local_vars)
-                        await asyncio.wait_for(mock_local_vars["__run_module"](), timeout=2.0)
-                    except Exception as test_err:
-                        # Clean up the broken files
-                        if site_dir.exists():
-                            shutil.rmtree(site_dir)
-                        # Rollback: Restore previous stable site directory if backup exists
-                        if has_backup and backup_dir.exists():
-                            shutil.move(str(backup_dir), str(site_dir))
-                        import traceback
-                        return f"Error: Site code dry-run failed with a runtime error! Transaction rolled back to the previous stable state.\nTraceback error details:\n{traceback.format_exc()}"
-            return f"Error: Site code dry-run failed with a runtime error! Transaction rolled back to the previous stable state.\nTraceback error details:\n{traceback.format_exc()}"
+        # --- AUTOMATED DEVOPS DRY-RUN VALIDATION ---
+        test_module = None
+        for mod in modules_list:
+            m_path = mod.get("path", "")
+            if m_path in ["index.py", "index"]:
+                test_module = mod
+                break
+        if not test_module and modules_list:
+            test_module = modules_list[0]
+            
+        if test_module:
+            test_code = test_module.get("code", "")
+            test_code = test_code.replace("\\\\r\\\\n", "\n").replace("\\\\n", "\n").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
+            mock_local_vars = {
+                "__import__": __import__,
+                "open": lambda *a, **k: None,
+                "request": {
+                    "method": "GET",
+                    "headers": {},
+                    "query": {},
+                    "body": "",
+                    "json": {},
+                    "client_ip": "127.0.0.1",
+                    "cookies": {}
+                },
+                "print": lambda *a: None,
+                "response": {
+                    "status": 200,
+                    "body": "",
+                    "headers": {}
+                }
+            }
+            try:
+                indented_test = "\n".join(f"    {line}" for line in test_code.splitlines())
+                wrapper_test = f"async def __run_module():\n{indented_test}"
+                exec(wrapper_test, mock_local_vars, mock_local_vars)
+                await asyncio.wait_for(mock_local_vars["__run_module"](), timeout=2.0)
+            except Exception as test_err:
+                # Clean up the broken files
+                if site_dir.exists():
+                    shutil.rmtree(site_dir)
+                # Rollback: Restore previous stable site directory if backup exists
+                if has_backup and backup_dir.exists():
+                    shutil.move(str(backup_dir), str(site_dir))
+                import traceback
+                return f"Error: Site code dry-run failed with a runtime error! Transaction rolled back to the previous stable state.\nTraceback error details:\n{traceback.format_exc()}"
 
         # Clean up backup directory upon successful validation
         if has_backup and backup_dir.exists():
             try:
-            shutil.rmtree(backup_dir)
+                shutil.rmtree(backup_dir)
             except Exception as clean_err:
-            logger.warning(f"Failed to remove backup folder '{backup_dir}': {str(clean_err)}")
+                logger.warning(f"Failed to remove backup folder '{backup_dir}': {str(clean_err)}")
 
         # Apply disk limits check
         # Calculate size of site directory
@@ -186,6 +209,8 @@ class AIToolKitSites:
         if total_size > storage_limit:
             # Cleanup and revert
             shutil.rmtree(site_dir)
+            if has_backup and backup_dir.exists():
+                shutil.move(str(backup_dir), str(site_dir))
             return f"Error: Site total directory size ({total_size} bytes) exceeds the specified storage limit ({storage_limit} bytes)."
 
         # Determine expiration
@@ -346,6 +371,32 @@ class AIToolKitSites:
             return f"=== Recent Logs for Dynamic Site '{clean_name}' ===\n{logs}"
         except Exception as e:
             return f"Error reading logs for site '{clean_name}': {str(e)}"
+
+    async def run_site_command(self, name: str, command: str, **kwargs) -> str:
+        """
+        Executes a shell command in the context of the site isolated folder directory.
+        
+        Args:
+            name: The dynamic site identifier.
+            command: The shell command to run (e.g., 'pip install colored' or 'ls -la').
+        """
+        if not tools.db:
+            return "Error: Database is not initialized."
+        clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
+        site_dir = config.WORKSPACE_DIR / "sites" / clean_name
+        if not site_dir.exists():
+            return f"Error: Site '{clean_name}' does not exist on the server."
+        if not check_site_command_allowed(command):
+            return "Security Policy Violation: This shell command is blocked by the site execution policy."
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command, cwd=str(site_dir), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            res = stdout.decode('utf-8', errors='ignore') + stderr.decode('utf-8', errors='ignore')
+            return res[:config.SANDBOX_COMMAND_CHAR_LIMIT] if len(res) > config.SANDBOX_COMMAND_CHAR_LIMIT else res if res else "Command finished with no output."
+        except Exception as e:
+            return f"Error executing command: {str(e)}"
 
     async def delete_site(self, name: str, **kwargs) -> str:
         """Completely deletes a dynamic website, its files, and its DB records from the server."""

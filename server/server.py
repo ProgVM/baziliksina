@@ -112,6 +112,7 @@ class BaziliksinaWebServer:
         self.app.router.add_get("/api/sites/details/{name}", self.api_get_site_details)
         self.app.router.add_delete("/api/sites/delete/{name}", self.api_delete_site)
         self.app.router.add_get("/api/sites/logs/{name}", self.api_get_site_logs)
+        self.app.router.add_post("/api/sites/command/{name}", self.api_run_site_command)
 
 
     @auth_required
@@ -258,6 +259,33 @@ class BaziliksinaWebServer:
                 "logs_count": len(logs),
                 "logs": logs
             })
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_run_site_command(self, request):
+        """Runs a shell command inside a dynamic website isolated directory."""
+        try:
+            name = request.match_info["name"]
+            clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
+            if clean_name != name.lower():
+                return web.json_response({"status": "error", "message": "Invalid site name format."}, status=400)
+            site_dir = config.WORKSPACE_DIR / "sites" / clean_name
+            if not site_dir.exists():
+                return web.json_response({"status": "error", "message": f"Site '{clean_name}' does not exist."}, status=404)
+            data = await request.json()
+            command = data.get("command")
+            if not command:
+                return web.json_response({"status": "error", "message": "Missing 'command' parameter."}, status=400)
+            from tools.site_tools import check_site_command_allowed
+            if not check_site_command_allowed(command):
+                return web.json_response({"status": "error", "message": "Command blocked by security policy."}, status=403)
+            proc = await asyncio.create_subprocess_shell(
+                command, cwd=str(site_dir), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await proc.communicate()
+            res = stdout.decode('utf-8', errors='ignore') + stderr.decode('utf-8', errors='ignore')
+            return web.json_response({"status": "success", "output": res})
         except Exception as e:
             return web.json_response({"status": "error", "message": str(e)}, status=500)
 

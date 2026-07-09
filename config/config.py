@@ -477,7 +477,15 @@ _PARAMS = {
     "SITE_STORAGE_LIMIT_MAX": DynamicParameter("SITE_STORAGE_LIMIT_MAX", 52428800, int, min_val=1),
     "SITE_TIMEOUT_MAX": DynamicParameter("SITE_TIMEOUT_MAX", 30.0, float, min_val=0.1),
     "SITE_BLOCKED_IMPORTS_DEFAULT": DynamicParameter("SITE_BLOCKED_IMPORTS_DEFAULT", "os,sys,subprocess,shutil,builtins", str),
-    "SITE_BLOCKED_METHODS_DEFAULT": DynamicParameter("SITE_BLOCKED_METHODS_DEFAULT", "", str)
+    "SITE_BLOCKED_METHODS_DEFAULT": DynamicParameter("SITE_BLOCKED_METHODS_DEFAULT", "", str),
+    "SANDBOX_COMMAND_REGEX_BLACKLIST": DynamicParameter("SANDBOX_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|tools\.py|sandbox\.py|utils\.py|downloader\.py)", str),
+    "SANDBOX_COMMAND_REGEX_WHITELIST": DynamicParameter("SANDBOX_COMMAND_REGEX_WHITELIST", "", str),
+    "SITE_COMMAND_WHITELIST": DynamicParameter("SITE_COMMAND_WHITELIST", "all", str),
+    "SITE_COMMAND_BLACKLIST": DynamicParameter("SITE_COMMAND_BLACKLIST", "sudo,reboot,shutdown,passwd,chown,chmod", str),
+    "SITE_COMMAND_REGEX_BLACKLIST": DynamicParameter("SITE_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|tools\.py|sandbox\.py|utils\.py|downloader\.py)", str),
+    "SITE_COMMAND_REGEX_WHITELIST": DynamicParameter("SITE_COMMAND_REGEX_WHITELIST", "", str),
+    "SITE_PYTHON_WHITELIST": DynamicParameter("SITE_PYTHON_WHITELIST", "all", str),
+    "SITE_PYTHON_BLACKLIST": DynamicParameter("SITE_PYTHON_BLACKLIST", "os.system,os.popen,subprocess,shutil.rmtree,eval,exec", str)
 }
 
 def __getattr__(name: str):

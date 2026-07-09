@@ -20,11 +20,6 @@ import tools
 
 logger = logging.getLogger("Tools.System")
 
-FORBIDDEN_SHELL_REGEX = re.compile(
-    r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|tools\.py|sandbox\.py|utils\.py|downloader\.py)", 
-    re.IGNORECASE
-)
-
 async def rotate_tor_ip() -> bool:
     """Asynchronously connects to local Tor and sends a NEWNYM signal."""
     try:
@@ -162,10 +157,18 @@ class AIToolKitSystem:
 
     async def run_sandboxed_command(self, command: str, **kwargs) -> str:
         """Runs a standard system bash/shell command securely in the sandbox."""
-        if FORBIDDEN_SHELL_REGEX.search(command):
-            return "Security error: This shell command contains blocked terms or attempts to access restricted files."
+        if config.SANDBOX_COMMAND_REGEX_BLACKLIST:
+            pattern_black = re.compile(config.SANDBOX_COMMAND_REGEX_BLACKLIST, re.IGNORECASE)
+            if pattern_black.search(command):
+                return "Security error: This shell command contains blocked terms or attempts to access restricted files."
+        if config.SANDBOX_COMMAND_REGEX_WHITELIST:
+            pattern_white = re.compile(config.SANDBOX_COMMAND_REGEX_WHITELIST, re.IGNORECASE)
+            if not pattern_white.search(command):
+                return "Security error: This shell command is blocked by whitelist pattern policy."
         from utils import matches_filter
-        if not matches_filter(command, config.SANDBOX_COMMAND_WHITELIST, config.SANDBOX_COMMAND_BLACKLIST):
+        whitelist = [w.strip() for w in config.SANDBOX_COMMAND_WHITELIST.split(",") if w.strip()] if isinstance(config.SANDBOX_COMMAND_WHITELIST, str) else config.SANDBOX_COMMAND_WHITELIST
+        blacklist = [b.strip() for b in config.SANDBOX_COMMAND_BLACKLIST.split(",") if b.strip()] if isinstance(config.SANDBOX_COMMAND_BLACKLIST, str) else config.SANDBOX_COMMAND_BLACKLIST
+        if not matches_filter(command, whitelist, blacklist):
             return "Security error: This shell command contains blocked terms."
         try:
             proc = await asyncio.create_subprocess_shell(
