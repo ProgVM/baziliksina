@@ -1,10 +1,16 @@
 [edit_notification]
 [System notification: Sender {sender_info} edited message {msg_id}]
 --- PREVIOUS STATE ---
-Text: '{prev_text}'
+Text:
+"""
+{prev_text}
+"""
 Media: {prev_media}
 --- NEW STATE ---
-Text with metadata: '{reply_meta}{new_text}'
+Text with metadata:
+"""
+{reply_meta}{new_text}
+"""
 {buttons_summary}
 
 [delete_notification]
