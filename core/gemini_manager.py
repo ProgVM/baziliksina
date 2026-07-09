@@ -129,7 +129,6 @@ class GeminiManager:
         env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}\nYour custom Member Tag / Custom Title in this chat: {custom_title_status}"
         dynamic_prompt = f"{system_prompt}\n\n{env_prompt}"
         logger.info(f"Full dynamic system_instruction passed to Gemini: {len(dynamic_prompt)} characters.")
-
         if not chat_entity or isinstance(chat_entity, (int, str)):
             chat_entity = tools.entity_cache.get(int(chat_id))
 
@@ -144,7 +143,6 @@ class GeminiManager:
                     chat_entity = int(chat_id)
 
         gemini_client = self.key_manager.get_client()
-
         def get_safety_threshold(threshold_str: str) -> types.HarmBlockThreshold:
             mapping = {
                 "block_none": types.HarmBlockThreshold.BLOCK_NONE,
@@ -549,5 +547,16 @@ class GeminiManager:
             logger.error(f"Critical Gemini error in GeminiManager: {str(e)}")
         finally:
             typing_task.cancel()
+            # Save the highest user message ID processed during this transaction
+            try:
+                async with self.db.db.execute(
+                    "SELECT MAX(msg_id) FROM messages WHERE chat_id = ? AND role = 'user'", (str(chat_id),)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if row and row[0] is not None:
+                        tools.last_processed_user_msg_id[str(chat_id)] = int(row[0])
+            except Exception as e_track:
+                logger.error(f"Failed to update last processed user message ID: {str(e_track)}")
+
 
 entity_cache = {}

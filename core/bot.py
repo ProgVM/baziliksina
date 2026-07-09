@@ -245,8 +245,15 @@ async def run_pending_query(cid, entity, trigger_msg_id=None):
         generating_chats.discard(cid_int)
         if cid_int in pending_buffers:
             p_data = pending_buffers.pop(cid_int)
-            # Run non-cancellable promotion in background task so new messages cannot cancel it
-            asyncio.create_task(run_pending_query_after_delay(cid_int, p_data["entity"], p_data.get("trigger_msg_id")))
+            queued_msg_id = p_data.get("trigger_msg_id")
+            
+            # Verify if the queued trigger has already been incorporated into the finished run
+            processed_id = getattr(tools, "last_processed_user_msg_id", {}).get(str(cid_int))
+            if queued_msg_id and processed_id and queued_msg_id <= processed_id:
+                logger.info(f"Queued message #{queued_msg_id} was already processed (up to #{processed_id}). Skipping redundant queue run.")
+            else:
+                # Run non-cancellable promotion in background task so new messages cannot cancel it
+                asyncio.create_task(run_pending_query_after_delay(cid_int, p_data["entity"], queued_msg_id))
 
 
 # --- Universal background tracking of reactions on posts, channels, and PMs ---

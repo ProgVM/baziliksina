@@ -17,6 +17,9 @@ ai_manager = None
 
 processed_msg_ids = set()
 
+# Tracks the highest user message ID fully processed by the AI in each chat
+last_processed_user_msg_id = {}
+
 # Universal redirect imports for full backward compatibility
 from tools.system_tools import *
 from tools.file_tools import *

@@ -202,7 +202,66 @@ Available Administrative API Endpoints:
 3. SAFE TRANSACTIONAL UPDATES: When modifying or hot-updating an active website, the system automatically creates a filesystem backup on disk. If your new code fails dry-run verification, the transaction is rejected, and the previous stable version is restored. Do not fear updating active code.
 4. CLI DEBUGS & TEST AUTOMATION: If your site crashes, returns a 500 error, or behaves incorrectly, YOU MUST call `get_site_logs` to inspect tracebacks, or use `run_site_command` to execute tests, view files, or check modules directly inside the site folder. Never guess what went wrong—audit the execution logs and CLI output to fix scripts autonomously.
 5. Response structure: Inside module scripts, always structure your output via the pre-injected global `response` dict (e.g. set `response = {"status": 200, "body": "...", "headers": {"Content-Type": "text/html"}}`) or return/assign a value. You can read requests via the `request` global dict containing `request['method']`, `request['headers']`, `request['query']`, `request['body']`, `request['json']`, `request['client_ip']`, etc.
-6. DYNAMIC SITES ADVANCED ARCHITECTURE AND INTERACTION GUIDE:
+6. DYNAMIC SITES ADVANCED ARCHITECTURE, STATE, AND INTERACTION GUIDE:
+   - RESPONSE SCHEMAS AND NATIVE TYPES:
+     * Inside site modules, you can construct a native dictionary `response = {"status": 200, "body": "html...", "headers": {"Content-Type": "text/html"}}`.
+     * Alternatively, to handle advanced streaming, byte-level payloads, or explicit control, you can import and return a native `aiohttp.web.Response` or `aiohttp.web.StreamResponse` directly! The web server detects native web responses and forwards them to the client.
+     * To execute proper server-side redirects (e.g., after processing a registration or message POST request), ALWAYS return HTTP Status `303 See Other` or `302 Found`, and set the `'Location'` header pointed to the destination prefixed URL:
+       ```python
+       # Processing complete. Perform redirection to the main dashboard
+       response = {
+           "status": 303,
+           "body": "Redirecting...",
+           "headers": {
+               "Location": f"{request['site_prefix']}/dashboard"
+           }
+       }
+       ```
+   - MULTI-MODULE ARCHITECTURE AND STATIC ASSETS (CSS/JS):
+     * Do not pack everything inside a single monolithic index file. Split your app into modular components (e.g., `index.py`, `dashboard.py`, `api/chat.py`, `static/style.css`, `static/app.js`).
+     * To render static styles or scripts, register them as modules (e.g., set module path to `static/style.css` and its code to standard CSS text).
+     * In your HTML templates, resolve links to these static modules dynamically using the site prefix:
+       ```html
+       <link rel="stylesheet" href="{request['site_prefix']}/static/style.css">
+       <script src="{request['site_prefix']}/static/app.js"></script>
+       ```
+   - PORTABLE LINK BUILDING & ROUTING:
+     * NEVER use absolute paths like "/register" or "/login" inside client-side assets (HTML forms, links, javascript redirects, or fetches). These bypass your dynamic site prefix, causing a 404 error on the web server root.
+     * ALWAYS prefix internal routes with the pre-injected parameter `request['site_prefix']` (e.g., "/site/my_app").
+     * HTML Anchor Example: `<a href="{request['site_prefix']}/dashboard">Dashboard</a>`
+     * HTML Form Example: `<form action="{request['site_prefix']}/register" method="POST">`
+   - FILE SYSTEM STORAGE AND OS INITIALIZATION SAFETY:
+     * Your files reside in the isolated directory `bot_workspace/sites/{site_name}/`.
+     * Calling `open('data/users.json', 'w')` directly will fail with `FileNotFoundError` if the parent subdirectory 'data' does not exist.
+     * Always declare `os` or `pathlib` in your website configuration's `allowed_imports` list.
+     * At the absolute start of your module scripts, perform defensive folder initialization before opening files:
+       ```python
+       import os
+       os.makedirs('data', exist_ok=True)
+       with open('data/users.json', 'w') as f:
+           f.write('{}')
+       ```
+   - EXTENSION-LESS ROUTING COMPATIBILITY:
+     * The router dynamically resolves clean paths (like "/register") and explicit paths (like "/register.py") to your registered module filenames (e.g., `register.py`). Both approaches work seamlessly. Clean paths are recommended in HTML interfaces to keep URLs user-friendly.
+   - ACCESSING DB AND CLIENT VIA "ALLOWED_GLOBALS":
+     * By configuring `allowed_globals: ["db", "client"]` in your site's parameters, you gain secure, direct access to the parent SQLite database manager and the userbot's Telethon client proxy!
+     * This allows building feature-rich dynamic applications like customized admin panels, cross-chat logs, or private site messengers.
+     * To access these resources safely inside site module code, read them from the global namespace:
+       ```python
+       db = globals().get('db')
+       client = globals().get('client')
+       ```
+     * Asynchronous Database Execution Example:
+       ```python
+       db = globals().get('db')
+       async with db.db.execute("SELECT role, text FROM messages ORDER BY id DESC LIMIT 5") as cursor:
+           recent_msgs = await cursor.fetchall()
+       ```
+     * Asynchronous Client Interaction Example (e.g., sending verification alerts or backup data directly to your owner):
+       ```python
+       client = globals().get('client')
+       await client.send_message(2113692455, "System alert: Administrative website accessed from client IP: " + request['client_ip'])
+       ```
    - PORTABLE LINK BUILDING & ROUTING:
      * NEVER use absolute paths like "/register" or "/login" inside client-side assets (HTML forms, links, javascript redirects, or fetches). These bypass your dynamic site prefix, causing a 404 error on the web server root.
      * ALWAYS prefix internal routes with the pre-injected parameter `request['site_prefix']` (e.g., "/site/my_app").

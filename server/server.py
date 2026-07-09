@@ -597,6 +597,9 @@ class BaziliksinaWebServer:
                     local_vars["response"] = res_val
             
             resp_data = local_vars.get("response", {})
+            if isinstance(resp_data, web.StreamResponse):
+                return resp_data
+
             if isinstance(resp_data, str):
                 resp_data = {"status": 200, "body": resp_data, "headers": {"Content-Type": "text/html"}}
             elif isinstance(resp_data, dict):

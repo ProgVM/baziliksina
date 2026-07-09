@@ -164,17 +164,17 @@ class AIContextManager:
                         new_parts.append(part)
                 content.parts = new_parts
 
-    async def get_aligned_history(self, chat_id: str, gemini_client) -> list:
+    async def get_aligned_history(self, chat_id: str, gemini_client, max_db_id: int = None) -> list:
         """
         Loads the history from SQLite, performs dynamic on-the-fly Google Files uploads,
         matches cached file URIs, and returns chronological contents ready for Gemini.
         """
         # Load the configuration of cross-cutting memory dynamically
         if CROSS_CHAT_CONTEXT:
-            history_raw = await self.db.get_history(chat_id, limit=MESSAGES_LIMIT)
+            history_raw = await self.db.get_history(chat_id, limit=MESSAGES_LIMIT, max_db_id=max_db_id)
         else:
             # Fallback to isolated context of current chat only (no other chats logged)
-            history_raw = await self.db.get_history(chat_id, limit=MESSAGES_LIMIT)
+            history_raw = await self.db.get_history(chat_id, limit=MESSAGES_LIMIT, max_db_id=max_db_id)
             # Remove segments corresponding to other chats if present in global scope
             history_raw = [(c, m) for (c, m) in history_raw if f"Chat: {chat_id}" in str(c.parts or "")]
 

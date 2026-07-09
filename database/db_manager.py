@@ -329,7 +329,7 @@ class DBManager:
         )
         await self.db.commit()
 
-    async def get_history(self, chat_id: str, limit: int = None) -> list:
+    async def get_history(self, chat_id: str, limit: int = None, max_db_id: int = None) -> list:
         chat_id = normalize_chat_id(chat_id)
         if limit is None: limit = config.MESSAGES_LIMIT
         """
@@ -359,23 +359,37 @@ class DBManager:
         global_limit = max(0, limit - local_limit)
 
         # 1. Fetch recent messages specifically from the active chat (ordered DESC for DB slice)
-        async with self.db.execute("""
+        local_query = """
             SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, COALESCE(m.msg_id, m.id), m.chat_id, m.timestamp
             FROM messages m
             LEFT JOIN msgs_meta meta ON m.chat_id = meta.chat_id AND m.msg_id = meta.msg_id
             WHERE m.chat_id = ?
-            ORDER BY m.id DESC LIMIT ?
-        """, (str(chat_id), local_limit)) as cursor:
+        """
+        params_local = [str(chat_id)]
+        if max_db_id is not None:
+            local_query += " AND m.id <= ?"
+            params_local.append(max_db_id)
+        local_query += " ORDER BY m.id DESC LIMIT ?"
+        params_local.append(local_limit)
+
+        async with self.db.execute(local_query, tuple(params_local)) as cursor:
             local_rows = await cursor.fetchall()
 
         # 2. Fetch recent messages globally from OTHER chats (ordered DESC for DB slice)
-        async with self.db.execute("""
+        other_query = """
             SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, COALESCE(m.msg_id, m.id), m.chat_id, m.timestamp
             FROM messages m
             LEFT JOIN msgs_meta meta ON m.chat_id = meta.chat_id AND m.msg_id = meta.msg_id
             WHERE m.chat_id != ?
-            ORDER BY m.id DESC LIMIT ?
-        """, (str(chat_id), global_limit)) as cursor:
+        """
+        params_other = [str(chat_id)]
+        if max_db_id is not None:
+            other_query += " AND m.id <= ?"
+            params_other.append(max_db_id)
+        other_query += " ORDER BY m.id DESC LIMIT ?"
+        params_other.append(global_limit)
+
+        async with self.db.execute(other_query, tuple(params_other)) as cursor:
             other_rows = await cursor.fetchall()
 
         # Restore chronological order (ASC)
