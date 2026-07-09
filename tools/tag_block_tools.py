@@ -35,8 +35,13 @@ class RootTagBlockHandlers:
             
         target_reply_id = data.get("msg_id") or reply_to_id
         try:
+            try:
+                target_reply_id = int(target_reply_id)
+            except (ValueError, TypeError):
+                target_reply_id = int(reply_to_id) if reply_to_id else None
+                
             logger.info(f"Delivering text reply to msg #{target_reply_id} in chat {chat_id}: '{formatted_html[:60]}...'")
-            result = await client.send_message(chat_entity, formatted_html, reply_to=int(target_reply_id), parse_mode="html")
+            result = await client.send_message(chat_entity, formatted_html, reply_to=target_reply_id, parse_mode="html")
             
             # Generate reply metadata for the bot's own message to preserve full context of her responses in database history
             reply_meta = ""
@@ -131,33 +136,43 @@ class RootTagBlockHandlers:
 
     async def mute(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """Mutes a user in the chat."""
-        user_id = data.get("id")
-        duration = int(data.get("duration")) if data.get("duration") else None
+        user_id = data.get("id") or data.get("user_id")
+        duration = data.get("duration")
+        if duration:
+            try:
+                duration = int(duration)
+            except (ValueError, TypeError):
+                duration = None
         if user_id:
             await tools.toolkit.mute_user(user_id=user_id, chat_id=chat_id, duration_seconds=duration)
 
     async def unmute(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """Lifts restrictions from a user."""
-        user_id = data.get("id")
+        user_id = data.get("id") or data.get("user_id")
         if user_id:
             await tools.toolkit.unrestrict_user(user_id=user_id, chat_id=chat_id)
 
     async def kick(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """Kicks a user from the chat."""
-        user_id = data.get("id")
+        user_id = data.get("id") or data.get("user_id")
         if user_id:
             await tools.toolkit.kick_user(user_id=user_id, chat_id=chat_id)
 
     async def ban(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """Bans a user in the chat."""
-        user_id = data.get("id")
-        duration = int(data.get("duration")) if data.get("duration") else None
+        user_id = data.get("id") or data.get("user_id")
+        duration = data.get("duration")
+        if duration:
+            try:
+                duration = int(duration)
+            except (ValueError, TypeError):
+                duration = None
         if user_id:
             await tools.toolkit.ban_user(user_id=user_id, chat_id=chat_id, duration_seconds=duration)
 
     async def unban(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """Unbans a user in the chat."""
-        user_id = data.get("id")
+        user_id = data.get("id") or data.get("user_id")
         if user_id:
             await tools.toolkit.unrestrict_user(user_id=user_id, chat_id=chat_id)
 
