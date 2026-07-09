@@ -435,6 +435,8 @@ _PARAMS = {
     "TELEGRAM_ACTION_CONFIRM_LIMIT": DynamicParameter("TELEGRAM_ACTION_CONFIRM_LIMIT", 500, int, min_val=1),
     "VM_STDOUT_NOTICE_LIMIT": DynamicParameter("VM_STDOUT_NOTICE_LIMIT", 1500, int, min_val=1),
     "SANDBOX_COMMAND_CHAR_LIMIT": DynamicParameter("SANDBOX_COMMAND_CHAR_LIMIT", 3000, int, min_val=1),
+    "SANDBOX_ALLOWED_FILES": DynamicParameter("SANDBOX_ALLOWED_FILES", "all", str),
+    "SANDBOX_BLOCKED_FILES": DynamicParameter("SANDBOX_BLOCKED_FILES", "bot.py,config.py,db_manager.py,key_manager.py,gemini_manager.py,.env,tools.py,sandbox.py,utils.py,downloader.py,registry.py", str),
     "WEB_SEARCH_RESULTS_LIMIT": DynamicParameter("WEB_SEARCH_RESULTS_LIMIT", 50, int, min_val=1),
     "WEB_MEDIA_SEARCH_RESULTS_LIMIT": DynamicParameter("WEB_MEDIA_SEARCH_RESULTS_LIMIT", 3, int, min_val=1, max_val=30),
     "WEB_MEDIA_SEARCH_CANDIDATES_LIMIT": DynamicParameter("WEB_MEDIA_SEARCH_CANDIDATES_LIMIT", 50, int, min_val=1, max_val=100),
