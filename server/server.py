@@ -569,7 +569,9 @@ class BaziliksinaWebServer:
             status = resp_data.get("status", 200)
             body = resp_data.get("body", "")
             headers = dict(resp_data.get("headers", {}))
-            headers[kh] = vh
+            
+            for kh, vh in site_config.get("custom_headers", {}).items():
+                headers[kh] = vh
 
             content_type = headers.pop("Content-Type", "text/html")
             
