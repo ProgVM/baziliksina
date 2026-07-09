@@ -118,8 +118,13 @@ class AIResponseExecutor:
                 attrs_str = match.group(2) or ""
                 content = match.group(3)
                 
-                # Extract key-value attribute pairs
-                attrs = dict(re.findall(r'([a-zA-Z0-9_-]+)=["\']([^"\']*)["\']', attrs_str))
+                # Safe quote-aware attribute parsing preventing JSON truncation
+                attrs = {}
+                attr_pattern = re.compile(r'([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', re.IGNORECASE)
+                for attr_match in attr_pattern.finditer(attrs_str):
+                    name = attr_match.group(1)
+                    val = attr_match.group(2) if attr_match.group(2) is not None else attr_match.group(3)
+                    attrs[name] = val
                 if "id" in attrs and "msg_id" not in attrs:
                     attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
                 attrs["text"] = content.strip()
@@ -135,8 +140,13 @@ class AIResponseExecutor:
                 tag_name = match.group(1).lower()
                 attrs_str = match.group(2) or ""
                 
-                # Extract key-value attribute pairs
-                attrs = dict(re.findall(r'([a-zA-Z0-9_-]+)=["\']([^"\']*)["\']', attrs_str))
+                # Safe quote-aware attribute parsing preventing JSON truncation
+                attrs = {}
+                attr_pattern = re.compile(r'([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', re.IGNORECASE)
+                for attr_match in attr_pattern.finditer(attrs_str):
+                    name = attr_match.group(1)
+                    val = attr_match.group(2) if attr_match.group(2) is not None else attr_match.group(3)
+                    attrs[name] = val
                 if "id" in attrs and "msg_id" not in attrs:
                     attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
                 if "files" in attrs:
@@ -329,8 +339,13 @@ class AIResponseExecutor:
                 attrs_str = match.group(2) or ""
                 content = match.group(3)
                 
-                # Extract key-value attribute pairs
-                attrs = dict(re.findall(r'([a-zA-Z0-9_-]+)=["\']([^"\']*)["\']', attrs_str))
+                # Safe quote-aware attribute parsing preventing JSON truncation
+                attrs = {}
+                attr_pattern = re.compile(r'([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', re.IGNORECASE)
+                for attr_match in attr_pattern.finditer(attrs_str):
+                    name = attr_match.group(1)
+                    val = attr_match.group(2) if attr_match.group(2) is not None else attr_match.group(3)
+                    attrs[name] = val
                 if "id" in attrs and "msg_id" not in attrs:
                     attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
                 attrs["text"] = content.strip()
@@ -346,8 +361,13 @@ class AIResponseExecutor:
                 tag_name = match.group(1).lower()
                 attrs_str = match.group(2) or ""
                 
-                # Extract key-value attribute pairs
-                attrs = dict(re.findall(r'([a-zA-Z0-9_-]+)=["\']([^"\']*)["\']', attrs_str))
+                # Safe quote-aware attribute parsing preventing JSON truncation
+                attrs = {}
+                attr_pattern = re.compile(r'([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', re.IGNORECASE)
+                for attr_match in attr_pattern.finditer(attrs_str):
+                    name = attr_match.group(1)
+                    val = attr_match.group(2) if attr_match.group(2) is not None else attr_match.group(3)
+                    attrs[name] = val
                 if "id" in attrs and "msg_id" not in attrs:
                     attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
                 if "files" in attrs:

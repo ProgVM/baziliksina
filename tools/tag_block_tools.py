@@ -104,7 +104,7 @@ class RootTagBlockHandlers:
 
     async def tool(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """Executes a registered AI tool dynamically by name."""
-        t_name = data.get("tool_name")
+        t_name = data.get("tool_name") or data.get("key") or data.get("name")
         t_args_str = data.get("args_str") or ""
         t_args = {}
         try:
@@ -242,6 +242,7 @@ ROOT_TAGS_BLOCKS = {
     "noop": ("tag", handlers.noop),
     "no_op_ignore": ("tag", handlers.noop),
     "tool": ("tag", handlers.tool),
+    "tool_name": ("tag", handlers.tool),
     "seq": ("block", handlers.seq),
     "par": ("block", handlers.par),
     "bg": ("block", handlers.bg)
@@ -258,6 +259,13 @@ def create_generic_tag_handler(tool_meta):
         for param_name, param in sig.parameters.items():
             if param_name in data:
                 val = data[param_name]
+                # Auto-parse JSON strings back to native Dict/List formats
+                if isinstance(val, str) and ((val.startswith("{") and val.endswith("}")) or (val.startswith("[") and val.endswith("]"))):
+                    try:
+                        import json
+                        val = json.loads(val)
+                    except Exception:
+                        pass
                 if param.annotation == int:
                     try: val = int(val)
                     except ValueError: pass

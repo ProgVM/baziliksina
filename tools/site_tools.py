@@ -115,6 +115,49 @@ class AIToolKitSites:
             with open(out_file, "w", encoding="utf-8") as f:
                 f.write(mod_code)
 
+        # --- AUTOMATED DEVOPS DRY-RUN VALIDATION ---
+        test_module = None
+        for mod in modules_list:
+            m_path = mod.get("path", "")
+            if m_path in ["index.py", "index"]:
+            test_module = mod
+            break
+        if not test_module and modules_list:
+            test_module = modules_list[0]
+            
+        if test_module:
+            test_code = test_module.get("code", "")
+            test_code = test_code.replace("\\\\r\\\\n", "\n").replace("\\\\n", "\n").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
+            mock_local_vars = {
+            "__import__": __import__,
+            "open": lambda *a, **k: None,
+            "request": {
+                "method": "GET",
+                "headers": {},
+                "query": {},
+                "body": "",
+                "json": {},
+                "client_ip": "127.0.0.1",
+                "cookies": {}
+            },
+            "print": lambda *a: None,
+            "response": {
+                "status": 200,
+                "body": "",
+                "headers": {}
+            }
+            }
+            try:
+            indented_test = "\n".join(f"    {line}" for line in test_code.splitlines())
+            wrapper_test = f"async def __run_module():\n{indented_test}"
+            exec(wrapper_test, mock_local_vars, mock_local_vars)
+            await asyncio.wait_for(mock_local_vars["__run_module"](), timeout=2.0)
+            except Exception as test_err:
+            if site_dir.exists():
+                shutil.rmtree(site_dir)
+            import traceback
+            return f"Error: Site code dry-run failed with a runtime error! Please fix your Python script before deploying.\nTraceback error details:\n{traceback.format_exc()}"
+
         # Apply disk limits check
         # Calculate size of site directory
         total_size = sum(f.stat().st_size for f in site_dir.glob('**/*') if f.is_file())
