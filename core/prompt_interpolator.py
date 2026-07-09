@@ -1,6 +1,7 @@
 # core/prompt_interpolator.py
 import logging
 from pathlib import Path
+import config
 from telethon.tl.functions.users import GetFullUserRequest
 from config import BASE_DIR, WORKSPACE_DIR, SESSION_NAME, SESSION_PATH, SAFE_DB_DIR, OWNER_ID, DB_NAME, BOT_AVATAR_NAME
 
