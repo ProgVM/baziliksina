@@ -67,6 +67,7 @@ class BaziliksinaWebServer:
         self.app.router.add_get("/", self.handle_index)
         self.app.router.add_get("/health", self.handle_health)
         self.app.router.add_get("/ping", self.handle_ping)
+        self.app.router.add_route("*", "/site/{site_name}", self.handle_dynamic_site_request)
         self.app.router.add_route("*", "/site/{site_name}/{module_name:.*}", self.handle_dynamic_site_request)
 
         # 2. Private endpoints (Bearer token authorization required)

@@ -135,8 +135,18 @@ class AIToolKitSites:
             status='active'
         )
 
-        sub_ref = f"{clean_name}.{config.WEB_SERVER_HOST}" if config.WEB_SERVER_HOST != "0.0.0.0" else f"localhost:{config.WEB_SERVER_PORT}/site/{clean_name}"
-        web_link = f"http://{config.WEB_SERVER_HOST}:{config.WEB_SERVER_PORT}/site/{clean_name}"
+        display_host = config.WEB_SERVER_HOST
+        if not display_host or display_host == "0.0.0.0":
+            import socket
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect((config.WEB_SERVER_IP_DETECTION_HOST, config.WEB_SERVER_IP_DETECTION_PORT))
+                display_host = s.getsockname()[0]
+                s.close()
+            except Exception:
+                display_host = "127.0.0.1"
+
+        web_link = f"http://{display_host}:{config.WEB_SERVER_PORT}/site/{clean_name}"
         
         expires_str = f" Expires at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expires_at))}." if expires_at else " Lifetime: Infinite."
         return (

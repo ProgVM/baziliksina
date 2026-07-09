@@ -80,7 +80,19 @@ async def get_interpolated_prompt(client, character_file_name, use_system_prompt
     character_prompt_template = "You are Baziliksina."
 
     prompt_dir = BASE_DIR / "config"
-    
+
+    # Resolve dynamic host IP instead of 0.0.0.0 for prompt instructions
+    display_host = getattr(config, "WEB_SERVER_HOST", "127.0.0.1")
+    if not display_host or display_host == "0.0.0.0":
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((getattr(config, "WEB_SERVER_IP_DETECTION_HOST", "8.8.8.8"), getattr(config, "WEB_SERVER_IP_DETECTION_PORT", 80)))
+            display_host = s.getsockname()[0]
+            s.close()
+        except Exception:
+            display_host = "127.0.0.1"
+
     # system_prompt.txt
     sys_path = prompt_dir / "system_prompt.txt"
     if sys_path.exists():
@@ -144,7 +156,10 @@ async def get_interpolated_prompt(client, character_file_name, use_system_prompt
         "{SESSION_PATH}": str(SESSION_PATH),
         "{SAFE_DB_DIR}": str(SAFE_DB_DIR),
         "{DB_NAME}": str(DB_NAME),
-        "{BOT_AVATAR_NAME}": str(BOT_AVATAR_NAME)
+        "{BOT_AVATAR_NAME}": str(BOT_AVATAR_NAME),
+        "{WEB_SERVER_HOST}": display_host,
+        "{WEB_SERVER_PORT}": str(config.WEB_SERVER_PORT),
+        "{WEB_SERVER_SUBDOMAIN}": str(config.WEB_SERVER_SUBDOMAIN)
     }
 
     core_prompt = core_prompt_template
