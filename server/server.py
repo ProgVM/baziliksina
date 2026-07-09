@@ -530,23 +530,32 @@ class BaziliksinaWebServer:
             
             resp_data = local_vars.get("response", {})
             if isinstance(resp_data, str):
-                resp_data = {"status": 200, "body": resp_data, "headers": {"Content-Type": "text/html; charset=utf-8"}}
+                resp_data = {"status": 200, "body": resp_data, "headers": {"Content-Type": "text/html"}}
             elif isinstance(resp_data, dict):
                 if "body" not in resp_data:
                     resp_data["body"] = json.dumps(resp_data)
-                    resp_data["headers"] = {"Content-Type": "application/json; charset=utf-8"}
+                    resp_data["headers"] = {"Content-Type": "application/json"}
             else:
-                resp_data = {"status": 200, "body": str(resp_data), "headers": {"Content-Type": "text/plain; charset=utf-8"}}
+                resp_data = {"status": 200, "body": str(resp_data), "headers": {"Content-Type": "text/plain"}}
 
             status = resp_data.get("status", 200)
             body = resp_data.get("body", "")
             headers = dict(resp_data.get("headers", {}))
-            
-            for kh, vh in site_config.get("custom_headers", {}).items():
-                headers[kh] = vh
+            headers[kh] = vh
 
-            content_type = headers.pop("Content-Type", "text/html; charset=utf-8")
-            return web.Response(text=body, status=status, headers=headers, content_type=content_type)
+            content_type = headers.pop("Content-Type", "text/html")
+            
+            # Safe parsing to comply with strict aiohttp >= 3.9 response constraints
+            charset = None
+            if ";" in content_type:
+                parts = content_type.split(";")
+                content_type = parts[0].strip()
+                for p in parts[1:]:
+                    if "charset=" in p.lower():
+                        charset = p.lower().split("charset=")[1].strip()
+            
+            # Return final HTTP response
+            return web.Response(text=body, status=status, headers=headers, content_type=content_type, charset=charset)
 
         except asyncio.TimeoutError:
             timeout_msg = f"Execution timeout of {execution_timeout}s exceeded."
