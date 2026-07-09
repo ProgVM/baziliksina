@@ -502,8 +502,10 @@ class BaziliksinaWebServer:
             # 1. Enforce site-specific custom white/black lists
             if not matches_filter(root_name, allowed_imports, blocked_imports):
                 raise ImportError(f"Security Policy Error: Import of module '{name}' is restricted for this site.")
-            # 2. Enforce global sandbox security whitelists & blacklists as an absolute fallback guard!
-            if not matches_filter(root_name, config.SANDBOX_PYTHON_WHITELIST, config.SANDBOX_PYTHON_BLACKLIST):
+            # 2. Enforce global server site sandbox security whitelists & blacklists
+            allowed_site_py = [i.strip() for i in config.SITE_PYTHON_WHITELIST.split(",") if i.strip()] if isinstance(config.SITE_PYTHON_WHITELIST, str) else config.SITE_PYTHON_WHITELIST
+            blocked_site_py = [b.strip() for b in config.SITE_PYTHON_BLACKLIST.split(",") if b.strip()] if isinstance(config.SITE_PYTHON_BLACKLIST, str) else config.SITE_PYTHON_BLACKLIST
+            if not matches_filter(root_name, allowed_site_py, blocked_site_py):
                 raise ImportError(f"Security Policy Error: Import of module '{name}' is blocked by server policy.")
             return __import__(name, globals, locals, fromlist, level)
 
@@ -516,11 +518,7 @@ class BaziliksinaWebServer:
             resolved = Path(file).resolve()
             if not str(resolved).startswith(str(site_dir.resolve())):
                 raise PermissionError("Security Policy Error: Attempted to access a directory outside the site isolated workspace.")
-            
-            # Automatically initialize nested parent directories for dynamic writing and appending modes
-            if any(char in mode for char in ['w', 'a', 'x']):
-                resolved.parent.mkdir(parents=True, exist_ok=True)
-                
+
             return open(resolved, mode, *args, **kwargs)
 
         # Custom site output printer redirecting directly to a dedicated local log file inside site isolated directory!

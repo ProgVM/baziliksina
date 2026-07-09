@@ -525,6 +525,34 @@ def load_feedback_template(section_name: str, default_text: str) -> str:
         pass
     return default_text
 
+def get_all_project_modules() -> dict:
+    """Dynamically traverses the project root directory and registers all available Python modules in execution sandboxes."""
+    import sys
+    import importlib
+    from pathlib import Path
+    
+    modules = {}
+    base_dir = Path(__file__).resolve().parent.parent
+    
+    # Scan directories in project root, excluding standard caches, git files, and virtual environments
+    subdirs = [p for p in base_dir.iterdir() if p.is_dir() and not p.name.startswith((".", "_")) and p.name not in ["bot_workspace", "emoji_cache", "avatar_cache", "gift_cache", "temp_media", "venv"]]
+    
+    for sub_path in subdirs:
+        for file_path in sub_path.glob("**/*.py"):
+            if file_path.name.startswith("_") or "pycache" in str(file_path):
+                continue
+            module_name = file_path.parent.name if file_path.name == "__init__.py" else file_path.stem
+            try:
+                if module_name in sys.modules:
+                    modules[module_name] = sys.modules[module_name]
+                else:
+                    mod = importlib.import_module(module_name)
+                    if mod:
+                        modules[module_name] = mod
+            except Exception:
+                pass
+    return modules
+
 async def should_send_read_acknowledge(message_or_event, me, db=None, is_trigger_fired: bool = False) -> bool:
     import config
     return matches_advanced_filter(message_or_event, me, config.READ_ACK_WHITELIST, config.READ_ACK_BLACKLIST, is_trigger_fired=is_trigger_fired, default_allow=True)

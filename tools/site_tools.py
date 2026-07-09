@@ -415,6 +415,144 @@ class AIToolKitSites:
         except Exception as e:
             return f"Error executing command: {str(e)}"
 
+    async def execute_site_python_code(self, name: str, code: str, **kwargs) -> str:
+        """
+        Executes asynchronous Python code directly inside the isolated execution environment and workspace directory of a dynamic website.
+        This allows you to manage files, create nested directories, test APIs/index views, inspect variables, and debug runtime operations of your hosted site.
+        
+        Args:
+            name: Alphanumeric identifier of the target dynamic site.
+            code: Full asynchronous/synchronous Python source code to execute inside the site's sandbox.
+        """
+        if not tools.db:
+            return "Error: Database is not initialized."
+            
+        clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
+        site_data = await tools.db.get_dynamic_site(clean_name)
+        if not site_data:
+            return f"Error: Site '{clean_name}' does not exist on the server."
+            
+        # Verify code against SITE_PYTHON filters
+        from utils import matches_filter
+        allowed_site_py = [i.strip() for i in config.SITE_PYTHON_WHITELIST.split(",") if i.strip()] if isinstance(config.SITE_PYTHON_WHITELIST, str) else config.SITE_PYTHON_WHITELIST
+        blocked_site_py = [b.strip() for b in config.SITE_PYTHON_BLACKLIST.split(",") if b.strip()] if isinstance(config.SITE_PYTHON_BLACKLIST, str) else config.SITE_PYTHON_BLACKLIST
+        
+        if not matches_filter(code, allowed_site_py, blocked_site_py):
+            return "Security Policy Violation: This Python code contains terms blocked by server site policy."
+            
+        try:
+            site_config = json.loads(site_data["config_json"])
+        except Exception as e:
+            return f"Error reading site configuration: {str(e)}"
+            
+        site_dir = config.WORKSPACE_DIR / "sites" / clean_name
+        site_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Site-scoped open
+        def safe_site_open(file, mode='r', *args, **kwargs):
+            if not os.path.isabs(file):
+                file = site_dir / file
+            resolved = Path(file).resolve()
+            if not str(resolved).startswith(str(site_dir.resolve())):
+                raise PermissionError("Security Policy Error: Attempted to access a directory outside the site isolated workspace.")
+            return open(resolved, mode, *args, **kwargs)
+            
+        # Site-scoped safe import
+        allowed_imports = site_config.get("allowed_imports", config.SITE_ALLOWED_IMPORTS_DEFAULT)
+        blocked_imports = site_config.get("blocked_imports", config.SITE_BLOCKED_IMPORTS_DEFAULT)
+        
+        def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+            root_name = name.split(".")[0]
+            if not matches_filter(root_name, allowed_imports, blocked_imports):
+                raise ImportError(f"Security Policy Error: Import of module '{name}' is restricted for this site.")
+            if not matches_filter(root_name, allowed_site_py, blocked_site_py):
+                raise ImportError(f"Security Policy Error: Import of module '{name}' is blocked by server policy.")
+            return __import__(name, globals, locals, fromlist, level)
+            
+        # Site print logging to site.log
+        printed_lines = []
+        def site_print(*args):
+            line = " ".join(str(a) for a in args)
+            printed_lines.append(line)
+            try:
+                log_file = site_dir / "site.log"
+                log_line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [VM_EXEC] {line}\n"
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(log_line)
+            except Exception:
+                pass
+                
+        # Mock/Initialize execution environment
+        local_vars = {
+            "__import__": safe_import,
+            "open": safe_site_open,
+            "print": site_print,
+            "request": {
+                "method": "GET",
+                "headers": {},
+                "query": {},
+                "body": "",
+                "json": {},
+                "client_ip": "127.0.0.1",
+                "cookies": {},
+                "site_prefix": f"/site/{clean_name}",
+                "base_url": f"http://127.0.0.1:{config.WEB_SERVER_PORT}/site/{clean_name}",
+                "module_path": "index"
+            },
+            "response": {
+                "status": 200,
+                "body": "",
+                "headers": {}
+            },
+            "result": None,
+            "WORKSPACE_DIR": str(site_dir)
+        }
+        
+        # Inject standard modules dynamically
+        from utils import get_all_project_modules
+        for k, v in get_all_project_modules().items():
+            if k not in local_vars:
+                local_vars[k] = v
+                
+        # Expose allowed globals
+        allowed_globals = site_config.get("allowed_globals", [])
+        if "db" in allowed_globals and tools.db:
+            local_vars["db"] = tools.db
+        if "client" in allowed_globals and tools.client:
+            from sandbox import SandboxedClient
+            local_vars["client"] = SandboxedClient(tools.client, site_dir)
+            
+        # Execute code
+        try:
+            import ast
+            import types
+            compiled_sandbox = compile(code, f"<site_vm_{clean_name}>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+            
+            async def run_sandbox():
+                res_val = eval(compiled_sandbox, local_vars, local_vars)
+                if isinstance(res_val, types.CoroutineType):
+                    await res_val
+                    
+            timeout_val = float(site_config.get("timeout", config.SITE_TIMEOUT_DEFAULT))
+            await asyncio.wait_for(run_sandbox(), timeout=timeout_val)
+            
+            res_val = local_vars.get("result")
+            resp_val = local_vars.get("response")
+            
+            out_parts = [f"Code executed successfully inside site '{clean_name}' isolated workspace."]
+            if printed_lines:
+                out_parts.append("\n=== Console Prints (stdout) ===")
+                out_parts.append("\n".join(printed_lines))
+            if res_val is not None:
+                out_parts.append(f"\n- Variable 'result': {str(res_val)[:2000]}")
+            if resp_val and resp_val.get("body"):
+                out_parts.append(f"\n- Variable 'response[\"body\"]' (HTML/API Output):\n{str(resp_val['body'])[:2000]}")
+                
+            return "\n".join(out_parts)
+        except Exception as e:
+            import traceback
+            return f"Error executing Python code in site '{clean_name}': {str(e)}\nTraceback details:\n{traceback.format_exc()}"
+
     async def delete_site(self, name: str, **kwargs) -> str:
         """Completely deletes a dynamic website, its files, and its DB records from the server."""
         if not tools.db:

@@ -6,16 +6,9 @@ import logging
 import inspect
 import re
 from pathlib import Path
-
-# Import all project modules to pass into the isolated environment
+import sys
 import config
 from config import SANDBOX_BLOCKED_FILES, SANDBOX_ALLOWED_FILES
-import db_manager
-import key_manager
-import gemini_manager
-import parser
-import services
-import tools
 from registry import registry
 
 logger = logging.getLogger("Sandbox")
@@ -148,15 +141,14 @@ class AsyncSandbox:
             "me": self.me,
             "result": None,
             "open": self._sandboxed_open,
-            "bot": sys.modules.get("bot") or sys.modules.get("core.bot"),
             "config": SandboxedConfig(config),
-            "db_manager": db_manager,
-            "key_manager": key_manager,
-            "gemini_manager": gemini_manager,
-            "parser": parser,
-            "services": services,
-            "tools": tools
         }
+
+        # Dynamically inject all project modules to keep sandbox dependencies fully synchronized
+        from utils import get_all_project_modules
+        for k, v in get_all_project_modules().items():
+            if k not in local_vars:
+                local_vars[k] = v
 
         # Dynamically inject all registered system and custom tools directly as VM functions
         for tool in registry.get_all_tools():
