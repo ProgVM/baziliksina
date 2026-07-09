@@ -522,8 +522,8 @@ class BaziliksinaWebServer:
             local_vars[k] = v
 
         try:
-            indented = "\\n".join(f"    {line}" for line in code.splitlines())
-            wrapper = f"async def __run_module():\\n{indented}"
+            indented = "\n".join(f"    {line}" for line in code.splitlines())
+            wrapper = f"async def __run_module():\n{indented}"
             
             exec(wrapper, local_vars, local_vars)
             await asyncio.wait_for(local_vars["__run_module"](), timeout=execution_timeout)
