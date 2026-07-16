@@ -10,10 +10,10 @@ import config
 logger = logging.getLogger("Downloader")
 
 # Cache directories
-EMOJI_CACHE_DIR = WORKSPACE_DIR / EMOJI_CACHE_DIR_NAME
-AVATAR_CACHE_DIR = WORKSPACE_DIR / AVATAR_CACHE_DIR_NAME
-GIFT_CACHE_DIR = WORKSPACE_DIR / GIFT_CACHE_DIR_NAME
-TEMP_MEDIA_DIR = WORKSPACE_DIR / TEMP_MEDIA_DIR_NAME
+EMOJI_CACHE_DIR = config.WORKSPACE_DIR / config.EMOJI_CACHE_DIR_NAME
+AVATAR_CACHE_DIR = config.WORKSPACE_DIR / config.AVATAR_CACHE_DIR_NAME
+GIFT_CACHE_DIR = config.WORKSPACE_DIR / config.GIFT_CACHE_DIR_NAME
+TEMP_MEDIA_DIR = config.WORKSPACE_DIR / config.TEMP_MEDIA_DIR_NAME
 
 # Create directories during module initialization
 for directory in [EMOJI_CACHE_DIR, AVATAR_CACHE_DIR, GIFT_CACHE_DIR, TEMP_MEDIA_DIR]:
@@ -30,7 +30,7 @@ async def convert_webm_to_mp4(webm_path: str) -> str:
     
     try:
         cmd = [
-            FFMPEG_PATH, "-y",
+            config.FFMPEG_PATH, "-y",
             "-i", str(path),
             "-pix_fmt", "yuv420p",
             "-c:v", "libx264",
@@ -44,7 +44,7 @@ async def convert_webm_to_mp4(webm_path: str) -> str:
             stderr=asyncio.subprocess.PIPE
         )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CONVERSION_TIMEOUT)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=config.CONVERSION_TIMEOUT)
         except asyncio.TimeoutError:
             try:
                 proc.kill()
@@ -64,11 +64,11 @@ async def convert_webm_to_mp4(webm_path: str) -> str:
             logger.warning(f"Failed to convert WebM via FFmpeg. Code: {proc.returncode}")
     except FileNotFoundError:
         logger.warning(
-            f"Utility '{FFMPEG_PATH}' not found in the system. "
+            f"Utility '{config.FFMPEG_PATH}' not found in the system. "
             "It is recommended to install it (e.g. 'pkg install ffmpeg' in Termux) so that the AI can play WebM!"
         )
     except asyncio.TimeoutError:
-        logger.error(f"Timeout exceeded {CONVERSION_TIMEOUT} sec to transcode the animated sticker.")
+        logger.error(f"Timeout exceeded {config.CONVERSION_TIMEOUT} sec to transcode the animated sticker.")
     except Exception as e:
         logger.error(f"Error calling ffmpeg converter: {str(e)}")
         
@@ -85,7 +85,7 @@ async def convert_ogg_to_mp3(ogg_path: str) -> str:
     
     try:
         cmd = [
-            FFMPEG_PATH, "-y",
+            config.FFMPEG_PATH, "-y",
             "-i", str(path),
             "-codec:a", "libmp3lame",
             "-qscale:a", "2",
@@ -98,7 +98,7 @@ async def convert_ogg_to_mp3(ogg_path: str) -> str:
             stderr=asyncio.subprocess.PIPE
         )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=CONVERSION_TIMEOUT)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=config.CONVERSION_TIMEOUT)
         except asyncio.TimeoutError:
             try:
                 proc.kill()
@@ -117,9 +117,9 @@ async def convert_ogg_to_mp3(ogg_path: str) -> str:
         else:
             logger.warning(f"Failed to convert OGG to MP3 via FFmpeg. Code: {proc.returncode}")
     except FileNotFoundError:
-        logger.warning(f"Utility '{FFMPEG_PATH}' not found. Leaving voice message in OGG format.")
+        logger.warning(f"Utility '{config.FFMPEG_PATH}' not found. Leaving voice message in OGG format.")
     except asyncio.TimeoutError:
-        logger.error(f"Timeout exceeded {CONVERSION_TIMEOUT} sec to transcode the voice message.")
+        logger.error(f"Timeout exceeded {config.CONVERSION_TIMEOUT} sec to transcode the voice message.")
     except Exception as e:
         logger.error(f"Error calling ffmpeg for OGG conversion: {str(e)}")
         
