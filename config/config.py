@@ -297,14 +297,13 @@ class DynamicParameter:
             elif name == "min": return min(args)
             elif name == "max": return max(args)
             elif name == "sin":
-                elif name == "cos":
-                    import math
-                    return math.cos(args[0])
-                
-                # Raise an evaluation error if the function is not supported by the DSL engine
-                raise ValueError(f"Unknown dynamic function: {name}")
+                import math
+                return math.sin(args[0])
+            elif name == "cos":
+                import math
+                return math.cos(args[0])
             
-            # Raise an error if the function is not recognized by the DSL parser
+            # Raise an evaluation error if the function is not supported by the DSL engine
             raise ValueError(f"Unknown dynamic function: {name}")
 
         res = parse_expression()
