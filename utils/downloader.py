@@ -276,10 +276,10 @@ async def get_cached_gift_animation(client, gift_id: int) -> str:
 
 
 async def download_and_cache_media(client, message, is_private: bool, mentioned: bool) -> str:
-    f"""
-    Universal extractor and downloader for regular attachments, voice messages, video notes, and files from polls.
-    Limits the maximum size to {MAX_FILE_SIZE}. Returns JSON with local path and type.
     """
+        Universal extractor and downloader for regular attachments, voice messages, video notes, and files from polls.
+        Limits the maximum size to config.MAX_FILE_SIZE. Returns JSON with local path and type.
+        """
     # Download media files from all messages for complete end-to-end context
     if not message.media:
         return None
