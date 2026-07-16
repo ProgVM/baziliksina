@@ -173,11 +173,22 @@ class GeminiManager:
                     sig = inspect.signature(func)
                     clean_params = []
                     has_kwargs = False
+                    has_args = False
                     for p in sig.parameters.values():
                         if p.kind == inspect.Parameter.VAR_KEYWORD:
                             has_kwargs = True
+                        elif p.kind == inspect.Parameter.VAR_POSITIONAL:
+                            has_args = True
                         elif p.kind != inspect.Parameter.VAR_POSITIONAL:
                             clean_params.append(p)
+                    if has_args:
+                        args_param = inspect.Parameter(
+                            name="args",
+                            kind=inspect.Parameter.KEYWORD_ONLY,
+                            default=None,
+                            annotation=list
+                        )
+                        clean_params.append(args_param)
                     if has_kwargs:
                         kwargs_param = inspect.Parameter(
                             name="kwargs",
@@ -510,16 +521,42 @@ class GeminiManager:
                         if tool_meta:
                             try:
                                 logger.info(f"Tool call '{fn_name}' from registry...")
-                                # Unpack explicit dict arguments back to keyword arguments
+                                # Unpack dynamic list and dict arguments back to positional and keyword arguments
                                 call_args = args.copy() if args else {}
+                                extra_args = call_args.pop("args", []) or []
                                 if "kwargs" in call_args and isinstance(call_args["kwargs"], dict):
                                     extra = call_args.pop("kwargs")
                                     call_args.update(extra)
                                     
+                                if not isinstance(extra_args, list):
+                                    extra_args = [extra_args]
+                                    
+                                # Safely bind arguments to resolve positional-or-keyword conflicts
+                                sig = inspect.signature(tool_meta.callable)
+                                positional_params = []
+                                has_var_positional = False
+                                for p in sig.parameters.values():
+                                    if p.kind in [inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD]:
+                                        positional_params.append(p.name)
+                                    elif p.kind == inspect.Parameter.VAR_POSITIONAL:
+                                        has_var_positional = True
+                                        
+                                pos_args = []
+                                kw_args = {}
+                                for name in positional_params:
+                                    if name in call_args:
+                                        pos_args.append(call_args[name])
+                                if has_var_positional:
+                                    pos_args.extend(extra_args)
+                                    
+                                for k, v in call_args.items():
+                                    if k not in positional_params:
+                                        kw_args[k] = v
+                                        
                                 if inspect.iscoroutinefunction(tool_meta.callable):
-                                    result = await tool_meta.callable(**call_args)
+                                    result = await tool_meta.callable(*pos_args, **kw_args)
                                 else:
-                                    result = tool_meta.callable(**call_args)
+                                    result = tool_meta.callable(*pos_args, **kw_args)
                                     
                                 if fn_name == "upload_file_to_google" and isinstance(result, dict) and result.get("status") == "success":
                                     g_uri = result.get("google_uri")
