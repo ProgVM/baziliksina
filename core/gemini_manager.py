@@ -279,7 +279,7 @@ class GeminiManager:
                             contents=contents,
                             config=config_obj
                         ),
-                        timeout=GEMINI_TIMEOUT
+                        timeout=config.GEMINI_TIMEOUT
                     )
                 except asyncio.TimeoutError:
                     logger.warning("Model response timeout. Retrying...")
