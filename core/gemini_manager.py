@@ -265,7 +265,7 @@ class GeminiManager:
                         if file_match:
                             file_id = file_match.group(1)
                             await self.context_mgr._heal_inaccessible_file(file_id, contents)
-                            await asyncio.sleep(TIMEOUT_SLEEP)
+                            await asyncio.sleep(config.TIMEOUT_SLEEP)
                             continue
                     logger.error(f"Error counting tokens: {str(e)}")
                 except Exception as count_err:
@@ -289,7 +289,7 @@ class GeminiManager:
                     if e.code == 429:
                         active_key = self.key_manager.keys[self.key_manager.current_key_index]
                         logger.warning(f"Gemini API 429 encountered on key: '{active_key[:10]}...'. Rotating pools...")
-                        await asyncio.sleep(RATE_LIMIT_SLEEP)
+                        await asyncio.sleep(config.RATE_LIMIT_SLEEP)
                         await self.key_manager.handle_error_exhausted(str(e))
                         gemini_client = await self.key_manager.rotate_key_async(str(e))
                         continue
