@@ -323,7 +323,8 @@ async def download_and_cache_media(client, message, is_private: bool, mentioned:
     supported_mimes = [
         "image/jpeg", "image/png", "image/webp", "image/gif",
         "audio/ogg", "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
-        "application/pdf", "text/plain", "video/mp4", "video/webm"
+        "application/pdf", "text/plain", "video/mp4", "video/webm",
+        "application/x-tgsticker"
     ]
 
     if mime_type in supported_mimes or "image" in mime_type or "audio" in mime_type:
@@ -348,6 +349,13 @@ async def download_and_cache_media(client, message, is_private: bool, mentioned:
                         path = mp3_path
                         mime_type = "audio/mp3" # Replace type with MP3 for AI
                 
+                # If an animated TGS sticker/gift is downloaded, automatically convert it to GIF!
+                elif "tgsticker" in mime_type or path.endswith(".tgs"):
+                    gif_path = await convert_tgs_to_gif(path)
+                    if gif_path:
+                        path = gif_path
+                        mime_type = "image/gif"
+
                 return json.dumps({
                     "path": path,
                     "mime_type": mime_type

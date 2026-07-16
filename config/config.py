@@ -487,9 +487,11 @@ _PARAMS = {
     "SITE_COMMAND_WHITELIST": DynamicParameter("SITE_COMMAND_WHITELIST", "all", str),
     "SITE_COMMAND_BLACKLIST": DynamicParameter("SITE_COMMAND_BLACKLIST", "sudo,reboot,shutdown,passwd,chown,chmod", str),
     "SITE_COMMAND_REGEX_BLACKLIST": DynamicParameter("SITE_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|tools\.py|sandbox\.py|utils\.py|downloader\.py)", str),
-    "SITE_COMMAND_REGEX_WHITELIST": DynamicParameter("SITE_COMMAND_REGEX_WHITELIST", "", str),
+    "SITE_COMMAND_REGEX_WHITELIST": DynamicParameter("SANDBOX_COMMAND_REGEX_WHITELIST", "", str),
     "SITE_PYTHON_WHITELIST": DynamicParameter("SITE_PYTHON_WHITELIST", "all", str),
-    "SITE_PYTHON_BLACKLIST": DynamicParameter("SITE_PYTHON_BLACKLIST", "os.system,os.popen,subprocess,shutil.rmtree,eval,exec", str)
+    "SITE_PYTHON_BLACKLIST": DynamicParameter("SITE_PYTHON_BLACKLIST", "os.system,os.popen,subprocess,shutil.rmtree,eval,exec", str),
+    "AI_ALLOWED_MIMES": DynamicParameter("AI_ALLOWED_MIMES", "all", str),
+    "AI_BLOCKED_MIMES": DynamicParameter("AI_BLOCKED_MIMES", "none", str)
 }
 
 def __getattr__(name: str):
@@ -758,6 +760,8 @@ AI_ALLOWED_ROOT_TOOLS = _parse_list("AI_ALLOWED_ROOT_TOOLS", ["all"])
 AI_BLOCKED_ROOT_TOOLS = _parse_list("AI_BLOCKED_ROOT_TOOLS", ["execute_python_code", "run_sandboxed_command"])
 AI_ALLOWED_CUSTOM_TOOLS = _parse_list("AI_ALLOWED_CUSTOM_TOOLS", ["all"])
 AI_BLOCKED_CUSTOM_TOOLS = _parse_list("AI_BLOCKED_CUSTOM_TOOLS", [])
+AI_ALLOWED_MIMES = _parse_list("AI_ALLOWED_MIMES", ["all"])
+AI_BLOCKED_MIMES = _parse_list("AI_BLOCKED_MIMES", ["none"])
 
 # Custom dynamic tools permissions
 CUSTOM_TOOLS_ENABLE = os.getenv("CUSTOM_TOOLS_ENABLE", "true").lower() == "true"
