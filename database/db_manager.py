@@ -9,10 +9,8 @@ import time
 from datetime import datetime, date
 from typing import Any
 from google.genai import types
-from config import SAFE_DB_DIR, MESSAGES_LIMIT, SUMMARIZATION_KEEP_LIMIT, CONTEXT_LOCAL_RATIO, CONTEXT_LOCAL_MIN_LIMIT, SQLITE_JOURNAL_MODE, DB_NAME
-
 logger = logging.getLogger("Database")
-DB_PATH = SAFE_DB_DIR / DB_NAME
+DB_PATH = config.SAFE_DB_DIR / config.DB_NAME
 
 def clean_for_json(obj):
     """Recursively cleans data and converts non-serializable types into a JSON-compatible format."""
@@ -100,7 +98,7 @@ class DBManager:
 
     async def connect(self):
         self.db = await aiosqlite.connect(DB_PATH)
-        await self.db.execute(f"PRAGMA journal_mode={SQLITE_JOURNAL_MODE};")
+        await self.db.execute(f"PRAGMA journal_mode={config.SQLITE_JOURNAL_MODE};")
         await self.db.execute("PRAGMA foreign_keys=ON;")
         await self._init_db()
         logger.info(f"SQLite DB connection successfully established. File: {DB_PATH}")

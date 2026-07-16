@@ -9,10 +9,6 @@ from pathlib import Path
 from google.genai import types
 from google.genai.errors import APIError
 
-from config import (
-    BASE_DIR, MESSAGES_LIMIT, SUMMARIZATION_MESSAGES_LIMIT, SUMMARIZATION_KEEP_LIMIT, 
-    MEDIA_LIMIT, WORKSPACE_DIR, TIMEOUT_SLEEP, CROSS_CHAT_CONTEXT
-)
 from utils import wait_for_google_file_active
 
 logger = logging.getLogger("ContextManager")
@@ -32,10 +28,10 @@ class AIContextManager:
         Compresses the global cross-cutting history log using an externalized prompt.
         """
         logger.info("Context limit exceeded. Starting global summarization of cross-cutting memory...")
-        history_raw = await self.db.get_history("global", limit=SUMMARIZATION_MESSAGES_LIMIT)
+        history_raw = await self.db.get_history("global", limit=config.SUMMARIZATION_MESSAGES_LIMIT)
         
         # Read the externalized summarization prompt
-        prompt_path = BASE_DIR / "config" / "summarize_prompt.txt"
+        prompt_path = config.BASE_DIR / "config" / "summarize_prompt.txt"
         if prompt_path.exists():
             try:
                 with open(prompt_path, "r", encoding="utf-8") as f:
@@ -64,7 +60,7 @@ class AIContextManager:
             )
             summary_text = response.text
             await self.db.update_summary("global", summary_text)
-            await self.db.clear_history_for_summarization("global", keep_last_n=SUMMARIZATION_KEEP_LIMIT)
+            await self.db.clear_history_for_summarization("global", keep_last_n=config.SUMMARIZATION_KEEP_LIMIT)
             logger.info("Global summarization of cross-cutting memory completed successfully.")
         except Exception as e:
             logger.error(f"Error during summarization: {str(e)}")
@@ -170,16 +166,16 @@ class AIContextManager:
         matches cached file URIs, and returns chronological contents ready for Gemini.
         """
         # Load the configuration of cross-cutting memory dynamically
-        if CROSS_CHAT_CONTEXT:
-            history_raw = await self.db.get_history(chat_id, limit=MESSAGES_LIMIT, max_db_id=max_db_id)
+        if config.CROSS_CHAT_CONTEXT:
+            history_raw = await self.db.get_history(chat_id, limit=config.MESSAGES_LIMIT, max_db_id=max_db_id)
         else:
             # Fallback to isolated context of current chat only (no other chats logged)
-            history_raw = await self.db.get_history(chat_id, limit=MESSAGES_LIMIT, max_db_id=max_db_id)
+            history_raw = await self.db.get_history(chat_id, limit=config.MESSAGES_LIMIT, max_db_id=max_db_id)
             # Remove segments corresponding to other chats if present in global scope
             history_raw = [(c, m) for (c, m) in history_raw if f"Chat: {chat_id}" in str(c.parts or "")]
 
         contents_raw = []
-        media_limit = MEDIA_LIMIT
+        media_limit = config.MEDIA_LIMIT
         media_count = 0
         
         GOOGLE_FILE_URI_REGEX = re.compile(

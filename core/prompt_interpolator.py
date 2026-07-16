@@ -47,7 +47,7 @@ async def get_interpolated_prompt(client, character_file_name, use_system_prompt
 
     # 2. Extracting creator's profile data
     try:
-        creator = await client.get_entity(OWNER_ID)
+        creator = await client.get_entity(config.OWNER_ID)
         creator_id = creator.id
         creator_first = creator.first_name or "Bazilevs"
         creator_last = creator.last_name or ""
@@ -72,7 +72,7 @@ async def get_interpolated_prompt(client, character_file_name, use_system_prompt
     except Exception as e:
         logger.error(f"Error getting creator profile for prompt: {str(e)}")
         creator_id, creator_first, creator_last, creator_user, creator_premium, creator_bio, creator_verified, creator_scam, creator_fake, creator_bot, creator_birthday = (
-            OWNER_ID, "Bazilevs", "", "mcpeorakul", "no", "Bot creator", "no", "no", "no", "no", "unknown"
+            config.OWNER_ID, "Bazilevs", "", "mcpeorakul", "no", "Bot creator", "no", "no", "no", "no", "unknown"
         )
 
     # 3. Read prompt templates
@@ -80,7 +80,8 @@ async def get_interpolated_prompt(client, character_file_name, use_system_prompt
     rules_prompt_template = ""
     character_prompt_template = "You are Baziliksina."
 
-    prompt_dir = BASE_DIR / "config"
+
+    prompt_dir = config.BASE_DIR / "config"
 
     # Resolve dynamic host IP instead of 0.0.0.0 for prompt instructions
     display_host = getattr(config, "WEB_SERVER_HOST", "127.0.0.1")
@@ -152,12 +153,12 @@ async def get_interpolated_prompt(client, character_file_name, use_system_prompt
         "{me_restricted}": me_restricted,
         "{me_birthday}": me_birthday,
         "{me_bio}": me_bio,
-        "{WORKSPACE_DIR}": str(WORKSPACE_DIR),
-        "{SESSION_NAME}": str(SESSION_NAME),
-        "{SESSION_PATH}": str(SESSION_PATH),
-        "{SAFE_DB_DIR}": str(SAFE_DB_DIR),
-        "{DB_NAME}": str(DB_NAME),
-        "{BOT_AVATAR_NAME}": str(BOT_AVATAR_NAME),
+        "{WORKSPACE_DIR}": str(config.WORKSPACE_DIR),
+        "{SESSION_NAME}": str(config.SESSION_NAME),
+        "{SESSION_PATH}": str(config.SESSION_PATH),
+        "{SAFE_DB_DIR}": str(config.SAFE_DB_DIR),
+        "{DB_NAME}": str(config.DB_NAME),
+        "{BOT_AVATAR_NAME}": str(config.BOT_AVATAR_NAME),
         "{WEB_SERVER_HOST}": display_host,
         "{WEB_SERVER_PORT}": str(config.WEB_SERVER_PORT),
         "{WEB_SERVER_SUBDOMAIN}": str(config.WEB_SERVER_SUBDOMAIN)

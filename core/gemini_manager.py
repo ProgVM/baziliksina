@@ -11,14 +11,6 @@ import config
 from google.genai import types
 from google.genai.errors import APIError
 
-from config import (
-    GEMINI_MODELS, WORKSPACE_DIR, SESSION_NAME, SESSION_PATH, SAFE_DB_DIR, 
-    OWNER_ID, MESSAGES_LIMIT, TEMPERATURE, STOP_SEQUENCES, THINKING_LEVEL, 
-    TOP_P, MAX_TURNS, SAFETY_HATE_SPEECH, SAFETY_HARASSMENT, 
-    SAFETY_SEXUALLY_EXPLICIT, SAFETY_DANGEROUS_CONTENT, GEMINI_TIMEOUT, 
-    TYPING_INTERVAL, TIMEOUT_SLEEP, RATE_LIMIT_SLEEP, API_ERROR_SLEEP, 
-    CHARACTER_FILE, BOT_AVATAR_NAME, DB_NAME, USE_SYSTEM_PROMPT, BASE_DIR
-)
 from key_manager import GeminiKeyManager, PollinationsKeyManager
 from db_manager import DBManager
 from registry import registry
@@ -72,7 +64,7 @@ class GeminiManager:
         tools.current_reply_to_id.set(reply_to_id)
         
         # Load system instructions dynamically via PromptInterpolator
-        system_prompt = await get_interpolated_prompt(self.client, CHARACTER_FILE, use_system_prompt=USE_SYSTEM_PROMPT)
+        system_prompt = await get_interpolated_prompt(self.client, config.CHARACTER_FILE, use_system_prompt=config.USE_SYSTEM_PROMPT)
         logger.info(f"Loaded system prompt from disk: {len(system_prompt)} characters.")
 
         try:
@@ -82,7 +74,7 @@ class GeminiManager:
             chat_title, chat_username = "Chat", "no"
 
         # Load environment context dynamically from env_prompt.txt
-        env_path = BASE_DIR / "config" / "env_prompt.txt"
+        env_path = config.BASE_DIR / "config" / "env_prompt.txt"
         if env_path.exists():
             try:
                 with open(env_path, "r", encoding="utf-8") as f:
@@ -154,10 +146,10 @@ class GeminiManager:
             return mapping.get(str(threshold_str).strip().lower(), types.HarmBlockThreshold.BLOCK_NONE)
 
         safety_settings = [
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=get_safety_threshold(SAFETY_HATE_SPEECH)),
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=get_safety_threshold(SAFETY_HARASSMENT)),
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=get_safety_threshold(SAFETY_SEXUALLY_EXPLICIT)),
-            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=get_safety_threshold(SAFETY_DANGEROUS_CONTENT)),
+            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=get_safety_threshold(config.SAFETY_HATE_SPEECH)),
+            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=get_safety_threshold(config.SAFETY_HARASSMENT)),
+            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=get_safety_threshold(config.SAFETY_SEXUALLY_EXPLICIT)),
+            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=get_safety_threshold(config.SAFETY_DANGEROUS_CONTENT)),
         ]
 
         # Filter allowed tools based on config matrix
@@ -175,16 +167,38 @@ class GeminiManager:
                 if config.AI_ALLOWED_CUSTOM_TOOLS and "all" not in config.AI_ALLOWED_CUSTOM_TOOLS and tool.name not in config.AI_ALLOWED_CUSTOM_TOOLS:
                     is_blocked = True
             if not is_blocked:
-                allowed_callables.append(tool.callable)
+                func = tool.callable
+                try:
+                    # Map arbitrary keyword argument expansions into an explicit dict parameter
+                    sig = inspect.signature(func)
+                    clean_params = []
+                    has_kwargs = False
+                    for p in sig.parameters.values():
+                        if p.kind == inspect.Parameter.VAR_KEYWORD:
+                            has_kwargs = True
+                        elif p.kind != inspect.Parameter.VAR_POSITIONAL:
+                            clean_params.append(p)
+                    if has_kwargs:
+                        kwargs_param = inspect.Parameter(
+                            name="kwargs",
+                            kind=inspect.Parameter.KEYWORD_ONLY,
+                            default=None,
+                            annotation=dict
+                        )
+                        clean_params.append(kwargs_param)
+                    func.__signature__ = sig.replace(parameters=clean_params)
+                except Exception:
+                    pass
+                allowed_callables.append(func)
 
         config_obj = types.GenerateContentConfig(
-            system_instruction=dynamic_prompt if USE_SYSTEM_PROMPT else None,
+            system_instruction=dynamic_prompt if config.USE_SYSTEM_PROMPT else None,
             tools=allowed_callables,
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
             safety_settings=safety_settings,
-            temperature=TEMPERATURE,
-            top_p=TOP_P,
-            stop_sequences=STOP_SEQUENCES if STOP_SEQUENCES else None,
+            temperature=config.TEMPERATURE,
+            top_p=config.TOP_P,
+            stop_sequences=config.STOP_SEQUENCES if config.STOP_SEQUENCES else None,
             max_output_tokens=self.key_manager.output_token_limit,
         )
 
@@ -192,13 +206,13 @@ class GeminiManager:
             try:
                 async with self.client.action(chat_entity, 'typing'):
                     while True:
-                        await asyncio.sleep(TYPING_INTERVAL)
+                        await asyncio.sleep(config.TYPING_INTERVAL)
             except (asyncio.CancelledError, Exception):
                 pass
 
         typing_task = asyncio.create_task(send_typing_loop())
 
-        max_turns = MAX_TURNS
+        max_turns = config.MAX_TURNS
         should_ignore = False
 
         try:
@@ -496,10 +510,16 @@ class GeminiManager:
                         if tool_meta:
                             try:
                                 logger.info(f"Tool call '{fn_name}' from registry...")
+                                # Unpack explicit dict arguments back to keyword arguments
+                                call_args = args.copy() if args else {}
+                                if "kwargs" in call_args and isinstance(call_args["kwargs"], dict):
+                                    extra = call_args.pop("kwargs")
+                                    call_args.update(extra)
+                                    
                                 if inspect.iscoroutinefunction(tool_meta.callable):
-                                    result = await tool_meta.callable(**args)
+                                    result = await tool_meta.callable(**call_args)
                                 else:
-                                    result = tool_meta.callable(**args)
+                                    result = tool_meta.callable(**call_args)
                                     
                                 if fn_name == "upload_file_to_google" and isinstance(result, dict) and result.get("status") == "success":
                                     g_uri = result.get("google_uri")
