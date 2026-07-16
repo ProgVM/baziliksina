@@ -1,5 +1,6 @@
 # tools/media_tools.py
 import os
+import time
 import json
 import logging
 import random
@@ -182,7 +183,6 @@ class AIToolKitMedia:
 
     async def upload_file_to_public_host(self, filename: str, provider: str = DEFAULT_PUBLIC_UPLOAD_PROVIDER, timeout: float = PUBLIC_UPLOAD_TIMEOUT, **kwargs) -> str:
         """Uploads a media file or document from the local AI sandbox to Telegraph, file.io, or Uguu.se."""
-        import time
         if not tools.client:
             return "Error: Telethon client is not initialized."
         file_path = WORKSPACE_DIR / os.path.basename(filename)

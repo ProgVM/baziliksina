@@ -5,7 +5,7 @@ import logging
 import asyncio
 from pathlib import Path
 from PIL import Image
-from config import WORKSPACE_DIR, MAX_FILE_SIZE, AVATAR_CACHE_TIME, FFMPEG_PATH, CONVERSION_TIMEOUT, EMOJI_CACHE_DIR_NAME, AVATAR_CACHE_DIR_NAME, GIFT_CACHE_DIR_NAME, TEMP_MEDIA_DIR_NAME
+import config
 
 logger = logging.getLogger("Downloader")
 
@@ -315,7 +315,8 @@ async def download_and_cache_media(client, message, is_private: bool, mentioned:
     else:
         return None
 
-    if file_size > MAX_FILE_SIZE:
+    # Evaluate limit parameters dynamically through the config proxy
+    if file_size > config.MAX_FILE_SIZE:
         logger.warning(f"Attachment {t_media_name} skipped: size exceeds the allowed limit.")
         return None
 

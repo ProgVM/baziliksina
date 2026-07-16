@@ -1,5 +1,6 @@
 # tools/web_tools.py
 import os
+import time
 import re
 import json
 import logging
@@ -116,7 +117,6 @@ class AIToolKitWeb:
                 output_msg = f"Search Results for '{query}' ({media_type}):\n" + "\n".join(f"- {url}" for url in results)
                 
                 if auto_download:
-                    import time
                     from PIL import Image
                     from utils import sanitize_filename
                     from tools import download_content_from_url, upload_file_to_google
@@ -137,7 +137,7 @@ class AIToolKitWeb:
                                 if head_resp.status_code == 200:
                                     content_type = head_resp.headers.get("Content-Type", "").lower()
                                 else:
-                                    head_resp = await client_get.get(candidate_url)
+                                    head_resp = await client_head.get(candidate_url)
                                     content_type = head_resp.headers.get("Content-Type", "").lower()
                         except Exception as head_err:
                             logger.debug(f"Pre-check failed for candidate #{idx+1} ({candidate_url}): {str(head_err)}")

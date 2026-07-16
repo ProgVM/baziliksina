@@ -1,5 +1,6 @@
 # tools/telegram_tools.py
 import os
+import time
 import json
 import asyncio
 import logging
@@ -662,7 +663,6 @@ class AIToolKitTelegram:
             try: user_id = int(user_id)
             except ValueError: pass
         try:
-            import time
             until_date = int(time.time()) + duration_seconds if duration_seconds else None
             is_private = isinstance(chat_id, int) and chat_id > 0
             if is_private or str(chat_id) == str(user_id):
@@ -700,7 +700,6 @@ class AIToolKitTelegram:
             else:
                 from telethon.tl.functions.channels import EditBannedRequest
                 from telethon.tl.types import ChatBannedRights
-                import time
                 until = int(time.time()) + duration_seconds if duration_seconds else None
                 await tools.client(EditBannedRequest(channel=chat_id, participant=user_id, banned_rights=ChatBannedRights(until_date=until, view_messages=True)))
                 return f"Success. User banned in chat {chat_id}."

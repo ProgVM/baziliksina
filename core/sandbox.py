@@ -6,9 +6,7 @@ import logging
 import inspect
 import re
 from pathlib import Path
-import sys
 import config
-from config import SANDBOX_BLOCKED_FILES, SANDBOX_ALLOWED_FILES
 from registry import registry
 
 logger = logging.getLogger("Sandbox")
@@ -103,9 +101,9 @@ class AsyncSandbox:
         filename = os.path.basename(resolved_path)
         from utils import matches_filter
 
-        # Transform comma-separated configuration string parameters into structured lists securely
-        allowed_list = [f.strip() for f in SANDBOX_ALLOWED_FILES.split(",") if f.strip()] if isinstance(SANDBOX_ALLOWED_FILES, str) else SANDBOX_ALLOWED_FILES
-        blocked_list = [f.strip() for f in SANDBOX_BLOCKED_FILES.split(",") if f.strip()] if isinstance(SANDBOX_BLOCKED_FILES, str) else SANDBOX_BLOCKED_FILES
+        # Load configurations dynamically from the config module proxy
+        allowed_list = [f.strip() for f in config.SANDBOX_ALLOWED_FILES.split(",") if f.strip()] if isinstance(config.SANDBOX_ALLOWED_FILES, str) else config.SANDBOX_ALLOWED_FILES
+        blocked_list = [f.strip() for f in config.SANDBOX_BLOCKED_FILES.split(",") if f.strip()] if isinstance(config.SANDBOX_BLOCKED_FILES, str) else config.SANDBOX_BLOCKED_FILES
 
         if not matches_filter(filename, allowed_list, blocked_list):
             raise PermissionError("Security error: Access to this file is blocked by sandbox policy.")

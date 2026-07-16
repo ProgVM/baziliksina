@@ -126,7 +126,8 @@ ROOT_TOOL_CATEGORIES = {
 
 class ModularToolKit:
     def __getattr__(self, name):
-        if name in globals():
+        # Allow access strictly to registered modular tools
+        if name in ROOT_TOOL_CATEGORIES:
             return globals()[name]
         raise AttributeError(f"'ModularToolKit' object has no attribute '{name}'")
 
