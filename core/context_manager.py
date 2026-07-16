@@ -14,6 +14,18 @@ from utils import wait_for_google_file_active
 
 logger = logging.getLogger("ContextManager")
 
+# Official list of supported multimodal MIME types for the Gemini API
+SUPPORTED_GEMINI_MIMES = {
+    "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif",
+    "video/mp4", "video/mpeg", "video/quicktime", "video/x-msvideo", 
+    "video/x-flv", "video/webm", "video/x-ms-wmv", "video/3gpp",
+    "audio/wav", "audio/mpeg", "audio/mp3", "audio/ogg", "audio/aac", 
+    "audio/flac", "audio/x-m4a", "audio/mp4", "audio/amr",
+    "text/plain", "text/html", "text/css", "text/javascript", 
+    "text/rtf", "text/xml", "text/markdown", "application/pdf", 
+    "application/json", "text/csv", "text/tsv"
+}
+
 
 class AIContextManager:
     """
@@ -215,7 +227,13 @@ class AIContextManager:
                         guessed, _ = mimetypes.guess_type(m_path)
                         m_type = guessed or "application/octet-stream"
                     if m_path and os.path.exists(m_path) and m_type:
-                        if "webm" in m_type or m_path.endswith(".webm"):
+                        m_type_norm = m_type.lower().strip()
+                        if "webm" in m_type_norm or m_path.endswith(".webm"):
+                            continue
+                            
+                        # Skip files with unsupported MIME types to prevent API validation crashes
+                        if m_type_norm not in SUPPORTED_GEMINI_MIMES:
+                            logger.info(f"Skipping file {m_path} with unsupported MIME type: {m_type}")
                             continue
 
                         from downloader import check_and_clean_corrupted_file
