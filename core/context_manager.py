@@ -272,7 +272,8 @@ class AIContextManager:
                                         logger.error(f"Google upload failed for {m_path}: {str(upload_err)}")
                                         google_uri = None
                                 if google_uri:
-                                    file_part = types.Part.from_uri(file_uri=google_uri, mime_type=m_type)
+                                    actual_mime = await self.db.get_memory(google_uri) or m_type
+                                    file_part = types.Part.from_uri(file_uri=google_uri, mime_type=actual_mime)
 
                             if file_part:
                                 if content_obj.role == "user":
