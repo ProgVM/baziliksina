@@ -101,7 +101,7 @@ async def upload_media_to_google_background(media_info_str):
                 from utils import wait_for_google_file_active
                 if await wait_for_google_file_active(gemini_client, uploaded_file.name):
                     await db.set_memory(cache_key, google_uri)
-                    await db.set_memory(google_uri, m_type)
+                    await db.set_memory(google_uri, uploaded_file.mime_type)
                     logger.info(f"[Background Upload]: File successfully cached: {google_uri}")
     except Exception as e:
         logger.error(f"Error in background media upload: {str(e)}")

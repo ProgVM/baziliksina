@@ -265,7 +265,7 @@ class AIContextManager:
                                         from utils import wait_for_google_file_active
                                         if await wait_for_google_file_active(gemini_client, uploaded_file.name):
                                             await self.db.set_memory(cache_key, google_uri)
-                                            await self.db.set_memory(google_uri, m_type)
+                                            await self.db.set_memory(google_uri, uploaded_file.mime_type)
                                         else:
                                             google_uri = None
                                     except Exception as upload_err:

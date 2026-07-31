@@ -347,7 +347,7 @@ async def download_and_cache_media(client, message, is_private: bool, mentioned:
                     mp3_path = await convert_ogg_to_mp3(path)
                     if mp3_path:
                         path = mp3_path
-                        mime_type = "audio/mp3" # Replace type with MP3 for AI
+                        mime_type = "audio/mpeg"
                 
                 # If an animated TGS sticker/gift is downloaded, automatically convert it to GIF!
                 elif "tgsticker" in mime_type or path.endswith(".tgs"):
