@@ -321,4 +321,10 @@ class AIContextManager:
             else:
                 aligned.append(content)
                 
+        while aligned and aligned[-1].role == "model":
+            aligned.pop()
+
+        if not aligned:
+            aligned.append(types.Content(role="user", parts=[types.Part.from_text(text="[System: Continue context]")]))
+
         return aligned
