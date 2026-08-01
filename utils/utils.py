@@ -138,19 +138,92 @@ async def wait_for_google_file_active(gemini_client, file_name: str, timeout_sec
     return False
 
 
+def markdown_to_telegram_html(text: str) -> str:
+    """
+    Comprehensive converter that translates arbitrary Markdown, MarkdownV2, and Rich Text
+    formatting syntax into standard Telegram-compatible HTML tags.
+    """
+    if not text:
+        return text
+
+    import re
+
+    # 1. Code blocks with optional language specifier: ```python\ncode```
+    def _repl_code_block(m):
+        lang = m.group(1).strip() if m.group(1) else ""
+        code = m.group(2)
+        if lang:
+            return f'<pre><code class="language-{lang}">{code}</code></pre>'
+        return f'<pre>{code}</pre>'
+
+    text = re.sub(r'```([a-zA-Z0-9_+-]*)\n?(.*?)```', _repl_code_block, text, flags=re.DOTALL)
+
+    # 2. Inline code: `code`
+    text = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', text)
+
+    # 3. Spoilers: ||text||
+    text = re.sub(r'\|\|(.*?)\|\|', r'<tg-spoiler>\1</tg-spoiler>', text, flags=re.DOTALL)
+
+    # 4. Expandable / Collapsible blockquotes: **> text OR ||> text
+    def _repl_expandable_blockquote(m):
+        content = m.group(1).strip()
+        return f'<blockquote expandable>{content}</blockquote>'
+
+    text = re.sub(r'(?:^\*\*>\s*|^\|>\s*)([^\n]+(?:\n[^\n]+)*)', _repl_expandable_blockquote, text, flags=re.MULTILINE)
+
+    # 5. Standard blockquotes: > text
+    def _repl_blockquote(m):
+        content = m.group(1).strip()
+        return f'<blockquote>{content}</blockquote>'
+
+    text = re.sub(r'(?:^>\s*)([^\n]+(?:\n[^\n]+)*)', _repl_blockquote, text, flags=re.MULTILINE)
+
+    # 6. Markdown links: [text](url)
+    text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', text)
+
+    # 7. Custom emoji tags: ![emoji](tg://emoji?id=123) or <emoji id="123">
+    text = re.sub(r'!\[([^\]]*)\]\(tg://emoji\?id=(\d+)\)', r'<tg-emoji emoji-id="\2">\1</tg-emoji>', text)
+    text = re.sub(r'<emoji\s+id=["\']?(\d+)["\']?\s*>(.*?)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', text)
+
+    # 8. Bold text: **text** or __bold_text__
+    text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
+    text = re.sub(r'__(.*?)__', r'<b>\1</b>', text, flags=re.DOTALL)
+
+    # 9. Underline text: +text+
+    text = re.sub(r'\+(.*?)\+', r'<u>\1</u>', text, flags=re.DOTALL)
+
+    # 10. Italic text: *text* or _text_
+    text = re.sub(r'(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
+    text = re.sub(r'(?<!_)\_(?!\_)(.*?)(?<!_)\_(?!\_)', r'<i>\1</i>', text, flags=re.DOTALL)
+
+    # 11. Strikethrough: ~~text~~ or ~text~
+    text = re.sub(r'~~?(.*?)~~?', r'<s>\1</s>', text, flags=re.DOTALL)
+
+    # 12. Highlighted / Marked text: ==text==
+    text = re.sub(r'==(.*?)==', r'<mark>\1</mark>', text, flags=re.DOTALL)
+
+    # 13. Superscript text: ^text^
+    text = re.sub(r'\^([^\^]+)\^', r'<sup>\1</sup>', text)
+
+    return text
+
+
 def safe_telegram_html(text: str) -> str:
     """
-    Safely escapes characters (like &, <, >) inside text to be compatible with 
-    Telegram HTML parse mode, while preserving valid, supported Telegram HTML tags
-    (including <b>, <i>, <u>, <s>, <tg-spoiler>, <blockquote expandable>, <sub>, <sup>, and <mark>).
+    Safely converts Markdown syntax to Telegram HTML tags and sanitizes HTML entities,
+    preserving all rich text elements supported by Telegram (bold, italic, underline,
+    strikethrough, spoiler, tg-emoji, blockquote, expandable blockquote, details, sub, sup, mark).
     """
     import re
-    
-    # List of allowed tag names in Telegram HTML format (as of 2026)
+
+    # First convert Markdown to valid Telegram HTML tags
+    text = markdown_to_telegram_html(text)
+
+    # Supported Telegram HTML tags catalog
     allowed_tags = [
         'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 
         'span', 'tg-spoiler', 'a', 'tg-emoji', 'code', 'pre', 'blockquote',
-        'details', 'summary', 'sub', 'sup', 'mark', 'time'
+        'details', 'summary', 'sub', 'sup', 'mark', 'time', 'aside', 'cite'
     ]
     
     tag_pattern = re.compile(r'<(/?)(\w+)([^>]*)>')
@@ -160,20 +233,15 @@ def safe_telegram_html(text: str) -> str:
     
     for match in tag_pattern.finditer(text):
         start, end = match.span()
-        # Escaping non-tag segments
         before_text = text[last_idx:start]
         before_escaped = before_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         parts.append(before_escaped)
         
-        is_closing = match.group(1) == '/'
         tag_name = match.group(2).lower()
-        attrs = match.group(3)
         
         if tag_name in allowed_tags:
-            # Let the valid tag pass through intact
             parts.append(match.group(0))
         else:
-            # Escape invalid tags entirely
             tag_escaped = match.group(0).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             parts.append(tag_escaped)
             

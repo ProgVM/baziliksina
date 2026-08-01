@@ -73,6 +73,7 @@ ROOT_TOOL_CATEGORIES = {
     "send_poll": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "send_premium_list": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "send_telegram_media": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_rich_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "set_message_reaction": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "unpin_telegram_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
     "unrestrict_user": "Category 3: Telegram Automation (Telegram Automation Actions)",

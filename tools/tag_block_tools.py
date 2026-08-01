@@ -72,6 +72,11 @@ class RootTagBlockHandlers:
         caption = data.get("caption") or ""
         await tools.toolkit.send_media_message(chat_id=chat_entity, files=files, caption=caption)
 
+    async def rich_message(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
+        """Sends a structured Rich Message (article) with text, photos, maps, and collages."""
+        blocks = data.get("blocks") or data.get("text")
+        await tools.toolkit.send_rich_message(blocks_json=blocks, chat_id=chat_id, reply_to_msg_id=reply_to_id)
+
     async def edit(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """Edits a previously sent own message in the chat."""
         msg_id = data.get("msg_id")
@@ -227,6 +232,8 @@ ROOT_TAGS_BLOCKS = {
     "msg": ("tag", handlers.reply),
     "react": ("tag", handlers.react),
     "attach": ("tag", handlers.attach),
+    "rich_message": ("tag", handlers.rich_message),
+    "article": ("tag", handlers.rich_message),
     "edit": ("tag", handlers.edit),
     "delete": ("tag", handlers.delete),
     "pin": ("tag", handlers.pin),

@@ -196,3 +196,34 @@ async def sync_custom_tools_with_db(db_manager):
         logger.info(f"Synchronization complete. Successfully compiled and added tools: {success_count}/{len(custom_tools_list)}")
     except Exception as db_err:
         logger.error(f"Error reading custom tools from the SQLite database: {str(db_err)}")
+
+async def sync_custom_tags_blocks_with_db(db_manager):
+    """
+    Asynchronously reads all custom tags and blocks from the SQLite database,
+    compiles their code, and registers them in the active TagBlockRegistry at startup.
+    """
+    logger.info("Starting synchronization of custom tags and blocks with the database...")
+    try:
+        custom_tb_list = await db_manager.get_all_custom_tags_blocks()
+        success_count = 0
+        for item in custom_tb_list:
+            try:
+                name = item["name"]
+                type_str = item["type"]
+                desc = item["description"]
+                code = item["code"]
+                compiled_func = compile_custom_tool(name, code)
+                tag_block_registry.register(
+                    name=name,
+                    type_str=type_str,
+                    callable_func=compiled_func,
+                    description=desc,
+                    is_custom=True,
+                    code=code
+                )
+                success_count += 1
+            except Exception as err:
+                logger.error(f"Failed to compile custom tag/block '{item.get('name')}': {str(err)}")
+        logger.info(f"Custom tags and blocks synchronization complete. Loaded: {success_count}/{len(custom_tb_list)}")
+    except Exception as db_err:
+        logger.error(f"Error reading custom tags/blocks from SQLite: {str(db_err)}")

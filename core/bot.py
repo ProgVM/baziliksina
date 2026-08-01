@@ -772,9 +772,10 @@ async def main():
         # Register system tools in the global registry at startup
         tools.register_system_tools()
         
-        # Sync custom tools from the SQLite database
-        from registry import sync_custom_tools_with_db
+        # Sync custom tools and custom tags/blocks from the SQLite database
+        from registry import sync_custom_tools_with_db, sync_custom_tags_blocks_with_db
         await sync_custom_tools_with_db(db)
+        await sync_custom_tags_blocks_with_db(db)
         
         # Asynchronously read and restore the saved working key from SQLite DB
         await ai_manager.key_manager.load_saved_index()

@@ -973,6 +973,99 @@ class AIToolKitTelegram:
         except Exception as e:
             return f"Error sending audio: {str(e)}"
 
+    async def send_rich_message(self, blocks_json: str, chat_id: str = None, reply_to_msg_id: int = None, **kwargs) -> str:
+        """
+        Sends a Telegram Rich Message (article/longread) with alternating blocks of styled text,
+        embedded photos/videos, interactive maps, collages, and collapsible details.
+
+        Args:
+            blocks_json: JSON array string of blocks. Supported block types:
+                - {"type": "paragraph", "text": "HTML text..."}
+                - {"type": "photo", "file": "photo.jpg", "caption": "..."}
+                - {"type": "video", "file": "video.mp4", "caption": "..."}
+                - {"type": "map", "latitude": 55.7558, "longitude": 37.6173, "caption": "..."}
+                - {"type": "collage", "files": ["pic1.jpg", "pic2.jpg"]}
+                - {"type": "details", "title": "Title", "content": "..."}
+            chat_id: Target chat ID or username.
+            reply_to_msg_id: Optional message ID to reply to.
+        """
+        if not tools.client:
+            return "Error: Telethon client is not initialized."
+        if chat_id is None:
+            try:
+                chat_id = tools.current_chat_id.get()
+            except LookupError:
+                return "Error: Could not resolve target chat."
+
+        if isinstance(chat_id, str):
+            try:
+                chat_id = int(chat_id)
+            except ValueError:
+                pass
+
+        try:
+            blocks = json.loads(blocks_json) if isinstance(blocks_json, str) else blocks_json
+            if not isinstance(blocks, list):
+                return "Error: blocks_json must be a valid JSON array."
+
+            from utils import safe_telegram_html
+            from telethon.tl import types as tl_types
+
+            sent_message_ids = []
+
+            for block in blocks:
+                b_type = block.get("type", "").lower()
+
+                if b_type == "paragraph":
+                    text = block.get("text", "")
+                    if text:
+                        formatted = safe_telegram_html(text)
+                        res = await tools.client.send_message(chat_id, formatted, parse_mode="html", reply_to=reply_to_msg_id)
+                        sent_message_ids.append(res.id)
+
+                elif b_type in ["photo", "video"]:
+                    filename = block.get("file") or block.get("filename")
+                    caption = block.get("caption", "")
+                    if filename:
+                        f_path = WORKSPACE_DIR / os.path.basename(filename)
+                        if f_path.exists():
+                            res = await tools.client.send_file(chat_id, str(f_path.resolve()), caption=safe_telegram_html(caption), parse_mode="html", reply_to=reply_to_msg_id)
+                            sent_message_ids.append(res.id)
+
+                elif b_type == "map":
+                    lat = float(block.get("latitude", 0))
+                    lon = float(block.get("longitude", 0))
+                    caption = block.get("caption", "")
+                    media_geo = tl_types.InputMediaGeoPoint(geo_point=tl_types.InputGeoPoint(latitude=lat, longitude=lon))
+                    res = await tools.client.send_file(chat_id, media_geo, caption=safe_telegram_html(caption), parse_mode="html", reply_to=reply_to_msg_id)
+                    sent_message_ids.append(res.id)
+
+                elif b_type == "collage":
+                    files = block.get("files", [])
+                    resolved = [str((WORKSPACE_DIR / os.path.basename(f)).resolve()) for f in files if (WORKSPACE_DIR / os.path.basename(f)).exists()]
+                    if resolved:
+                        res = await tools.client.send_file(chat_id, resolved, reply_to=reply_to_msg_id)
+                        if isinstance(res, list):
+                            sent_message_ids.extend([r.id for r in res])
+                        else:
+                            sent_message_ids.append(res.id)
+
+                elif b_type == "details":
+                    title = block.get("title", "Details")
+                    content = block.get("content", "")
+                    formatted = f"<details><summary>{safe_telegram_html(title)}</summary>{safe_telegram_html(content)}</details>"
+                    res = await tools.client.send_message(chat_id, formatted, parse_mode="html", reply_to=reply_to_msg_id)
+                    sent_message_ids.append(res.id)
+
+            if tools.db and sent_message_ids:
+                await tools.db.save_message(str(chat_id), "model", f"[Sent Rich Message: {len(blocks)} blocks]", msg_id=sent_message_ids[-1])
+                for m_id in sent_message_ids:
+                    tools.processed_msg_ids.add((int(chat_id), m_id))
+
+            return f"Success. Rich message ({len(blocks)} blocks) sent to chat {chat_id}."
+        except Exception as e:
+            return f"Error sending rich message: {str(e)}"
+
     async def get_group_members(self, chat_id: str = None, only_admins: bool = False, limit: int = 100, **kwargs) -> str:
         """
         Retrieves the list of active members of the specified group or channel.
