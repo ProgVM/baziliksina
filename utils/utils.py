@@ -185,19 +185,19 @@ def markdown_to_telegram_html(text: str) -> str:
     text = re.sub(r'!\[([^\]]*)\]\(tg://emoji\?id=(\d+)\)', r'<tg-emoji emoji-id="\2">\1</tg-emoji>', text)
     text = re.sub(r'<emoji\s+id=["\']?(\d+)["\']?\s*>(.*?)</emoji>', r'<tg-emoji emoji-id="\1">\2</tg-emoji>', text)
 
-    # 8. Bold text: **text** or __bold_text__
+    # 8. Bold text: **text**
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
-    text = re.sub(r'__(.*?)__', r'<b>\1</b>', text, flags=re.DOTALL)
 
     # 9. Underline text: +text+
     text = re.sub(r'\+(.*?)\+', r'<u>\1</u>', text, flags=re.DOTALL)
 
-    # 10. Italic text: *text* or _text_
+    # 10. Italic text: __text__ or *text*
+    text = re.sub(r'__(.*?)__', r'<i>\1</i>', text, flags=re.DOTALL)
     text = re.sub(r'(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
-    text = re.sub(r'(?<!_)\_(?!\_)(.*?)(?<!_)\_(?!\_)', r'<i>\1</i>', text, flags=re.DOTALL)
 
-    # 11. Strikethrough: ~~text~~ or ~text~
-    text = re.sub(r'~~?(.*?)~~?', r'<s>\1</s>', text, flags=re.DOTALL)
+    # 11. Strikethrough: ~~text~~
+    text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
+
 
     # 12. Highlighted / Marked text: ==text==
     text = re.sub(r'==(.*?)==', r'<mark>\1</mark>', text, flags=re.DOTALL)
