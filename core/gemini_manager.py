@@ -283,7 +283,7 @@ class GeminiManager:
                     )
                 except asyncio.TimeoutError:
                     logger.warning("Model response timeout. Retrying...")
-                    await asyncio.sleep(TIMEOUT_SLEEP)
+                    await asyncio.sleep(config.TIMEOUT_SLEEP)
                     continue
                 except APIError as e:
                     if e.code == 429:
@@ -308,7 +308,7 @@ class GeminiManager:
                         if file_match:
                             file_id = file_match.group(1)
                             await self.context_mgr._heal_inaccessible_file(file_id, contents)
-                            await asyncio.sleep(TIMEOUT_SLEEP)
+                            await asyncio.sleep(config.TIMEOUT_SLEEP)
                             continue
                         raise e
                     elif e.code in [502, 503, 504]:
