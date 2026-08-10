@@ -815,7 +815,9 @@ if CONFIG_JSON_PATH.exists():
 # MODULE ATTRIBUTE INTERCEPTORS
 # =====================================================================
 def __getattr__(name: str) -> Any:
-    """Intercepts module variable lookups and returns evaluated DynamicParameter primitives."""
+    if name == "SESSION_PATH":
+        session_name = _PARAMS["TELEGRAM_SESSION_NAME"].evaluate() if "TELEGRAM_SESSION_NAME" in _PARAMS else "baziliksina_session"
+        return str(SAFE_DB_DIR / session_name)
     if name in _PARAMS:
         return _PARAMS[name].evaluate()
     if name in globals():
