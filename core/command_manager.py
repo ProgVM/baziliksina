@@ -169,6 +169,8 @@ class CommandManager:
         self._handlers["request"] = self._cmd_request
         self._handlers["log"] = self._cmd_log
         self._handlers["help"] = self._cmd_help
+        self._handlers["message"] = self._cmd_message
+        self._handlers["msg"] = self._cmd_message
 
         # Element Manager Commands
         self._handlers["command"] = self._cmd_element_command
@@ -179,12 +181,12 @@ class CommandManager:
         self._handlers["timer"] = self._cmd_element_timer
         self._handlers["trigger"] = self._cmd_element_trigger
 
-    async def execute_pipeline(self, pipeline_text: str, user_id: int, chat_id: int, event=None) -> str:
+    async def execute_pipeline(self, pipeline_text: str, user_id: int, chat_id: int, event=None) -> Optional[str]:
         """
         Executes a chain of commands or pipeline stages with operators (; , &&, ||, |).
         Pipes stdout/result from one stage as input/parameter to the next stage when '|' is used.
+        Returns None for unrecognized commands to silently ignore external bot commands.
         """
-        # Parse operator tokens while keeping string literals intact
         stages = re.split(r'(\s*(?:&&|\|\||;|\|)\s*)', pipeline_text)
         
         last_result = ""
@@ -217,20 +219,25 @@ class CommandManager:
 
             if stage_cmd.startswith("/"):
                 res = await self.execute_single_command(stage_cmd, user_id, chat_id, event)
+                if res is None:
+                    return None
             else:
                 res = stage_cmd
 
-            last_result = str(res)
+            last_result = str(res) if res is not None else ""
             last_success = not (last_result.startswith("Error:") or "Permission denied" in last_result)
             idx += 1
 
-        return last_result
+        return last_result if last_result else None
 
-    async def execute_single_command(self, text: str, user_id: int, chat_id: int, event=None) -> str:
-        """Parses and executes a single command string."""
+    async def execute_single_command(self, text: str, user_id: int, chat_id: int, event=None) -> Optional[str]:
+        """
+        Parses and executes a single command string.
+        Returns None if command is unknown to silently ignore commands intended for other Telegram bots.
+        """
         cli_args = parse_cli_command(text)
         if not cli_args:
-            return "Error: Invalid command format."
+            return None
 
         cmd_name = cli_args.command_name
 
@@ -248,11 +255,12 @@ class CommandManager:
                         res = await compiled_func(cli_args=cli_args, user_id=user_id, chat_id=chat_id, event=event)
                     else:
                         res = compiled_func(cli_args=cli_args, user_id=user_id, chat_id=chat_id, event=event)
-                    return str(res) if res is not None else f"Command /{cmd_name} executed successfully."
+                    return str(res) if res is not None else ""
             except Exception as e:
                 return f"Error executing custom command /{cmd_name}: {str(e)}"
 
-        return f"Error: Unknown command /{cmd_name}. Type /help for available commands."
+        # Silently ignore commands intended for other Telegram bots
+        return None
 
     # --- USER COMMAND HANDLERS ---
     async def _cmd_q(self, args: CLIArgs, user_id: int, chat_id: int, event) -> str:
@@ -296,6 +304,27 @@ class CommandManager:
 
         return "Error: AI Manager is not bound."
 
+    async def _cmd_message(self, args: CLIArgs, user_id: int, chat_id: int, event) -> Optional[str]:
+        """Message command (/message or /msg). Delivers text with optional embedded XML tags."""
+        if not await permission_manager.has_permission(user_id, required_rank=RankLevel.ADMIN):
+            return "Error: Permission denied. Required rank: ADMIN (80+)."
+
+        msg_text = args.raw_tail
+        if not msg_text:
+            return "Usage: /message <text_or_xml_action_tags>"
+
+        target_reply_id = getattr(event.message, "id", None) if event else None
+
+        if self.ai_manager and hasattr(self.ai_manager, "executor"):
+            _, _ = await self.ai_manager.executor.execute_response(msg_text, event.input_chat if event else None, target_reply_id, str(chat_id))
+            return None
+        elif self.client:
+            from utils import safe_telegram_html
+            formatted = safe_telegram_html(msg_text)
+            await self.client.send_message(chat_id, formatted, parse_mode="html", reply_to=target_reply_id)
+            return None
+        return "Error: Client is not initialized."
+
     async def _cmd_help(self, args: CLIArgs, user_id: int, chat_id: int, event) -> str:
         """Help command (/help). Displays available user and admin commands."""
         query = args.positional[0].lower() if args.positional else "all"
@@ -311,6 +340,7 @@ class CommandManager:
             "/admin [set/reset/info] [user_id/@username] [rank] — Manage user ranks & permissions",
             "/config [get/set/list] [key] [value] — Inspect or update configuration",
             "/prompt [filename] [replace/insert_after/insert_before/delete] [pattern] [text] — Edit prompt files",
+            "/message [text_with_xml_tags] — Execute XML action tags and deliver text",
             "/shell [command] — Execute bash/shell command in sandbox",
             "/telegram [method] [args_json] — Execute Telethon or raw TL action",
             "/run [code] — Execute Python script in Sandbox VM",
