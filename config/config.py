@@ -816,8 +816,8 @@ if CONFIG_JSON_PATH.exists():
 # =====================================================================
 def __getattr__(name: str) -> Any:
     if name == "SESSION_PATH":
-        session_name = _PARAMS["TELEGRAM_SESSION_NAME"].evaluate() if "TELEGRAM_SESSION_NAME" in _PARAMS else "baziliksina_session"
-        return str(SAFE_DB_DIR / session_name)
+        s_name = _PARAMS["TELEGRAM_SESSION_NAME"].evaluate() if "TELEGRAM_SESSION_NAME" in _PARAMS else "baziliksina_session"
+        return str(SAFE_DB_DIR / s_name)
     if name in _PARAMS:
         return _PARAMS[name].evaluate()
     if name in globals():

@@ -3,10 +3,9 @@ from .config import *
 from .config import _PARAMS
 
 def __getattr__(name: str):
-    if name in _PARAMS:
-        return _PARAMS[name].evaluate()
-    raise AttributeError(f"module 'config' has no attribute '{name}'")
+    from .config import __getattr__ as config_getattr
+    return config_getattr(name)
 
 def __dir__():
     from .config import _PARAMS
-    return sorted(list(globals().keys()) + list(_PARAMS.keys()))
+    return sorted(list(globals().keys()) + list(_PARAMS.keys()) + ["SESSION_PATH"])
