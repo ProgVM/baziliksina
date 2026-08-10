@@ -86,13 +86,17 @@ class ServiceManager:
                     if inspect.iscoroutinefunction(srv.callable_or_code):
                         await srv.callable_or_code()
                     else:
-                        srv.callable_or_code()
+                        res = srv.callable_or_code()
+                        if inspect.isawaitable(res):
+                            await res
                 elif isinstance(srv.callable_or_code, str):
                     compiled_func = compile_custom_tool(srv.name, srv.callable_or_code)
                     if inspect.iscoroutinefunction(compiled_func):
                         await compiled_func()
                     else:
-                        compiled_func()
+                        res = compiled_func()
+                        if inspect.isawaitable(res):
+                            await res
             except asyncio.CancelledError:
                 logger.info(f"Service '{name}' task cancelled.")
             except Exception as e:
@@ -173,13 +177,17 @@ class ServiceManager:
                         if inspect.iscoroutinefunction(job.callable_or_code):
                             await job.callable_or_code()
                         else:
-                            job.callable_or_code()
+                            res = job.callable_or_code()
+                            if inspect.isawaitable(res):
+                                await res
                     elif isinstance(job.callable_or_code, str):
                         compiled_func = compile_custom_tool(job.name, job.callable_or_code)
                         if inspect.iscoroutinefunction(compiled_func):
                             await compiled_func()
                         else:
-                            compiled_func()
+                            res = compiled_func()
+                            if inspect.isawaitable(res):
+                                await res
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
