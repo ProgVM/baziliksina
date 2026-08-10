@@ -231,6 +231,15 @@ class DynamicParameter:
         def parse_primary():
             if idx[0] >= len(tokens): raise ValueError("Unexpected end of expression")
             t_type, t_val = tokens[idx[0]]
+            
+            # Support unary minus (-) and unary plus (+) for negative numbers
+            if t_type == "OP" and t_val == "-":
+                idx[0] += 1
+                return -parse_primary()
+            if t_type == "OP" and t_val == "+":
+                idx[0] += 1
+                return parse_primary()
+
             idx[0] += 1
             if t_type == "NUM": return t_val
             elif t_type == "LPAREN":
@@ -363,6 +372,9 @@ class DynamicParameter:
 # =====================================================================
 _PARAMS: Dict[str, DynamicParameter] = {
     # --- 1. Telegram Core, Sessions & Admin Ranks ---
+    "API_ID": DynamicParameter("TELEGRAM_API_ID", 0, int, allow_dsl=False, description="Telegram API ID alias"),
+    "API_HASH": DynamicParameter("TELEGRAM_API_HASH", "", str, allow_dsl=False, description="Telegram API Hash alias"),
+    "SESSION_NAME": DynamicParameter("TELEGRAM_SESSION_NAME", "baziliksina_session", str, allow_dsl=False, description="Session name alias"),
     "TELEGRAM_API_ID": DynamicParameter("TELEGRAM_API_ID", 0, int, allow_dsl=False, description="Telegram API ID"),
     "TELEGRAM_API_HASH": DynamicParameter("TELEGRAM_API_HASH", "", str, allow_dsl=False, description="Telegram API Hash"),
     "TELEGRAM_SESSION_NAME": DynamicParameter("TELEGRAM_SESSION_NAME", "baziliksina_session", str, allow_dsl=False, description="Telegram session name"),
