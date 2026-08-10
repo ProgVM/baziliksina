@@ -158,6 +158,8 @@ class CommandManager:
         """Registers all built-in command handlers."""
         self._handlers["q"] = self._cmd_q
         self._handlers["stop"] = self._cmd_stop
+        self._handlers["zapoi"] = self._cmd_stop
+        self._handlers["unzapoi"] = self._cmd_stop
         self._handlers["send"] = self._cmd_send
         self._handlers["admin"] = self._cmd_admin
         self._handlers["config"] = self._cmd_config
