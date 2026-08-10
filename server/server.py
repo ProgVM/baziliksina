@@ -16,6 +16,9 @@ if str(_root) not in sys.path:
 import config
 from db_manager import DBManager
 from registry import registry
+from permission_manager import permission_manager
+from service_manager import service_manager
+from command_manager import command_manager
 
 logger = logging.getLogger("WebServer")
 
@@ -101,12 +104,33 @@ class BaziliksinaWebServer:
         self.app.router.add_get("/api/tools", self.api_get_tools)
         self.app.router.add_delete("/api/tools/{name}", self.api_delete_tool)
         self.app.router.add_post("/api/sandbox/execute", self.api_sandbox_execute)
-        
-        self.app.router.add_get("/api/system/stats", self.api_system_stats)
-        self.app.router.add_get("/api/system/logs", self.api_system_logs)
-        self.app.router.add_post("/api/system/restart", self.api_system_restart)
-        
-        # Dynamic Sites REST-API Endpoints
+
+        # User Ranks REST Endpoints
+        self.app.router.add_get("/api/ranks", self.api_get_ranks)
+        self.app.router.add_post("/api/ranks/set", self.api_set_rank)
+        self.app.router.add_delete("/api/ranks/{user_id}", self.api_delete_rank)
+
+        # Custom Commands REST Endpoints
+        self.app.router.add_get("/api/commands", self.api_get_commands)
+        self.app.router.add_post("/api/commands/add", self.api_add_command)
+        self.app.router.add_delete("/api/commands/{name}", self.api_delete_command)
+        self.app.router.add_post("/api/command/execute", self.api_execute_command)
+
+        # Services REST Endpoints
+        self.app.router.add_get("/api/services", self.api_get_services)
+        self.app.router.add_post("/api/services/add", self.api_add_service)
+        self.app.router.add_post("/api/services/start/{name}", self.api_start_service)
+        self.app.router.add_post("/api/services/stop/{name}", self.api_stop_service)
+        self.app.router.add_delete("/api/services/{name}", self.api_delete_service)
+
+        # Cron Jobs REST Endpoints
+        self.app.router.add_get("/api/cron", self.api_get_cron)
+        self.app.router.add_post("/api/cron/add", self.api_add_cron)
+        self.app.router.add_post("/api/cron/start/{name}", self.api_start_cron)
+        self.app.router.add_post("/api/cron/stop/{name}", self.api_stop_cron)
+        self.app.router.add_delete("/api/cron/{name}", self.api_delete_cron)
+
+        # Dynamic Sites REST Endpoints
         self.app.router.add_get("/api/sites", self.api_get_sites)
         self.app.router.add_post("/api/sites/add", self.api_add_site)
         self.app.router.add_get("/api/sites/details/{name}", self.api_get_site_details)
@@ -114,27 +138,222 @@ class BaziliksinaWebServer:
         self.app.router.add_get("/api/sites/logs/{name}", self.api_get_site_logs)
         self.app.router.add_post("/api/sites/command/{name}", self.api_run_site_command)
 
+        # System Endpoints
+        self.app.router.add_get("/api/system/stats", self.api_system_stats)
+        self.app.router.add_get("/api/system/logs", self.api_system_logs)
+        self.app.router.add_post("/api/system/restart", self.api_system_restart)
+
+    # =====================================================================
+    # USER RANKS API
+    # =====================================================================
+    @auth_required
+    async def api_get_ranks(self, request):
+        try:
+            async with self.db.db.execute("SELECT user_id_or_name, rank, permissions_json FROM user_ranks") as cursor:
+                rows = await cursor.fetchall()
+                results = [{"user_id_or_name": r[0], "rank": r[1], "permissions": json.loads(r[2]) if r[2] else []} for r in rows]
+                return web.json_response({"status": "success", "count": len(results), "ranks": results})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
 
     @auth_required
+    async def api_set_rank(self, request):
+        try:
+            data = await request.json()
+            target_user = data.get("user_id") or data.get("username")
+            rank = data.get("rank")
+            perms = data.get("permissions")
+            if not target_user or rank is None:
+                return web.json_response({"status": "error", "message": "Missing 'user_id' or 'rank'."}, status=400)
+
+            await self.db.save_user_rank(target_user, int(rank), perms)
+            return web.json_response({"status": "success", "message": f"Rank for '{target_user}' set to {rank}."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_delete_rank(self, request):
+        try:
+            user_id = request.match_info["user_id"]
+            deleted = await self.db.delete_user_rank(user_id)
+            return web.json_response({"status": "success" if deleted else "error", "message": f"Rank for '{user_id}' reset."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    # =====================================================================
+    # CUSTOM COMMANDS API
+    # =====================================================================
+    @auth_required
+    async def api_get_commands(self, request):
+        try:
+            cmds = await self.db.get_all_custom_commands()
+            return web.json_response({"status": "success", "count": len(cmds), "commands": cmds})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_add_command(self, request):
+        try:
+            data = await request.json()
+            name = data.get("name")
+            code = data.get("code")
+            help_text = data.get("help_text", "Custom command")
+            category = data.get("category", "general")
+            if not name or not code:
+                return web.json_response({"status": "error", "message": "Missing 'name' or 'code'."}, status=400)
+
+            await self.db.save_custom_command(name, code, help_text=help_text, category=category)
+            return web.json_response({"status": "success", "message": f"Command /{name.lstrip('/')} created."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_delete_command(self, request):
+        try:
+            name = request.match_info["name"]
+            deleted = await self.db.delete_custom_command(name)
+            return web.json_response({"status": "success" if deleted else "error", "message": f"Command /{name} deleted."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_execute_command(self, request):
+        try:
+            data = await request.json()
+            command_text = data.get("command")
+            user_id = data.get("user_id", config.OWNER_ID)
+            chat_id = data.get("chat_id", config.OWNER_ID)
+            if not command_text:
+                return web.json_response({"status": "error", "message": "Missing 'command' parameter."}, status=400)
+
+            res = await command_manager.execute_pipeline(command_text, int(user_id), int(chat_id))
+            return web.json_response({"status": "success", "result": res})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    # =====================================================================
+    # SERVICES & CRON JOBS API
+    # =====================================================================
+    @auth_required
+    async def api_get_services(self, request):
+        services = service_manager.list_services()
+        return web.json_response({"status": "success", "count": len(services), "services": services})
+
+    @auth_required
+    async def api_add_service(self, request):
+        try:
+            data = await request.json()
+            name = data.get("name")
+            code = data.get("code")
+            desc = data.get("description", "Custom Service")
+            status = data.get("status", "stopped")
+            if not name or not code:
+                return web.json_response({"status": "error", "message": "Missing 'name' or 'code'."}, status=400)
+
+            await self.db.save_custom_service(name, code, description=desc, status=status)
+            service_manager.register_service(name, code, description=desc, is_custom=True, status=status)
+            if status == "running":
+                await service_manager.start_service(name)
+            return web.json_response({"status": "success", "message": f"Service '{name}' created."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_start_service(self, request):
+        try:
+            name = request.match_info["name"]
+            ok = await service_manager.start_service(name)
+            return web.json_response({"status": "success" if ok else "error", "message": f"Service '{name}' started."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_stop_service(self, request):
+        try:
+            name = request.match_info["name"]
+            ok = await service_manager.stop_service(name)
+            return web.json_response({"status": "success" if ok else "error", "message": f"Service '{name}' stopped."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_delete_service(self, request):
+        try:
+            name = request.match_info["name"]
+            await service_manager.stop_service(name)
+            deleted = await self.db.delete_custom_service(name)
+            return web.json_response({"status": "success" if deleted else "error", "message": f"Service '{name}' deleted."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_get_cron(self, request):
+        cron_jobs = service_manager.list_cron_jobs()
+        return web.json_response({"status": "success", "count": len(cron_jobs), "cron_jobs": cron_jobs})
+
+    @auth_required
+    async def api_add_cron(self, request):
+        try:
+            data = await request.json()
+            name = data.get("name")
+            schedule_spec = data.get("schedule_spec")
+            code = data.get("code")
+            desc = data.get("description", "Custom Cron Job")
+            status = data.get("status", "active")
+            if not name or not schedule_spec or not code:
+                return web.json_response({"status": "error", "message": "Missing 'name', 'schedule_spec', or 'code'."}, status=400)
+
+            await self.db.save_custom_cron_job(name, schedule_spec, code, description=desc, status=status)
+            service_manager.register_cron_job(name, schedule_spec, code, description=desc, is_custom=True, status=status)
+            if status == "active":
+                await service_manager.start_cron_job(name)
+            return web.json_response({"status": "success", "message": f"Cron job '{name}' created."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_start_cron(self, request):
+        try:
+            name = request.match_info["name"]
+            ok = await service_manager.start_cron_job(name)
+            return web.json_response({"status": "success" if ok else "error", "message": f"Cron job '{name}' started."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_stop_cron(self, request):
+        try:
+            name = request.match_info["name"]
+            ok = await service_manager.stop_cron_job(name)
+            return web.json_response({"status": "success" if ok else "error", "message": f"Cron job '{name}' stopped."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    @auth_required
+    async def api_delete_cron(self, request):
+        try:
+            name = request.match_info["name"]
+            await service_manager.stop_cron_job(name)
+            deleted = await self.db.delete_custom_cron_job(name)
+            return web.json_response({"status": "success" if deleted else "error", "message": f"Cron job '{name}' deleted."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+    # =====================================================================
+    # DYNAMIC SITES API
+    # =====================================================================
+    @auth_required
     async def api_get_sites(self, request):
-        """Lists all registered dynamic websites with sizes and statuses."""
         try:
             sites = await self.db.get_all_dynamic_sites()
             results = []
             now = int(time.time())
             for s in sites:
                 name = s["name"]
-                
-                # Calculate size
                 site_dir = config.WORKSPACE_DIR / "sites" / name
-                size = 0
-                if site_dir.exists():
-                    size = sum(f.stat().st_size for f in site_dir.glob('**/*') if f.is_file())
-                
+                size = sum(f.stat().st_size for f in site_dir.glob('**/*') if f.is_file()) if site_dir.exists() else 0
                 expires_at = s["expires_at"]
-                remaining = None
-                if expires_at:
-                    remaining = max(0, expires_at - now)
+                remaining = max(0, expires_at - now) if expires_at else None
                     
                 results.append({
                     "name": name,
@@ -150,7 +369,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_add_site(self, request):
-        """Registers or updates a dynamic site programmatically."""
         try:
             data = await request.json()
             name = data.get("name")
@@ -178,7 +396,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_get_site_details(self, request):
-        """Returns details, configuration, and modules of a specific site."""
         try:
             name = request.match_info["name"]
             clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
@@ -189,16 +406,11 @@ class BaziliksinaWebServer:
             if not site_data:
                 return web.json_response({"status": "error", "message": f"Site '{clean_name}' not found."}, status=404)
                 
-            try:
-                site_config = json.loads(site_data["config_json"])
-                modules = json.loads(site_data["modules_json"])
-            except Exception as parse_err:
-                return web.json_response({"status": "error", "message": f"Malformed site files: {str(parse_err)}"}, status=500)
+            site_config = json.loads(site_data["config_json"])
+            modules = json.loads(site_data["modules_json"])
                 
             site_dir = config.WORKSPACE_DIR / "sites" / clean_name
-            size = 0
-            if site_dir.exists():
-                size = sum(f.stat().st_size for f in site_dir.glob('**/*') if f.is_file())
+            size = sum(f.stat().st_size for f in site_dir.glob('**/*') if f.is_file()) if site_dir.exists() else 0
                 
             return web.json_response({
                 "status": "success",
@@ -215,7 +427,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_delete_site(self, request):
-        """Completely deletes a dynamic site, wipes its folder and database records."""
         try:
             name = request.match_info["name"]
             clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
@@ -233,7 +444,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_get_site_logs(self, request):
-        """Returns log entries of a specific dynamic sandboxed site."""
         try:
             name = request.match_info["name"]
             clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
@@ -246,12 +456,9 @@ class BaziliksinaWebServer:
                 return web.json_response({"status": "success", "name": clean_name, "logs_count": 0, "logs": []})
                 
             limit = int(request.query.get("limit", 150))
-            try:
-                with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
-                    lines = f.readlines()
-                logs = [l.strip() for l in lines[-limit:] if l.strip()]
-            except Exception as io_err:
-                return web.json_response({"status": "error", "message": f"Failed to read logs: {str(io_err)}"}, status=500)
+            with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+                lines = f.readlines()
+            logs = [l.strip() for l in lines[-limit:] if l.strip()]
                 
             return web.json_response({
                 "status": "success",
@@ -264,7 +471,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_run_site_command(self, request):
-        """Runs a shell command inside a dynamic website isolated directory."""
         try:
             name = request.match_info["name"]
             clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
@@ -344,18 +550,11 @@ class BaziliksinaWebServer:
         return web.json_response({"ping": "pong"})
 
     async def handle_dynamic_site_request(self, request):
-        """
-        Dynamically handles HTTP requests to created sites.
-        Supports both path prefix (/site/{site_name}/{module_name}) 
-        and custom subdomains ({site_name}.domain.com).
-        """
         import time
-        # 1. Resolve site name
         site_name = request.match_info.get("site_name")
         module_name = request.match_info.get("module_name", "index")
         
         host_header = request.headers.get("Host", "")
-        # Check if hostname has a subdomain that is registered as a site
         if not site_name and host_header:
             parts = host_header.split(":")[0].split(".")
             if len(parts) > 2:
@@ -368,20 +567,16 @@ class BaziliksinaWebServer:
         if not site_name:
             return web.json_response({"status": "error", "message": "Site not specified."}, status=400)
             
-        # Security sanitization to strictly prevent directory traversal inside URL request parameter
         clean_site_name = "".join(c for c in site_name if c.isalnum() or c in ["_", "-"]).strip().lower()
         if clean_site_name != site_name.lower():
             return web.json_response({"status": "error", "message": "Invalid site name format."}, status=400)
-            
-        # Auto-redirect root-level access to enforce a trailing slash.
-        # This normalizes browser relative paths context inside client-side assets.
+
         if request.path == f"/site/{clean_site_name}":
             return web.HTTPPermanentRedirect(f"/site/{clean_site_name}/")
 
         if not module_name or module_name == "/":
             module_name = "index"
 
-        # 2. Get site from DB
         site_data = await self.db.get_dynamic_site(clean_site_name)
         if not site_data:
             return web.json_response({"status": "error", "message": f"Site '{clean_site_name}' not found."}, status=404)
@@ -389,26 +584,22 @@ class BaziliksinaWebServer:
         if site_data.get("status") != "active":
             return web.json_response({"status": "error", "message": f"Site '{clean_site_name}' is stopped or disabled."}, status=403)
 
-        # Check expiration
         now = int(time.time())
         expires_at = site_data.get("expires_at")
         if expires_at and now > expires_at:
             await self.db.delete_dynamic_site(clean_site_name)
-            # Remove site directory
             import shutil
             site_dir = config.WORKSPACE_DIR / "sites" / clean_site_name
             if site_dir.exists():
                 shutil.rmtree(site_dir)
             return web.json_response({"status": "error", "message": "Site has expired and was removed."}, status=410)
 
-        # Parse config and modules
         try:
             site_config = json.loads(site_data["config_json"])
             modules = json.loads(site_data["modules_json"])
         except Exception as err:
             return web.json_response({"status": "error", "message": f"Failed to parse site configuration: {str(err)}"}, status=500)
 
-        # Resolve real client IP considering reverse proxies (Cloudflare, Nginx, etc.)
         client_ip = request.headers.get("CF-Connecting-IP") or \
                     request.headers.get("X-Real-IP") or \
                     request.headers.get("X-Forwarded-For")
@@ -418,14 +609,12 @@ class BaziliksinaWebServer:
             peername = request.transport.get_extra_info('peername')
             client_ip = peername[0] if peername else "127.0.0.1"
 
-        # Check IP ACL
         allowed_ips = site_config.get("allowed_ips", "all")
         if allowed_ips != "all":
             allowed_list = [ip.strip() for ip in allowed_ips.split(",") if ip.strip()]
             if client_ip not in allowed_list:
                 return web.json_response({"status": "error", "message": "Access denied by IP policy."}, status=403)
 
-        # Check HTTP method (with robust Whitelists & Blacklists policy!)
         allowed_methods_raw = site_config.get("allowed_methods", config.SITE_ALLOWED_METHODS_DEFAULT)
         blocked_methods_raw = site_config.get("blocked_methods", config.SITE_BLOCKED_METHODS_DEFAULT)
         
@@ -436,12 +625,10 @@ class BaziliksinaWebServer:
         if not matches_filter(request.method, allowed_methods, blocked_methods):
             return web.json_response({"status": "error", "message": f"Method {request.method} is blocked by site policy."}, status=405)
 
-        # Check request size
         max_size = int(site_config.get("max_request_size", config.SITE_MAX_REQUEST_SIZE_DEFAULT))
         if request.content_length and request.content_length > max_size:
             return web.json_response({"status": "error", "message": "Request entity too large."}, status=413)
 
-        # Match module with maximum route flexibility (with or without .py extensions and leading/trailing slashes)
         module_obj = None
         req_clean = module_name.strip().lower().replace("\\", "/").lstrip("/").rstrip("/")
         if not req_clean:
@@ -457,7 +644,6 @@ class BaziliksinaWebServer:
             m_with_py = m_path if m_path.endswith(".py") else f"{m_path}.py"
             m_no_py = m_path[:-3] if m_path.endswith(".py") else m_path
 
-            # Match via absolute naming, appended file extensions, or clean URL routing
             if m_path == req_clean or m_with_py == req_with_py or m_no_py == req_no_py:
                 module_obj = mod
                 break
@@ -465,13 +651,10 @@ class BaziliksinaWebServer:
         if not module_obj:
             return web.json_response({"status": "error", "message": f"Module '{module_name}' not found on site '{clean_site_name}'."}, status=404)
 
-        # 3. Setup sandbox and execute code
         code = module_obj.get("code", "")
-        # Safe normalization of double and single escaped newlines
         code = code.replace("\\\\r\\\\n", "\n").replace("\\\\n", "\n").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
         execution_timeout = float(site_config.get("timeout", config.SITE_TIMEOUT_DEFAULT))
         
-        # Read request parameters
         req_params = dict(request.query)
         req_body = ""
         req_json = {}
@@ -491,11 +674,9 @@ class BaziliksinaWebServer:
             except Exception:
                 pass
 
-        # Pre-compute path contexts for portable routing
         site_prefix = f"/site/{clean_site_name}"
         base_url = f"{request.scheme}://{request.host}{site_prefix}"
 
-        # Sandbox Namespace setup (with robust Whitelists & Blacklists wildcard policy!)
         allowed_imports_raw = site_config.get("allowed_imports", config.SITE_ALLOWED_IMPORTS_DEFAULT)
         blocked_imports_raw = site_config.get("blocked_imports", config.SITE_BLOCKED_IMPORTS_DEFAULT)
         
@@ -505,10 +686,8 @@ class BaziliksinaWebServer:
         def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
             root_name = name.split(".")[0]
             from utils import matches_filter
-            # 1. Enforce site-specific custom white/black lists
             if not matches_filter(root_name, allowed_imports, blocked_imports):
                 raise ImportError(f"Security Policy Error: Import of module '{name}' is restricted for this site.")
-            # 2. Enforce global server site sandbox security whitelists & blacklists
             allowed_site_py = [i.strip() for i in config.SITE_PYTHON_WHITELIST.split(",") if i.strip()] if isinstance(config.SITE_PYTHON_WHITELIST, str) else config.SITE_PYTHON_WHITELIST
             blocked_site_py = [b.strip() for b in config.SITE_PYTHON_BLACKLIST.split(",") if b.strip()] if isinstance(config.SITE_PYTHON_BLACKLIST, str) else config.SITE_PYTHON_BLACKLIST
             if not matches_filter(root_name, allowed_site_py, blocked_site_py):
@@ -527,7 +706,6 @@ class BaziliksinaWebServer:
 
             return open(resolved, mode, *args, **kwargs)
 
-        # Custom site output printer redirecting directly to a dedicated local log file inside site isolated directory!
         def site_print(*args):
             log_line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] " + " ".join(str(a) for a in args) + "\n"
             try:
@@ -543,7 +721,6 @@ class BaziliksinaWebServer:
                 pass
             logger.info(f"[Site '{clean_site_name}' Print]: " + " ".join(str(a) for a in args))
 
-        # Pre-inject global variables
         local_vars = {
             "__import__": safe_import,
             "open": safe_site_open,
@@ -568,7 +745,6 @@ class BaziliksinaWebServer:
             }
         }
 
-        # Inject requested globals if allowed
         allowed_globals = site_config.get("allowed_globals", [])
         if "db" in allowed_globals:
             local_vars["db"] = self.db
@@ -582,7 +758,6 @@ class BaziliksinaWebServer:
         try:
             import ast
             import types
-            # Compile code as a module with top-level await support to prevent local function scope trap
             compiled_code = compile(code, f"<site_{clean_site_name}>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
             
             async def run_compiled():
@@ -591,7 +766,6 @@ class BaziliksinaWebServer:
                     await res
             await asyncio.wait_for(run_compiled(), timeout=execution_timeout)
             
-            # Smart entrypoint resolver: detect and execute handler functions if defined
             entrypoint = None
             for name in ["handle", "handler", "main", "index", "get", "post"]:
                 if name in local_vars and callable(local_vars[name]):
@@ -628,7 +802,6 @@ class BaziliksinaWebServer:
 
             content_type = headers.pop("Content-Type", "text/html")
             
-            # Safe parsing to comply with strict aiohttp >= 3.9 response constraints
             charset = None
             if ";" in content_type:
                 parts = content_type.split(";")
@@ -637,7 +810,6 @@ class BaziliksinaWebServer:
                     if "charset=" in p.lower():
                         charset = p.lower().split("charset=")[1].strip()
             
-            # Return final HTTP response
             return web.Response(text=body, status=status, headers=headers, content_type=content_type, charset=charset)
 
         except asyncio.TimeoutError:
@@ -649,7 +821,6 @@ class BaziliksinaWebServer:
             tb_str = traceback.format_exc()
             site_print(f"EXCEPTION CRASH:\n{tb_str}")
             return web.json_response({"status": "error", "message": f"Module Execution Error: {str(exec_err)}"}, status=500)
-
 
     # =====================================================================
     # PRIVATE API HANDLERS (AUTHENTICATED)
@@ -710,7 +881,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_db_stats(self, request):
-        """Asynchronously returns SQLite DB structure, size, and table row counts dynamically."""
         try:
             db_path = config.SAFE_DB_DIR / config.DB_NAME
             db_size = db_path.stat().st_size if db_path.exists() else 0
@@ -763,7 +933,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_get_chat_history(self, request):
-        """Asynchronously exports dialog history with optional limits and offsets."""
         try:
             chat_id = request.match_info["chat_id"]
             limit = int(request.query.get("limit", 100))
@@ -781,7 +950,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_get_meta_users(self, request):
-        """Returns cached metadata of Telegram users from the users_meta table."""
         try:
             limit = int(request.query.get("limit", config.WEB_SERVER_DEFAULT_META_LIMIT))
             async with self.db.db.execute("SELECT id, username, first_name, last_name, premium, verified FROM users_meta LIMIT ?", (limit,)) as cursor:
@@ -793,7 +961,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_get_meta_chats(self, request):
-        """Returns cached metadata of Telegram chats/channels from the chats_meta table."""
         try:
             limit = int(request.query.get("limit", config.WEB_SERVER_DEFAULT_META_LIMIT))
             async with self.db.db.execute("SELECT id, title, username, type FROM chats_meta LIMIT ?", (limit,)) as cursor:
@@ -805,7 +972,6 @@ class BaziliksinaWebServer:
 
     @auth_required
     async def api_get_timers(self, request):
-        """Lists all pending persistent timers."""
         try:
             timers = await self.db.get_pending_timers()
             results = [{"id": t[0], "chat_id": t[1], "execute_at": t[2], "action": t[3], "code": bool(t[4])} for t in timers]
@@ -894,7 +1060,6 @@ class BaziliksinaWebServer:
     @auth_required
     async def api_get_prompt(self, request):
         filename = request.match_info["filename"]
-        # Security sanity check
         if not filename.endswith(".txt") or "/" in filename or "\\" in filename:
             return web.json_response({"status": "error", "message": "Invalid filename."}, status=400)
         
@@ -1023,7 +1188,6 @@ async def start_web_server(telegram_client, db_manager, ai_manager):
     site = web.TCPSite(runner, host, config.WEB_SERVER_PORT)
     await site.start()
     
-    # Dynamic host resolution (supports empty subdomains seamlessly)
     if config.WEB_SERVER_SUBDOMAIN:
         host_str = f"http://{config.WEB_SERVER_SUBDOMAIN}.{host}:{config.WEB_SERVER_PORT}"
     else:

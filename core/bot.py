@@ -18,7 +18,6 @@ import logging
 from telethon import TelegramClient, events
 from telethon.tl import types as tl_types
 
-# Import our modules
 from config import (
     API_ID, API_HASH, SESSION_PATH, WORKSPACE_DIR, BOOTSTRAP_DATABASE, DEBOUNCE_DELAY, 
     DUPLICATE_CACHE_SIZE, PROFILE_UPDATE_INTERVAL, TIMERS_LOOP_INTERVAL, VM_STDOUT_NOTICE_LIMIT, 
@@ -28,6 +27,9 @@ from config import (
 import config
 from db_manager import DBManager
 from gemini_manager import GeminiManager, entity_cache
+from permission_manager import permission_manager
+from service_manager import service_manager
+from command_manager import command_manager
 from parser import parse_message_payload, parse_reply_metadata, parse_sender_info, parse_and_cache_user_metadata, parse_and_cache_chat_metadata
 from downloader import download_and_cache_media
 from proxy_manager import proxy_rotator
@@ -36,14 +38,11 @@ import services
 import tools
 from utils import should_process_message_event, should_process_reaction_event, load_feedback_template
 
-# Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("BazilikBot")
 
-# Parse proxy settings dynamically from config for Telethon client proxying
 proxy_param = proxy_rotator.get_telethon_proxy()
 
-# Managers initialization
 db = DBManager()
 client = TelegramClient(
     SESSION_PATH, 
@@ -57,26 +56,18 @@ client = TelegramClient(
 )
 ai_manager = GeminiManager(client, db)
 
-# Global cache of AI account and events
 me = None
 processed_msg_ids = tools.processed_msg_ids
 
-# Strict incremental counter for debouncing against one-millisecond races
 debounce_counter = 0
-
-# Buffer for accumulating fast messages {chat_id: {"last_time": float, "entity": InputPeer}} (strictly int keys)
 message_buffers = {}
-
-# Processing queues to avoid parallel duplicate generations (strictly int keys)
 generating_chats = set()
 pending_buffers = {}
 
-# Cache of the last update time of profiles and chats in memory (once per PROFILE_UPDATE_INTERVAL)
-last_profile_updates = {}  # {user_id_int: timestamp_int}
-last_chat_updates = {}     # {chat_id_int: timestamp_int}
+last_profile_updates = {}
+last_chat_updates = {}
 
 async def upload_media_to_google_background(media_info_str):
-    """Asynchronously uploads newly downloaded media files to Google Files API in the background."""
     if not media_info_str:
         return
     try:
@@ -107,7 +98,6 @@ async def upload_media_to_google_background(media_info_str):
         logger.error(f"Error in background media upload: {str(e)}")
 
 async def run_and_log_sandbox_code(chat_id: int, code: str, source_type: str = "trigger", event = None):
-    """Asynchronously runs code in the VM, prints results to the console, and writes them to the chat history for the AI."""
     result = await tools.execute_python_code(code, chat_id=chat_id, event=event)
     logger.info(f"--- VM background code execution result ({source_type}) ---\n{result}\n--------------------------------------------")
     
@@ -118,12 +108,7 @@ async def run_and_log_sandbox_code(chat_id: int, code: str, source_type: str = "
     
     await db.save_message(str(chat_id), "user", notice_text)
 
-
 async def check_and_run_triggers(chat_id: int, text: str, input_chat_entity, event) -> bool:
-    """
-    Scans active triggers for the chat, checks for text/regex matches 
-    and triggers the corresponding AI wake-up or autonomous code in the VM.
-    """
     import re
     try:
         active_triggers = await db.get_active_triggers(str(chat_id))
@@ -173,10 +158,7 @@ async def check_and_run_triggers(chat_id: int, text: str, input_chat_entity, eve
         
     return False
 
-
 async def run_timers_loop():
-    """Background service for periodic scanning and execution of timers from the DB."""
-    import time
     logger.info("Starting background service for persistent timers...")
     while True:
         try:
@@ -204,8 +186,6 @@ async def run_timers_loop():
             logger.error(f"Error in timers loop: {str(e)}")
         await asyncio.sleep(config.TIMERS_LOOP_INTERVAL)
 
-
-# Helper debouncer for the downloader and system triggers
 def schedule_debounce_query(chat_id, entity, trigger_msg_id=None):
     chat_id = int(chat_id)
     current_time_id = time.time()
@@ -214,13 +194,11 @@ def schedule_debounce_query(chat_id, entity, trigger_msg_id=None):
         
     message_buffers[chat_id]["last_time"] = current_time_id
     message_buffers[chat_id]["entity"] = entity
-    message_buffers[chat_id]["trigger_msg_id"] = trigger_msg_id # Store the triggering message ID
+    message_buffers[chat_id]["trigger_msg_id"] = trigger_msg_id
 
     async def wait_and_send_debounce(cid, trigger_time):
         await asyncio.sleep(config.DEBOUNCE_DELAY)
-        if cid not in message_buffers:
-            return
-        if message_buffers[cid].get("last_time") != trigger_time:
+        if cid not in message_buffers or message_buffers[cid].get("last_time") != trigger_time:
             return
             
         entity_obj = message_buffers[cid]["entity"]
@@ -231,11 +209,9 @@ def schedule_debounce_query(chat_id, entity, trigger_msg_id=None):
     asyncio.create_task(wait_and_send_debounce(chat_id, current_time_id))
 
 async def run_pending_query_after_delay(cid, entity, trigger_msg_id):
-    """Non-cancellable brief safety sleep using config.TIMEOUT_SLEEP, then promotes the query."""
     await asyncio.sleep(config.QUEUE_PROMOTION_DELAY)
     await run_pending_query(cid, entity, trigger_msg_id=trigger_msg_id)
 
-# Handler for executing pending queries (strictly int types for queues)
 async def run_pending_query(cid, entity, trigger_msg_id=None):
     cid_int = int(cid)
     generating_chats.add(cid_int)
@@ -247,16 +223,12 @@ async def run_pending_query(cid, entity, trigger_msg_id=None):
             p_data = pending_buffers.pop(cid_int)
             queued_msg_id = p_data.get("trigger_msg_id")
             
-            # Verify if the queued trigger has already been incorporated into the finished run
             processed_id = getattr(tools, "last_processed_user_msg_id", {}).get(str(cid_int))
             if queued_msg_id and processed_id and queued_msg_id <= processed_id:
                 logger.info(f"Queued message #{queued_msg_id} was already processed (up to #{processed_id}). Skipping redundant queue run.")
             else:
-                # Run non-cancellable promotion in background task so new messages cannot cancel it
                 asyncio.create_task(run_pending_query_after_delay(cid_int, p_data["entity"], queued_msg_id))
 
-
-# --- Universal background tracking of reactions on posts, channels, and PMs ---
 @client.on(events.Raw(types=[tl_types.UpdateMessageReactions, tl_types.UpdateBotMessageReaction, tl_types.UpdateBotMessageReactions]))
 async def on_raw_reaction(event):
     global me
@@ -280,14 +252,11 @@ async def on_raw_reaction(event):
     if not chat_id:
         return
         
-    # Resolve self ID if missing
     if me is None:
         try: me = await client.get_me()
         except Exception: return
 
     rx_parts = []
-    
-    # 1. Case of UpdateMessageReactions / UpdateBotMessageReactions (contain ReactionCount)
     reactions_obj = getattr(event, "reactions", None)
     if reactions_obj:
         results = getattr(reactions_obj, "results", None)
@@ -295,24 +264,13 @@ async def on_raw_reaction(event):
             for rc in results:
                 if hasattr(rc.reaction, 'emoticon'):
                     emoji_val = rc.reaction.emoticon
-                    if should_process_reaction_event(emoji_val, me.id, me.id, True): # Default to pass for bulk stats
-                        rx_parts.append(f"'{emoji_val}' (x{rc.count})")
-                elif hasattr(rc.reaction, 'document_id'):
-                    emoji_val = str(rc.reaction.document_id)
-                    if should_process_reaction_event(emoji_val, me.id, me.id, True):
-                        rx_parts.append(f"[Custom emoji ID {emoji_val}] (x{rc.count})")
-        elif isinstance(reactions_obj, list):
-            for rc in reactions_obj:
-                if hasattr(rc.reaction, 'emoticon'):
-                    emoji_val = rc.reaction.emoticon
                     if should_process_reaction_event(emoji_val, me.id, me.id, True):
                         rx_parts.append(f"'{emoji_val}' (x{rc.count})")
                 elif hasattr(rc.reaction, 'document_id'):
                     emoji_val = str(rc.reaction.document_id)
                     if should_process_reaction_event(emoji_val, me.id, me.id, True):
                         rx_parts.append(f"[Custom emoji ID {emoji_val}] (x{rc.count})")
-                    
-    # 2. Case of UpdateBotMessageReaction (contains a list of new reactions)
+
     new_reactions = getattr(event, "new_reactions", None)
     if new_reactions and isinstance(new_reactions, list):
         counts = {}
@@ -331,11 +289,9 @@ async def on_raw_reaction(event):
             rx_parts.append(f"'{k}' (x{v})" if not k.startswith("Custom") else f"[{k}] (x{v})")
 
     if not rx_parts:
-        return # Dropped by whitelists/blacklists
+        return
 
-    reactions_str = ""
-    if rx_parts:
-        reactions_str = "[Reactions on message]: " + " | ".join(rx_parts)
+    reactions_str = "[Reactions on message]: " + " | ".join(rx_parts)
         
     try:
         async with db.db.execute("SELECT meta_text, raw_meta_json FROM msgs_meta WHERE chat_id = ? AND msg_id = ?", (chat_id, msg_id)) as cursor:
@@ -347,82 +303,64 @@ async def on_raw_reaction(event):
             existing_meta_text, raw_meta_raw = row
             raw_meta = json.loads(raw_meta_raw) if raw_meta_raw else {}
             
-        # Remove previous reaction records from meta-text to avoid duplication
         lines = [line for line in existing_meta_text.split("\n") if not line.startswith("[Reactions on message]:")]
         if reactions_str:
             lines.append(reactions_str)
         new_meta_text = "\n".join(lines).strip()
         
         await db.save_msg_meta(chat_id, msg_id, meta_text=new_meta_text, raw_meta_dict=raw_meta)
-        logger.info(f"Updated reactions for message #{msg_id} in chat {chat_id}: {reactions_str or 'reactions removed'}")
+        logger.info(f"Updated reactions for message #{msg_id} in chat {chat_id}: {reactions_str}")
     except Exception as e:
         logger.error(f"Error saving updated reaction to DB: {str(e)}")
 
-
-# New message handler
 @client.on(events.NewMessage)
 async def on_new_message(event):
     global me
     if me is None:
-        try:
-            me = await client.get_me()
-        except Exception:
-            logger.debug("Telegram client is not fully ready. Skipping NewMessage event.")
-            return
+        try: me = await client.get_me()
+        except Exception: return
 
     is_private = event.is_private
-    mentioned = event.mentioned or (event.message.message and me.username and f"@{me.username}" in event.message.message)
     chat_id = int(event.chat_id)
     msg_id = event.message.id
     
-    # 1. Protection against duplicate network packets across chats
     cache_key = (chat_id, msg_id)
     if cache_key in processed_msg_ids:
-        logger.debug(f"Received duplicate message {msg_id} from chat {chat_id}. Skipping.")
         return
     processed_msg_ids.add(cache_key)
     if len(processed_msg_ids) > DUPLICATE_CACHE_SIZE:
         processed_msg_ids.clear()
 
-    # Guarantee obtaining the chat's InputPeer immediately upon entry
     input_chat_entity = await event.get_input_chat()
     entity_cache[chat_id] = input_chat_entity
 
-    # Global filter check: should we save this message event?
+    # Check for Command Execution in text or media caption
+    raw_payload = event.message.message or ""
+    if raw_payload.strip().startswith("/"):
+        logger.info(f"CLI Command detected in message #{msg_id} of chat {chat_id}: '{raw_payload[:60]}'")
+        cmd_output = await command_manager.execute_pipeline(raw_payload, event.sender_id, chat_id, event)
+        if cmd_output:
+            await client.send_message(input_chat_entity, cmd_output, reply_to=msg_id)
+        
+        if not getattr(config, "TRIGGER_ON_COMMANDS", False):
+            return
+
     if not await should_process_message_event(event, me, "save", db):
         return
-        
-    # Auto-read incoming messages based on config filter matrix
+
+    # Auto-read incoming messages based on filter matrix
     try:
         from utils import should_send_read_acknowledge
-        is_triggered = False
-        if is_private:
-            is_triggered = True
-        else:
-            t_lower = (event.message.message or "").lower()
-            if "name" in config.AI_RESPONSE_TRIGGERS and me.first_name and me.first_name.lower() in t_lower:
-                is_triggered = True
-            elif "username" in config.AI_RESPONSE_TRIGGERS and me.username and f"@{me.username.lower()}" in t_lower:
-                is_triggered = True
-            elif "mentioned" in config.AI_RESPONSE_TRIGGERS and event.mentioned:
-                is_triggered = True
-            elif "reply_to_me" in config.AI_RESPONSE_TRIGGERS and event.message.is_reply:
-                is_triggered = True
-        
+        is_triggered = is_private or getattr(event, "mentioned", False)
         if await should_send_read_acknowledge(event, me, db, is_trigger_fired=is_triggered):
             await event.mark_read()
     except Exception as e:
         logger.debug(f"Failed to mark message as read: {str(e)}")
 
-    # 2. Universal processing and detailed saving of ALL outgoing messages
-    if event.sender_id == me.id:
+    is_outgoing = event.sender_id == me.id
+    if is_outgoing:
         text = await parse_message_payload(client, db, event.message)
-        
-        
-        # Match reply context metadata for outgoing messages
-        reply_meta = ""
-        if event.message.is_reply:
-            reply_meta = await parse_reply_metadata(event.message, chat_id, client, db)
+        reply_meta = await parse_reply_metadata(event.message, chat_id, client, db) if event.message.is_reply else ""
         
         existing_meta = await db.get_msg_meta(str(chat_id), msg_id)
         existing_meta_text = existing_meta.get("meta_text") if existing_meta else ""
@@ -434,38 +372,26 @@ async def on_new_message(event):
         if media_info:
             asyncio.create_task(upload_media_to_google_background(media_info))
         await db.save_message(str(chat_id), "model", text, media_info, msg_id)
-        return
 
-    # Background update of Premium metadata and avatars of sender and chat once every PROFILE_UPDATE_INTERVAL
+        if not getattr(config, "TRIGGER_ON_OUTGOING_MANUAL_MESSAGES", False):
+            return
+
     now_ts = int(time.time())
     sender = await event.get_sender()
-    if sender and getattr(sender, "id", None):
+    if sender and getattr(sender, "id", None) and config.SAVE_USER_METADATA:
         s_id = int(sender.id)
-        if config.SAVE_USER_METADATA:
-            allowed_user = True
-            if config.USER_CACHE_BLACKLIST and s_id in config.USER_CACHE_BLACKLIST:
-                allowed_user = False
-            if config.USER_CACHE_WHITELIST and s_id not in config.USER_CACHE_WHITELIST:
-                allowed_user = False
-            if allowed_user and (s_id not in last_profile_updates or (now_ts - last_profile_updates[s_id]) > config.PROFILE_UPDATE_INTERVAL):
-                last_profile_updates[s_id] = now_ts
-                asyncio.create_task(parse_and_cache_user_metadata(client, db, sender))
+        if (s_id not in last_profile_updates or (now_ts - last_profile_updates[s_id]) > config.PROFILE_UPDATE_INTERVAL):
+            last_profile_updates[s_id] = now_ts
+            asyncio.create_task(parse_and_cache_user_metadata(client, db, sender))
             
     c_id = int(chat_id)
-    if config.SAVE_CHAT_METADATA:
-        allowed_chat = True
-        if config.CHAT_CACHE_BLACKLIST and c_id in config.CHAT_CACHE_BLACKLIST:
-            allowed_chat = False
-        if config.CHAT_CACHE_WHITELIST and c_id not in config.CHAT_CACHE_WHITELIST:
-            allowed_chat = False
-        if allowed_chat and (c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > config.PROFILE_UPDATE_INTERVAL):
-            last_chat_updates[c_id] = now_ts
-            chat_ent = await event.get_chat()
-            asyncio.create_task(parse_and_cache_chat_metadata(client, db, chat_ent))
+    if config.SAVE_CHAT_METADATA and (c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > config.PROFILE_UPDATE_INTERVAL):
+        last_chat_updates[c_id] = now_ts
+        chat_ent = await event.get_chat()
+        asyncio.create_task(parse_and_cache_chat_metadata(client, db, chat_ent))
 
-        # 4. Processing incoming messages
     text = await parse_message_payload(client, db, event.message)
-    media_info = await download_and_cache_media(client, event.message, is_private, mentioned)
+    media_info = await download_and_cache_media(client, event.message, is_private, event.mentioned)
     if media_info:
         asyncio.create_task(upload_media_to_google_background(media_info))
 
@@ -475,31 +401,18 @@ async def on_new_message(event):
     if event.is_group and sender:
         try:
             permissions = await client.get_permissions(event.chat_id, sender)
-            if getattr(permissions, 'is_creator', False):
-                sender_role = "Owner/Creator"
-            elif getattr(permissions, 'is_admin', False):
-                sender_role = "Admin"
+            if getattr(permissions, 'is_creator', False): sender_role = "Owner/Creator"
+            elif getattr(permissions, 'is_admin', False): sender_role = "Admin"
             from telethon.tl.functions.channels import GetParticipantRequest
             res = await client(GetParticipantRequest(channel=event.chat_id, participant=sender))
             custom_tag = getattr(res.participant, "rank", None) or "None"
-        except Exception:
-            pass
+        except Exception: pass
     tag_info = f" | Member Tag: '{custom_tag}'" if custom_tag != "None" else ""
     sender_info = f"{parse_sender_info(sender, event.message)} | Group Role: {sender_role}{tag_info}"
-
-    is_channel_pm = False
-    if isinstance(event.message.peer_id, tl_types.PeerChannel) and not event.is_group and not event.message.post:
-        is_channel_pm = True
 
     if event.is_group:
         chat_title = getattr(event.chat, 'title', 'Group')
         meta_prefix += f"[Group: '{chat_title}' | Sender: {sender_info}]\n"
-    elif event.message.post:
-        channel_title = getattr(event.chat, 'title', 'Channel')
-        meta_prefix += f"[Channel post: '{channel_title}']\n"
-    elif is_channel_pm:
-        channel_title = getattr(sender, 'title', 'Channel')
-        meta_prefix += f"[Private Chat with CHANNEL | Title: '{channel_title}' | ID: {event.message.peer_id.channel_id}]\n"
     else:
         meta_prefix += f"[Private Chat | Sender: {sender_info}]\n"
 
@@ -521,16 +434,13 @@ async def on_new_message(event):
     if await check_and_run_triggers(chat_id, text, input_chat_entity, event):
         return
 
-    # Global filter check: should we trigger AI generation on this message?
     if not await should_process_message_event(event, me, "trigger", db):
         return
 
-    # Synchronous management of buffering timers (STRICTLY AFTER TRIGGER PASSED)
     global debounce_counter
     debounce_counter += 1
     current_trigger_id = debounce_counter
     
-    # If the chat is already busy generating, queue the parameters directly.
     if chat_id in generating_chats:
         logger.info(f"Chat {chat_id} is busy generating. Queuing message {msg_id} directly.")
         pending_buffers[chat_id] = {"entity": input_chat_entity, "trigger_msg_id": msg_id}
@@ -541,16 +451,11 @@ async def on_new_message(event):
         
     message_buffers[chat_id]["last_time"] = current_trigger_id
     message_buffers[chat_id]["entity"] = input_chat_entity
-    message_buffers[chat_id]["trigger_msg_id"] = msg_id # Capture the triggering message ID
+    message_buffers[chat_id]["trigger_msg_id"] = msg_id
 
-    # Start Debounce generation of AI response in all chats during activity lull
     async def wait_and_send(cid, trigger_time):
         await asyncio.sleep(config.DEBOUNCE_DELAY)
-        
-        if cid not in message_buffers:
-            return
-        if message_buffers[cid].get("last_time") != trigger_time:
-            logger.debug(f"Canceling outdated generation branch for chat {cid} (new messages arrived).")
+        if cid not in message_buffers or message_buffers[cid].get("last_time") != trigger_time:
             return
 
         entity = message_buffers[cid]["entity"]
@@ -558,13 +463,12 @@ async def on_new_message(event):
         del message_buffers[cid]
 
         if cid in generating_chats:
-            logger.info(f"Chat {cid} is busy generating. Adding to the pending queue.")
             pending_buffers[cid] = {"entity": entity, "trigger_msg_id": t_msg_id}
             return
 
         generating_chats.add(cid)
         try:
-            await ai_manager.handle_query(str(cid), entity, trigger_msg_id=t_msg_id) # Pass the original trigger ID
+            await ai_manager.handle_query(str(cid), entity, trigger_msg_id=t_msg_id)
         finally:
             generating_chats.discard(cid)
             if cid in pending_buffers:
@@ -573,183 +477,49 @@ async def on_new_message(event):
 
     asyncio.create_task(wait_and_send(chat_id, current_trigger_id))
 
-
-# Message edit handler
 @client.on(events.MessageEdited)
 async def on_message_edited(event):
     global me
     if me is None:
-        try:
-            me = await client.get_me()
-        except Exception:
-            return
+        try: me = await client.get_me()
+        except Exception: return
 
-    is_private = event.is_private
-    mentioned = event.mentioned or (event.message.message and me.username and f"@{me.username}" in event.message.message)
-    
     if event.sender_id == me.id:
         return
-
-    try:
-        await event.mark_read()
-    except Exception as e:
-        logger.debug(f"Failed to mark edited message as read: {str(e)}")
 
     chat_id = int(event.chat_id)
     msg_id = event.message.id
 
-    # Guarantee obtaining the chat's InputPeer immediately upon entry
     input_chat_entity = await event.get_input_chat()
     entity_cache[chat_id] = input_chat_entity
-    
-    # 1. Read the PREVIOUS version of the message from the database
-    prev_text = "unknown"
-    prev_media = "was absent"
-    try:
-        async with db.db.execute("SELECT text, media_info FROM messages WHERE chat_id = ? AND msg_id = ?", (str(chat_id), msg_id)) as cursor:
-            row = await cursor.fetchone()
-            if row:
-                prev_text, prev_media_raw = row
-                if prev_media_raw:
-                    p_media_data = json.loads(prev_media_raw)
-                    prev_media = f"file '{p_media_data.get('mime_type')}'"
-    except Exception as db_err:
-        logger.error(f"Failed to retrieve old version during editing: {str(db_err)}")
 
-    # Get the full text of the edited message
+    raw_payload = event.message.message or ""
+    if raw_payload.strip().startswith("/"):
+        cmd_output = await command_manager.execute_pipeline(raw_payload, event.sender_id, chat_id, event)
+        if cmd_output:
+            await client.send_message(input_chat_entity, cmd_output, reply_to=msg_id)
+        if not getattr(config, "TRIGGER_ON_COMMANDS", False):
+            return
+
     new_text = await parse_message_payload(client, db, event.message)
-    media_info = await download_and_cache_media(client, event.message, is_private, mentioned)
+    media_info = await download_and_cache_media(client, event.message, event.is_private, event.mentioned)
     if media_info:
         asyncio.create_task(upload_media_to_google_background(media_info))
 
-    if me.username and f"@{me.username}" in new_text:
-        new_text = new_text.replace(f"@{me.username}", "").strip()
-
-    logger.info(f"Message {msg_id} updated (edit/reaction) in chat {chat_id}.")
     await db.update_message_text(str(chat_id), msg_id, new_text, media_info)
 
-    # Background update of Premium metadata and avatars of sender and chat once every PROFILE_UPDATE_INTERVAL
-    now_ts = int(time.time())
-    sender = await event.get_sender()
-    if sender and getattr(sender, "id", None):
-        s_id = int(sender.id)
-        if s_id not in last_profile_updates or (now_ts - last_profile_updates[s_id]) > config.PROFILE_UPDATE_INTERVAL:
-            last_profile_updates[s_id] = now_ts
-            asyncio.create_task(parse_and_cache_user_metadata(client, db, sender))
-            
-    c_id = int(chat_id)
-    if c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > config.PROFILE_UPDATE_INTERVAL:
-        last_chat_updates[c_id] = now_ts
-        chat_ent = await event.get_chat()
-        asyncio.create_task(parse_and_cache_chat_metadata(client, db, chat_ent))
-
-    # 2. Check triggers on edit
-    if await check_and_run_triggers(chat_id, new_text, input_chat_entity, event):
-        return
-
-    reply_meta = ""
-    if event.message.is_reply:
-        reply_meta = await parse_reply_metadata(event.message, chat_id, client, db)
-
-    sender_info = parse_sender_info(sender, event.message)
-    sender_role = "Member"
-    custom_tag = "None"
-    if event.is_group and sender:
-        try:
-            permissions = await client.get_permissions(event.chat_id, sender)
-            if getattr(permissions, 'is_creator', False):
-                sender_role = "Owner/Creator"
-            elif getattr(permissions, 'is_admin', False):
-                sender_role = "Admin"
-            from telethon.tl.functions.channels import GetParticipantRequest
-            res = await client(GetParticipantRequest(channel=event.chat_id, participant=sender))
-            custom_tag = getattr(res.participant, "rank", None) or "None"
-        except Exception:
-            pass
-    tag_info = f" | Member Tag: '{custom_tag}'" if custom_tag != "None" else ""
-    sender_info = f"{parse_sender_info(sender, event.message)} | Group Role: {sender_role}{tag_info}"
-    # Parse reply and inline markup on change
-    from parser import parse_reply_markup
-    buttons_summary = parse_reply_markup(event.message.reply_markup)
-
-    template = load_feedback_template(
-        "edit_notification",
-        "[System notification: Sender {sender_info} edited message {msg_id}]\n--- PREVIOUS STATE ---\nText: '{prev_text}'\nMedia: {prev_media}\n--- NEW STATE ---\nText with metadata: '{reply_meta}{new_text}'\n{buttons_summary}"
-    )
-    notice_text = template.replace("{sender_info}", sender_info).replace("{msg_id}", str(msg_id)).replace("{prev_text}", prev_text).replace("{prev_media}", prev_media).replace("{reply_meta}", reply_meta).replace("{new_text}", new_text).replace("{buttons_summary}", buttons_summary).strip()
-
-    await db.save_message(str(chat_id), "user", notice_text, media_info)
-
-# Message deletion handler
 @client.on(events.MessageDeleted)
 async def on_message_deleted(event):
-    global me
-    if me is None:
-        try:
-            me = await client.get_me()
-        except Exception:
-            return
-
-    # Background periodic update of group/channel profile when deletions are detected
-    now_ts = int(time.time())
-    chat_id = event.chat_id
-    if chat_id:
-        c_id = int(chat_id)
-        if c_id not in last_chat_updates or (now_ts - last_chat_updates[c_id]) > config.PROFILE_UPDATE_INTERVAL:
-            last_chat_updates[c_id] = now_ts
-            try:
-                chat_ent = await event.get_chat()
-                asyncio.create_task(parse_and_cache_chat_metadata(client, db, chat_ent))
-            except Exception as e:
-                logger.debug(f"Failed to update chat metadata upon message deletion: {str(e)}")
-
     for msg_id in event.deleted_ids:
-        orig_text = None
-        role = None
-        
         try:
-            async with db.db.execute(
-                "SELECT chat_id, role, text FROM messages WHERE msg_id = ? LIMIT 1", 
-                (msg_id,)
-            ) as cursor:
+            async with db.db.execute("SELECT chat_id, role, text FROM messages WHERE msg_id = ? LIMIT 1", (msg_id,)) as cursor:
                 row = await cursor.fetchone()
                 if row:
                     db_chat_id, role, orig_text = row
-                    
                     cid_int = int(db_chat_id)
-                    if not chat_id:
-                        chat_id = cid_int
-                    
-                    if orig_text and (orig_text.startswith("{") or "FunctionCall" in orig_text or "FunctionResponse" in orig_text):
-                        continue
-
-                    logger.info(f"Message deletion detected {msg_id} in chat {cid_int}. Text: '{orig_text[:50]}...'")
                     await db.update_message_text(str(cid_int), msg_id, f"[Message deleted by user]: {orig_text}")
-                    
-                    template = load_feedback_template("delete_notification", "[System notification: Message #{msg_id} ('{orig_text_truncated}...') was deleted by the sender]")
-                    orig_text_truncated = orig_text[:50] if orig_text else "None"
-                    notice_text = template.replace("{msg_id}", str(msg_id)).replace("{orig_text_truncated}", orig_text_truncated).strip()
-                    await db.save_message(str(cid_int), "user", notice_text)
-                    
-                    is_private_chat = cid_int > 0
-                    was_ai_related = (role == "model") or (orig_text and f"@{me.username}" in orig_text)
-                    
-                    if is_private_chat or was_ai_related:
-                        input_chat_entity = entity_cache.get(cid_int)
-                        if not input_chat_entity:
-                            input_chat_entity = await client.get_input_entity(cid_int)
-                            entity_cache[cid_int] = input_chat_entity
-                            
-                        if input_chat_entity and cid_int not in generating_chats:
-                            logger.info(f"Starting generation of response to deletion in chat {cid_int}...")
-                            generating_chats.add(cid_int)
-                            try:
-                                await ai_manager.handle_query(str(cid_int), input_chat_entity, trigger_msg_id=msg_id)
-                            finally:
-                                generating_chats.discard(cid_int)
         except Exception as e:
-            logger.error(f"Error processing message deletion {msg_id}: {str(e)}")
-
+            logger.error(f"Error handling message deletion: {str(e)}")
 
 async def main():
     global me
@@ -757,11 +527,9 @@ async def main():
     await db.connect()
     
     try:
-        # Tier 4 config override from SQLite settings table
         from config import reload_config_from_db
         await reload_config_from_db(db)
         
-        # Initialization of cross-references for the tools module
         tools.client = client
         tools.db = db
         tools.ai_manager = ai_manager
@@ -769,15 +537,16 @@ async def main():
         tools.pollinations_key_manager = ai_manager.pollinations_key_manager
         tools.bot_callback_fn = ai_manager.handle_query
         
-        # Register system tools in the global registry at startup
+        permission_manager.set_db_manager(db)
+        service_manager.bind_core_references(db, client, ai_manager)
+        command_manager.bind_core_references(db, client, ai_manager)
+
         tools.register_system_tools()
         
-        # Sync custom tools and custom tags/blocks from the SQLite database
         from registry import sync_custom_tools_with_db, sync_custom_tags_blocks_with_db
         await sync_custom_tools_with_db(db)
         await sync_custom_tags_blocks_with_db(db)
         
-        # Asynchronously read and restore the saved working key from SQLite DB
         await ai_manager.key_manager.load_saved_index()
         await ai_manager.pollinations_key_manager.load_saved_index()
         
@@ -786,29 +555,32 @@ async def main():
         logger.info("Userbot successfully authorized!")
         
         me = await client.get_me()
+
+        # Register system background services
+        service_manager.register_service("keep_alive", lambda: services.keep_alive_online(client), description="Keep Alive Online Service", is_custom=False)
+        service_manager.register_service("connection_monitor", lambda: services.connection_monitor(client, db, WORKSPACE_DIR, processed_msg_ids, entity_cache, schedule_debounce_query), description="Connection Monitor", is_custom=False)
+        service_manager.register_service("timers_loop", run_timers_loop, description="Persistent Timers Loop", is_custom=False)
+        service_manager.register_service("web_server", lambda: start_web_server(client, db, ai_manager), description="RESTful Web Server", is_custom=False)
+
+        await service_manager.start_service("keep_alive")
+        await service_manager.start_service("connection_monitor")
+        await service_manager.start_service("timers_loop")
+        await service_manager.start_service("web_server")
+
+        await service_manager.sync_with_db()
         
-        # [FIRST RUN]: Bootstrap AI dialogue history if allowed by the BOOTSTRAP_DATABASE setting
         if BOOTSTRAP_DATABASE:
             await services.bootstrap_database_if_empty(client, db, run_pending_query_fn=schedule_debounce_query)
         
-        # Download AI's own avatar for autonomous analysis at startup
         try:
             photos = await client.get_profile_photos(me, limit=1)
             if photos:
-                logger.info("Downloading AI's own account avatar to bot_workspace...")
                 await client.download_media(photos[0], file=str(WORKSPACE_DIR / BOT_AVATAR_NAME))
         except Exception as e:
             logger.error(f"Failed to download AI avatar: {str(e)}")
         
-        # Start infinite background processes
-        asyncio.create_task(services.keep_alive_online(client))
-        asyncio.create_task(services.connection_monitor(client, db, WORKSPACE_DIR, processed_msg_ids, entity_cache, schedule_debounce_query))
-        asyncio.create_task(run_timers_loop())
-        asyncio.create_task(start_web_server(client, db, ai_manager))
-        
         await client.run_until_disconnected()
     finally:
-        # Cancel all background tasks to prevent loop from hanging
         try:
             pending = asyncio.all_tasks()
             current = asyncio.current_task()
@@ -819,12 +591,10 @@ async def main():
                 await asyncio.gather(*[t for t in pending if t is not current], return_exceptions=True)
         except Exception:
             pass
-        # Cleanly shutdown the Web Server
         try:
             await stop_web_server()
         except Exception:
             pass
-        # Cleanly disconnect Telethon client
         try:
             await client.disconnect()
         except Exception:

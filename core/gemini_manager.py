@@ -17,12 +17,18 @@ from registry import registry
 from prompt_interpolator import get_interpolated_prompt
 from context_manager import AIContextManager
 from response_executor import AIResponseExecutor
+from permission_manager import permission_manager
+from command_manager import command_manager
 import tools
 
 logger = logging.getLogger("GeminiManager")
 
 
 class GeminiManager:
+    """
+    Orchestrates dialogue turns, API quota rotation, tool function calls,
+    active task registration for instant cancellation, and response execution.
+    """
     def __init__(self, telegram_client, db_manager):
         self.client = telegram_client
         self.db = db_manager
@@ -45,6 +51,11 @@ class GeminiManager:
 
     async def handle_query(self, chat_id: str, chat_entity=None, trigger_msg_id: int = None):
         """Orchestrates dialogue turns, token limits, and segment actions across decoupled sub-modules."""
+        cid_int = int(chat_id)
+        current_task = asyncio.current_task()
+        if current_task:
+            command_manager.register_generation_task(cid_int, current_task)
+
         reply_to_id = trigger_msg_id
         
         if not reply_to_id:
@@ -60,7 +71,7 @@ class GeminiManager:
                 logger.error(f"Failed to capture message ID for reply: {str(db_err)}")
 
         # Configure dynamic context variables
-        tools.current_chat_id.set(int(chat_id))
+        tools.current_chat_id.set(cid_int)
         tools.current_reply_to_id.set(reply_to_id)
         
         # Load system instructions dynamically via PromptInterpolator
@@ -122,17 +133,17 @@ class GeminiManager:
         dynamic_prompt = f"{system_prompt}\n\n{env_prompt}"
         logger.info(f"Full dynamic system_instruction passed to Gemini: {len(dynamic_prompt)} characters.")
         if not chat_entity or isinstance(chat_entity, (int, str)):
-            chat_entity = tools.entity_cache.get(int(chat_id))
+            chat_entity = tools.entity_cache.get(cid_int)
 
         if not chat_entity:
             try:
-                chat_entity = await self.client.get_input_entity(int(chat_id))
+                chat_entity = await self.client.get_input_entity(cid_int)
             except Exception:
                 try:
-                    chat_entity = await self.client.get_entity(int(chat_id))
+                    chat_entity = await self.client.get_entity(cid_int)
                 except Exception as e:
                     logger.error(f"Failed to get entity: {str(e)}")
-                    chat_entity = int(chat_id)
+                    chat_entity = cid_int
 
         gemini_client = self.key_manager.get_client()
         def get_safety_threshold(threshold_str: str) -> types.HarmBlockThreshold:
@@ -152,10 +163,22 @@ class GeminiManager:
             types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=get_safety_threshold(config.SAFETY_DANGEROUS_CONTENT)),
         ]
 
-        # Filter allowed tools based on config matrix
+        # Filter allowed tools based on config matrix and Granular Permission Manager
         allowed_callables = []
         for tool in registry.get_all_tools():
             is_blocked = False
+            
+            tool_category_elem = "TOOLS"
+            if "Category 3" in tool.category or "Telegram" in tool.category:
+                tool_category_elem = "COMMANDS"
+            elif "Category 4" in tool.category or "Category 5" in tool.category:
+                tool_category_elem = "CRON" if "cron" in tool.name else "SERVICES"
+            elif "Category 8" in tool.category:
+                tool_category_elem = "SITES"
+
+            if not permission_manager.can_ai_perform(tool_category_elem, "INVOKE"):
+                is_blocked = True
+
             if not tool.is_custom:
                 if config.AI_BLOCKED_ROOT_TOOLS and tool.name in config.AI_BLOCKED_ROOT_TOOLS:
                     is_blocked = True
@@ -166,10 +189,10 @@ class GeminiManager:
                     is_blocked = True
                 if config.AI_ALLOWED_CUSTOM_TOOLS and "all" not in config.AI_ALLOWED_CUSTOM_TOOLS and tool.name not in config.AI_ALLOWED_CUSTOM_TOOLS:
                     is_blocked = True
+
             if not is_blocked:
                 func = tool.callable
                 try:
-                    # Map arbitrary keyword argument expansions into an explicit dict parameter
                     sig = inspect.signature(func)
                     clean_params = []
                     has_kwargs = False
@@ -228,10 +251,8 @@ class GeminiManager:
 
         try:
             for turn in range(max_turns):
-                # 1. Load aligned history context chronologically via ContextManager
                 contents = await self.context_mgr.get_aligned_history(chat_id, gemini_client)
 
-                # Inject dynamic custom title and admin rights directly into the active chat header
                 for content in contents:
                     if content.parts and content.parts[0].text and "[System notification: Active conversation thread" in content.parts[0].text:
                         reply_to_id_str = str(reply_to_id) if reply_to_id else "unknown"
@@ -243,7 +264,6 @@ class GeminiManager:
                         )
                         break
 
-                # 2. High-precision token counting and context-limit checks
                 try:
                     token_response = await gemini_client.aio.models.count_tokens(
                         model=self.key_manager.get_model(),
@@ -253,7 +273,7 @@ class GeminiManager:
                     logger.info(f"Chat context {chat_id}: {total_tokens} tokens.")
                     
                     if total_tokens > self.key_manager.input_token_limit:
-                        await self.context_mgr.summarize_chat_context(gemini_client)
+                        await self.context_mgr.summarize_chat_context(gemini_client, chat_id=str(chat_id))
                         continue
                 except APIError as e:
                     if e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
@@ -318,14 +338,12 @@ class GeminiManager:
                     else:
                         raise e
 
-                # 3. Extract function calls
                 function_calls_to_execute = []
                 if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
                     for part in response.candidates[0].content.parts:
                         if part.function_call:
                             function_calls_to_execute.append(part.function_call)
 
-                # 4. Auto-Heal Interceptor (Resolves plain-text output leaks)
                 try:
                     resp_text = response.text
                 except Exception:
@@ -333,7 +351,6 @@ class GeminiManager:
 
                 if resp_text:
                     import ast
-                    import time
                     healed_calls = []
                     
                     json_blocks = re.findall(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', resp_text)
@@ -457,7 +474,6 @@ class GeminiManager:
                         if response.candidates and response.candidates[0].content:
                             content_obj = response.candidates[0].content
                             
-                            # Извлекаем оригинальную подпись thought_signature перед модификацией частей
                             orig_thought_sig = None
                             if content_obj.parts:
                                 for p in content_obj.parts:
@@ -468,7 +484,6 @@ class GeminiManager:
                                         orig_thought_sig = p.thoughtSignature
                                         break
 
-                            # Если оригинальная подпись отсутствует, используем официальный bypass-маркер Google
                             if not orig_thought_sig:
                                 orig_thought_sig = b"skip_thought_signature_validator"
 
@@ -489,20 +504,18 @@ class GeminiManager:
                                 if call["name"] == "no_op_ignore":
                                     should_ignore = True
                             
-                            logger.info(f"Auto-Heal Interceptor: successfully healed {len(healed_calls)} call(s) from plain conversational text: {[c['name'] for c in healed_calls]}")
+                            logger.info(f"Auto-Heal Interceptor: successfully healed {len(healed_calls)} call(s) from text.")
                             function_calls_to_execute = []
                             for part in response.candidates[0].content.parts:
                                 if part.function_call:
                                     function_calls_to_execute.append(part.function_call)
 
-                # 5. Hand over text response executing block-level tags dynamically to ResponseExecutor
                 if resp_text and not function_calls_to_execute and not should_ignore:
                     typing_task.cancel()
                     should_ignore, should_continue = await self.executor.execute_response(resp_text, chat_entity, reply_to_id, chat_id)
                     if should_continue:
                         continue
 
-                # 6. Process tool calls
                 if function_calls_to_execute:
                     logger.info(f"Received {len(function_calls_to_execute)} tool call(s) from Gemini...")
                     model_tool_call_content = types.Content(role="model", parts=response.candidates[0].content.parts)
@@ -521,7 +534,6 @@ class GeminiManager:
                         if tool_meta:
                             try:
                                 logger.info(f"Tool call '{fn_name}' from registry...")
-                                # Unpack dynamic list and dict arguments back to positional and keyword arguments
                                 call_args = args.copy() if args else {}
                                 extra_args = call_args.pop("args", []) or []
                                 if "kwargs" in call_args and isinstance(call_args["kwargs"], dict):
@@ -531,7 +543,6 @@ class GeminiManager:
                                 if not isinstance(extra_args, list):
                                     extra_args = [extra_args]
                                     
-                                # Safely bind arguments to resolve positional-or-keyword conflicts
                                 sig = inspect.signature(tool_meta.callable)
                                 positional_params = []
                                 has_var_positional = False
@@ -570,7 +581,6 @@ class GeminiManager:
 
                         tool_responses.append(types.Part.from_function_response(name=fn_name, response={"result": result}))
                         
-                        # Universal extraction of Google File URIs from any tool result!
                         if result:
                             res_str = str(result)
                             GOOGLE_FILE_URI_REGEX = re.compile(
@@ -610,7 +620,7 @@ class GeminiManager:
             logger.error(f"Critical Gemini error in GeminiManager: {str(e)}")
         finally:
             typing_task.cancel()
-            # Save the highest user message ID processed during this transaction
+            command_manager.unregister_generation_task(cid_int)
             try:
                 async with self.db.db.execute(
                     "SELECT MAX(msg_id) FROM messages WHERE chat_id = ? AND role = 'user'", (str(chat_id),)

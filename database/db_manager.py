@@ -1,5 +1,4 @@
 import config
-# db_manager.py
 import json
 import sqlite3
 import aiosqlite
@@ -7,8 +6,9 @@ import logging
 import base64
 import time
 from datetime import datetime, date
-from typing import Any
+from typing import Any, List, Dict, Optional
 from google.genai import types
+
 logger = logging.getLogger("Database")
 DB_PATH = config.SAFE_DB_DIR / config.DB_NAME
 
@@ -105,7 +105,7 @@ class DBManager:
 
     async def _init_db(self):
         async with self.db.cursor() as cursor:
-            # 1. Main message history table (cleared of secondary fields)
+            # 1. Main message history table
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS messages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -119,7 +119,7 @@ class DBManager:
                 )
             """)
 
-            # 2. Secondary message metadata (backgrounds, colors, patterns, gifts, buttons)
+            # 2. Secondary message metadata
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS msgs_meta (
                     chat_id TEXT NOT NULL,
@@ -169,7 +169,7 @@ class DBManager:
                 )
             """)
 
-            # 7. Detailed user metadata with a flexible raw_meta_json field
+            # 7. User metadata
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users_meta (
                     id TEXT PRIMARY KEY,
@@ -190,7 +190,7 @@ class DBManager:
                 )
             """)
 
-            # 8. Detailed metadata of groups/channels with a flexible raw_meta_json field
+            # 8. Chat metadata
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS chats_meta (
                     id TEXT PRIMARY KEY,
@@ -206,22 +206,22 @@ class DBManager:
                 )
             """)
 
-            # 9. Tracking states, limits, quotas, and API key owners
+            # 9. API keys tracking
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS api_keys (
                     key_value TEXT PRIMARY KEY,
-                    provider TEXT NOT NULL,         -- 'gemini' or 'pollinations'
-                    key_type TEXT DEFAULT NULL,     -- 'secret' or 'publishable' (for pollinations)
-                    owner TEXT DEFAULT NULL,        -- account owner (for pollinations)
-                    status TEXT DEFAULT 'active',   -- 'active' or 'exhausted'
-                    exhausted_at INTEGER DEFAULT NULL, -- quota exhaustion timestamp
-                    last_used_at INTEGER DEFAULT NULL,  -- last used timestamp
-                    models_json TEXT DEFAULT NULL,   -- list of supported models (for gemini)
-                    raw_info_json TEXT DEFAULT NULL  -- extended metadata (JSON)
+                    provider TEXT NOT NULL,
+                    key_type TEXT DEFAULT NULL,
+                    owner TEXT DEFAULT NULL,
+                    status TEXT DEFAULT 'active',
+                    exhausted_at INTEGER DEFAULT NULL,
+                    last_used_at INTEGER DEFAULT NULL,
+                    models_json TEXT DEFAULT NULL,
+                    raw_info_json TEXT DEFAULT NULL
                 )
             """)
 
-            # 10. Storage of code and JSON schemas of dynamic custom AI tools
+            # 10. Custom AI tools
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS custom_tools (
                     name TEXT PRIMARY KEY,
@@ -233,18 +233,18 @@ class DBManager:
                 )
             """)
 
-            # 11. Storage of code and metadata of dynamic custom tags and blocks
+            # 11. Custom XML tags & blocks
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS custom_tags_blocks (
                     name TEXT PRIMARY KEY,
-                    type TEXT NOT NULL,             -- 'tag' or 'block'
+                    type TEXT NOT NULL,
                     description TEXT DEFAULT NULL,
-                    code TEXT NOT NULL,             -- Python handler code
+                    code TEXT NOT NULL,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
 
-            # 12. Settings overrides table for multi-tier dynamic config
+            # 12. Settings overrides
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS settings (
                     key TEXT PRIMARY KEY,
@@ -252,7 +252,7 @@ class DBManager:
                 )
             """)
 
-            # 13. Dynamic Web Sites with isolation settings
+            # 13. Dynamic Web Sites
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS dynamic_sites (
                     name TEXT PRIMARY KEY,
@@ -264,13 +264,60 @@ class DBManager:
                 )
             """)
 
-            # --- INDEXES FOR ULTRA-HIGH QUERY OPTIMIZATION ---
+            # 14. User Ranks & Dynamic Permissions (NEW)
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_ranks (
+                    user_id_or_name TEXT PRIMARY KEY,
+                    rank INTEGER NOT NULL,
+                    permissions_json TEXT DEFAULT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 15. Custom Dynamic Commands (NEW)
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS custom_commands (
+                    name TEXT PRIMARY KEY,
+                    help_text TEXT DEFAULT NULL,
+                    category TEXT DEFAULT 'general',
+                    code TEXT NOT NULL,
+                    parameters_schema TEXT DEFAULT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 16. Custom Background Services (NEW)
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS custom_services (
+                    name TEXT PRIMARY KEY,
+                    description TEXT DEFAULT NULL,
+                    code TEXT NOT NULL,
+                    status TEXT DEFAULT 'stopped',
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # 17. Custom Cron Jobs (NEW)
+            await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS custom_cron_jobs (
+                    name TEXT PRIMARY KEY,
+                    schedule_spec TEXT NOT NULL,
+                    description TEXT DEFAULT NULL,
+                    code TEXT NOT NULL,
+                    status TEXT DEFAULT 'active',
+                    last_run INTEGER DEFAULT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # --- INDEXES FOR QUERY OPTIMIZATION ---
             await cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_msg ON messages(chat_id, msg_id)")
             await cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)")
             await cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_meta_username ON users_meta(username)")
             await cursor.execute("CREATE INDEX IF NOT EXISTS idx_chats_meta_username ON chats_meta(username)")
             await cursor.execute("CREATE INDEX IF NOT EXISTS idx_timers_execute ON timers(execute_at)")
             await cursor.execute("CREATE INDEX IF NOT EXISTS idx_api_keys_provider ON api_keys(provider)")
+            await cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_ranks_rank ON user_ranks(rank)")
 
         await self.db.commit()
 
@@ -294,8 +341,8 @@ class DBManager:
             VALUES (?, ?, ?, ?, ?, ?)
         """, (str(chat_id), role, text, raw_json, media_info, msg_id))
         await self.db.commit()
+
     async def save_msg_meta(self, chat_id: str, msg_id: int, meta_text: str = None, raw_meta_dict: dict = None):
-        """Saves accompanying visual/structural information about the message to the msgs_meta table."""
         chat_id = normalize_chat_id(chat_id)
         raw_json = json.dumps(clean_for_json(raw_meta_dict)) if raw_meta_dict else None
         await self.db.execute("""
@@ -307,8 +354,7 @@ class DBManager:
         """, (str(chat_id), int(msg_id), meta_text, raw_json))
         await self.db.commit()
 
-    async def get_msg_meta(self, chat_id: str, msg_id: int) -> dict:
-        """Retrieves visual metadata of a specific message."""
+    async def get_msg_meta(self, chat_id: str, msg_id: int) -> Optional[dict]:
         chat_id = normalize_chat_id(chat_id)
         async with self.db.execute("SELECT meta_text, raw_meta_json FROM msgs_meta WHERE chat_id = ? AND msg_id = ?", (str(chat_id), int(msg_id))) as cursor:
             row = await cursor.fetchone()
@@ -330,11 +376,6 @@ class DBManager:
     async def get_history(self, chat_id: str, limit: int = None, max_db_id: int = None) -> list:
         chat_id = normalize_chat_id(chat_id)
         if limit is None: limit = config.MESSAGES_LIMIT
-        """
-        Extracts end-to-end message history with split local and global contexts.
-        Ensures the active chat is positioned at the end of the prompt for perfect response targeting,
-        while keeping other chats visible for global awareness.
-        """
         async with self.db.execute("SELECT summary FROM summaries WHERE chat_id = 'global'") as cursor:
             row = await cursor.fetchone()
         
@@ -352,11 +393,9 @@ class DBManager:
             )
             history.append((ack_content, None))
 
-        # Determine limits based on config ratio
         local_limit = max(config.CONTEXT_LOCAL_MIN_LIMIT, int(limit * config.CONTEXT_LOCAL_RATIO))
         global_limit = max(0, limit - local_limit)
 
-        # 1. Fetch recent messages specifically from the active chat (ordered DESC for DB slice)
         local_query = """
             SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, COALESCE(m.msg_id, m.id), m.chat_id, m.timestamp
             FROM messages m
@@ -373,7 +412,6 @@ class DBManager:
         async with self.db.execute(local_query, tuple(params_local)) as cursor:
             local_rows = await cursor.fetchall()
 
-        # 2. Fetch recent messages globally from OTHER chats (ordered DESC for DB slice)
         other_query = """
             SELECT m.role, m.text, m.raw_content_json, m.media_info, meta.meta_text, COALESCE(m.msg_id, m.id), m.chat_id, m.timestamp
             FROM messages m
@@ -390,11 +428,9 @@ class DBManager:
         async with self.db.execute(other_query, tuple(params_other)) as cursor:
             other_rows = await cursor.fetchall()
 
-        # Restore chronological order (ASC)
         other_rows.reverse()
         local_rows.reverse()
 
-        # Append other chats first under a clear header
         if other_rows:
             header_content = types.Content(
                 role="user",
@@ -424,7 +460,6 @@ class DBManager:
                 parts = [types.Part.from_text(text=full_text)]
                 history.append((types.Content(role=role, parts=parts), media_info))
 
-        # Append active chat last under a clear header to focus response targeting
         if local_rows:
             header_content = types.Content(
                 role="user",
@@ -480,7 +515,7 @@ class DBManager:
         await self.db.commit()
 
     # --- GLOBAL MEMORY METHODS ---
-    async def get_memory(self, key: str) -> str:
+    async def get_memory(self, key: str) -> Optional[str]:
         async with self.db.execute("SELECT value FROM shared_memory WHERE key = ?", (key,)) as cursor:
             row = await cursor.fetchone()
             return row[0] if row else None
@@ -526,7 +561,7 @@ class DBManager:
         await self.db.execute("DELETE FROM triggers WHERE id = ?", (trigger_id,))
         await self.db.commit()
 
-    # --- PROFILE SAVING METHODS (WITH PASSIVE JSON EXTENSION) ---
+    # --- USER & CHAT META ---
     async def save_user_meta(self, user_id: str, meta_dict: dict):
         keys = ["id", "username", "first_name", "last_name", "phone", "bio", "premium", "verified", "scam", "fake", "birthday", "emoji_status_id", "avatar_path", "raw_meta_json"]
         vals = [meta_dict.get(k) for k in keys]
@@ -545,7 +580,7 @@ class DBManager:
         await self.db.execute(sql, vals)
         await self.db.commit()
 
-    async def get_user_meta(self, user_id: str) -> dict:
+    async def get_user_meta(self, user_id: str) -> Optional[dict]:
         async with self.db.execute("SELECT * FROM users_meta WHERE id = ?", (str(user_id),)) as cursor:
             row = await cursor.fetchone()
             if not row:
@@ -577,7 +612,7 @@ class DBManager:
         await self.db.execute(sql, vals)
         await self.db.commit()
 
-    async def get_chat_meta(self, chat_id: str) -> dict:
+    async def get_chat_meta(self, chat_id: str) -> Optional[dict]:
         async with self.db.execute("SELECT * FROM chats_meta WHERE id = ?", (str(chat_id),)) as cursor:
             row = await cursor.fetchone()
             if not row:
@@ -592,7 +627,6 @@ class DBManager:
             return res
 
     async def save_key_meta(self, key_value: str, provider: str, key_type: str = None, owner: str = None, status: str = "active", exhausted_at: int = None, last_used_at: int = None, models_json: str = None, raw_info_json: str = None):
-        """Saves or updates metadata of a specific API key in the database."""
         await self.db.execute("""
             INSERT INTO api_keys (key_value, provider, key_type, owner, status, exhausted_at, last_used_at, models_json, raw_info_json)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -607,8 +641,7 @@ class DBManager:
         """, (key_value, provider, key_type, owner, status, exhausted_at, last_used_at, models_json, raw_info_json))
         await self.db.commit()
 
-    async def get_key_meta(self, key_value: str) -> dict:
-        """Returns information about a specific key from the database."""
+    async def get_key_meta(self, key_value: str) -> Optional[dict]:
         async with self.db.execute("SELECT * FROM api_keys WHERE key_value = ?", (key_value,)) as cursor:
             row = await cursor.fetchone()
             if not row:
@@ -617,23 +650,20 @@ class DBManager:
             return dict(zip(cols, row))
 
     async def get_keys_by_provider(self, provider: str) -> list:
-        """Returns a list of all keys for the specified provider."""
         async with self.db.execute("SELECT * FROM api_keys WHERE provider = ?", (provider,)) as cursor:
             rows = await cursor.fetchall()
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, row)) for row in rows]
 
     async def update_keys_status_by_owner(self, owner: str, status: str, exhausted_at: int = None):
-        """Batch updates the limit status for all keys of a single owner (for Pollinations)."""
         await self.db.execute(
             "UPDATE api_keys SET status = ?, exhausted_at = ? WHERE owner = ?",
             (status, exhausted_at, owner)
         )
         await self.db.commit()
 
-    # --- CUSTOM DYNAMIC TOOLS MANAGEMENT (SQL REGISTRY) ---
+    # --- CUSTOM TOOLS, TAGS & BLOCKS ---
     async def save_custom_tool(self, name: str, category: str, description: str, code: str, parameters_schema: str = None):
-        """Saves or updates a custom AI tool in the database."""
         await self.db.execute("""
             INSERT INTO custom_tools (name, category, description, code, parameters_schema)
             VALUES (?, ?, ?, ?, ?)
@@ -645,8 +675,7 @@ class DBManager:
         """, (name, category, description, code, parameters_schema))
         await self.db.commit()
 
-    async def get_custom_tool(self, name: str) -> dict:
-        """Returns metadata and code of a specific custom tool."""
+    async def get_custom_tool(self, name: str) -> Optional[dict]:
         async with self.db.execute("SELECT * FROM custom_tools WHERE name = ?", (name,)) as cursor:
             row = await cursor.fetchone()
             if not row:
@@ -655,14 +684,12 @@ class DBManager:
             return dict(zip(cols, row))
 
     async def get_all_custom_tools(self) -> list:
-        """Returns a list of all registered custom tools."""
         async with self.db.execute("SELECT * FROM custom_tools") as cursor:
             rows = await cursor.fetchall()
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, row)) for row in rows]
 
     async def delete_custom_tool(self, name: str) -> bool:
-        """Deletes a custom tool from the database. Returns True upon successful deletion."""
         async with self.db.execute("SELECT 1 FROM custom_tools WHERE name = ?", (name,)) as cursor:
             exists = await cursor.fetchone()
         if not exists:
@@ -671,9 +698,7 @@ class DBManager:
         await self.db.commit()
         return True
 
-    # --- CUSTOM DYNAMIC TAGS AND BLOCKS MANAGEMENT ---
     async def save_custom_tag_block(self, name: str, type_str: str, description: str, code: str):
-        """Saves or updates a custom tag or block in the database."""
         await self.db.execute("""
             INSERT INTO custom_tags_blocks (name, type, description, code)
             VALUES (?, ?, ?, ?)
@@ -684,8 +709,7 @@ class DBManager:
         """, (name, type_str, description, code))
         await self.db.commit()
 
-    async def get_custom_tag_block(self, name: str) -> dict:
-        """Returns metadata and code of a specific custom tag/block."""
+    async def get_custom_tag_block(self, name: str) -> Optional[dict]:
         async with self.db.execute("SELECT * FROM custom_tags_blocks WHERE name = ?", (name,)) as cursor:
             row = await cursor.fetchone()
             if not row:
@@ -694,14 +718,12 @@ class DBManager:
             return dict(zip(cols, row))
 
     async def get_all_custom_tags_blocks(self) -> list:
-        """Returns a list of all registered custom tags and blocks."""
         async with self.db.execute("SELECT * FROM custom_tags_blocks") as cursor:
             rows = await cursor.fetchall()
             cols = [d[0] for d in cursor.description]
             return [dict(zip(cols, row)) for row in rows]
 
     async def delete_custom_tag_block(self, name: str) -> bool:
-        """Deletes a custom tag or block from the database."""
         async with self.db.execute("SELECT 1 FROM custom_tags_blocks WHERE name = ?", (name,)) as cursor:
             exists = await cursor.fetchone()
         if not exists:
@@ -710,15 +732,160 @@ class DBManager:
         await self.db.commit()
         return True
 
-    # --- DYNAMIC SETTINGS OVERRIDES CONFIGURATION ---
+    # --- DYNAMIC USER RANKS (NEW) ---
+    async def save_user_rank(self, user_id_or_name: str, rank: int, permissions_list: list = None):
+        perms_str = json.dumps(permissions_list) if permissions_list else None
+        await self.db.execute("""
+            INSERT INTO user_ranks (user_id_or_name, rank, permissions_json)
+            VALUES (?, ?, ?)
+            ON CONFLICT(user_id_or_name) DO UPDATE SET
+                rank = excluded.rank,
+                permissions_json = COALESCE(excluded.permissions_json, permissions_json),
+                updated_at = CURRENT_TIMESTAMP
+        """, (str(user_id_or_name), int(rank), perms_str))
+        await self.db.commit()
+
+    async def get_user_rank(self, user_id_or_name: str) -> Optional[dict]:
+        async with self.db.execute("SELECT user_id_or_name, rank, permissions_json FROM user_ranks WHERE user_id_or_name = ?", (str(user_id_or_name),)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            return {
+                "user_id_or_name": row[0],
+                "rank": row[1],
+                "permissions": json.loads(row[2]) if row[2] else []
+            }
+
+    async def delete_user_rank(self, user_id_or_name: str) -> bool:
+        async with self.db.execute("SELECT 1 FROM user_ranks WHERE user_id_or_name = ?", (str(user_id_or_name),)) as cursor:
+            exists = await cursor.fetchone()
+        if not exists:
+            return False
+        await self.db.execute("DELETE FROM user_ranks WHERE user_id_or_name = ?", (str(user_id_or_name),))
+        await self.db.commit()
+        return True
+
+    # --- CUSTOM COMMANDS MANAGEMENT (NEW) ---
+    async def save_custom_command(self, name: str, code: str, help_text: str = None, category: str = "general", parameters_schema: str = None):
+        clean_name = name.lstrip("/").lower()
+        await self.db.execute("""
+            INSERT INTO custom_commands (name, help_text, category, code, parameters_schema)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                help_text = COALESCE(excluded.help_text, help_text),
+                category = excluded.category,
+                code = excluded.code,
+                parameters_schema = COALESCE(excluded.parameters_schema, parameters_schema)
+        """, (clean_name, help_text, category, code, parameters_schema))
+        await self.db.commit()
+
+    async def get_custom_command(self, name: str) -> Optional[dict]:
+        clean_name = name.lstrip("/").lower()
+        async with self.db.execute("SELECT * FROM custom_commands WHERE name = ?", (clean_name,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+
+    async def get_all_custom_commands(self) -> list:
+        async with self.db.execute("SELECT * FROM custom_commands") as cursor:
+            rows = await cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in rows]
+
+    async def delete_custom_command(self, name: str) -> bool:
+        clean_name = name.lstrip("/").lower()
+        async with self.db.execute("SELECT 1 FROM custom_commands WHERE name = ?", (clean_name,)) as cursor:
+            exists = await cursor.fetchone()
+        if not exists:
+            return False
+        await self.db.execute("DELETE FROM custom_commands WHERE name = ?", (clean_name,))
+        await self.db.commit()
+        return True
+
+    # --- CUSTOM SERVICES MANAGEMENT (NEW) ---
+    async def save_custom_service(self, name: str, code: str, description: str = None, status: str = "stopped"):
+        await self.db.execute("""
+            INSERT INTO custom_services (name, description, code, status)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                description = COALESCE(excluded.description, description),
+                code = excluded.code,
+                status = excluded.status
+        """, (name, description, code, status))
+        await self.db.commit()
+
+    async def get_custom_service(self, name: str) -> Optional[dict]:
+        async with self.db.execute("SELECT * FROM custom_services WHERE name = ?", (name,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+
+    async def get_all_custom_services(self) -> list:
+        async with self.db.execute("SELECT * FROM custom_services") as cursor:
+            rows = await cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in rows]
+
+    async def delete_custom_service(self, name: str) -> bool:
+        async with self.db.execute("SELECT 1 FROM custom_services WHERE name = ?", (name,)) as cursor:
+            exists = await cursor.fetchone()
+        if not exists:
+            return False
+        await self.db.execute("DELETE FROM custom_services WHERE name = ?", (name,))
+        await self.db.commit()
+        return True
+
+    # --- CUSTOM CRON JOBS MANAGEMENT (NEW) ---
+    async def save_custom_cron_job(self, name: str, schedule_spec: str, code: str, description: str = None, status: str = "active"):
+        await self.db.execute("""
+            INSERT INTO custom_cron_jobs (name, schedule_spec, description, code, status)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                schedule_spec = excluded.schedule_spec,
+                description = COALESCE(excluded.description, description),
+                code = excluded.code,
+                status = excluded.status
+        """, (name, schedule_spec, description, code, status))
+        await self.db.commit()
+
+    async def get_custom_cron_job(self, name: str) -> Optional[dict]:
+        async with self.db.execute("SELECT * FROM custom_cron_jobs WHERE name = ?", (name,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+
+    async def get_all_custom_cron_jobs(self) -> list:
+        async with self.db.execute("SELECT * FROM custom_cron_jobs") as cursor:
+            rows = await cursor.fetchall()
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in rows]
+
+    async def update_cron_last_run(self, name: str, timestamp_int: int):
+        await self.db.execute("UPDATE custom_cron_jobs SET last_run = ? WHERE name = ?", (timestamp_int, name))
+        await self.db.commit()
+
+    async def delete_custom_cron_job(self, name: str) -> bool:
+        async with self.db.execute("SELECT 1 FROM custom_cron_jobs WHERE name = ?", (name,)) as cursor:
+            exists = await cursor.fetchone()
+        if not exists:
+            return False
+        await self.db.execute("DELETE FROM custom_cron_jobs WHERE name = ?", (name,))
+        await self.db.commit()
+        return True
+
+    # --- SETTINGS & SITES ---
     async def get_all_settings(self) -> dict:
-        """Retrieves all configuration settings stored in the settings table."""
         async with self.db.execute("SELECT key, value FROM settings") as cursor:
             rows = await cursor.fetchall()
             return {row[0]: row[1] for row in rows}
 
     async def save_setting(self, key: str, value: Any):
-        """Saves or updates a dynamic setting parameter in the database."""
         val_str = json.dumps(value) if not isinstance(value, str) else value
         await self.db.execute("""
             INSERT INTO settings (key, value) VALUES (?, ?)
@@ -727,15 +894,10 @@ class DBManager:
         await self.db.commit()
 
     async def delete_setting(self, key: str):
-        """Removes a dynamic setting override from the database."""
         await self.db.execute("DELETE FROM settings WHERE key = ?", (key,))
         await self.db.commit()
 
-
-    # --- DYNAMIC WEB SITES MANAGEMENT ---
     async def save_dynamic_site(self, name: str, config_dict: dict, modules_list: list, expires_at: int = None, status: str = 'active'):
-        """Saves or updates a dynamic website with isolation configuration and custom modules."""
-        import time
         created_at = int(time.time())
         config_str = json.dumps(config_dict, ensure_ascii=False)
         modules_str = json.dumps(modules_list, ensure_ascii=False)
@@ -750,8 +912,7 @@ class DBManager:
         """, (name, status, created_at, expires_at, config_str, modules_str))
         await self.db.commit()
 
-    async def get_dynamic_site(self, name: str) -> dict:
-        """Retrieves configuration and module code of a specific dynamic site by name."""
+    async def get_dynamic_site(self, name: str) -> Optional[dict]:
         async with self.db.execute("SELECT name, status, created_at, expires_at, config_json, modules_json FROM dynamic_sites WHERE name = ?", (name,)) as cursor:
             row = await cursor.fetchone()
             if not row:
@@ -766,7 +927,6 @@ class DBManager:
             }
 
     async def get_all_dynamic_sites(self) -> list:
-        """Returns a list of all registered dynamic web sites."""
         async with self.db.execute("SELECT name, status, created_at, expires_at, config_json, modules_json FROM dynamic_sites") as cursor:
             rows = await cursor.fetchall()
             return [{
@@ -779,7 +939,6 @@ class DBManager:
             } for r in rows]
 
     async def delete_dynamic_site(self, name: str) -> bool:
-        """Deletes a dynamic website from the SQLite database."""
         async with self.db.execute("SELECT 1 FROM dynamic_sites WHERE name = ?", (name,)) as cursor:
             exists = await cursor.fetchone()
         if not exists:
@@ -789,7 +948,6 @@ class DBManager:
         return True
 
     async def close(self):
-        """Closes the active database connection."""
         if self.db:
             await self.db.close()
             logger.info("DB connection successfully closed.")
