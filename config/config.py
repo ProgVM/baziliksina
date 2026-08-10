@@ -13,7 +13,7 @@ logger = logging.getLogger("Config")
 load_dotenv(override=True)
 
 # =====================================================================
-# ENHANCED DYNAMIC CONFIGURATION PARAMETER ENGINE (DSL PARSER & PROXY)
+# DYNAMIC CONFIGURATION PARAMETER ENGINE (DSL PARSER & NUMERIC PROXY)
 # =====================================================================
 class DynamicParameter:
     """
@@ -232,7 +232,7 @@ class DynamicParameter:
             if idx[0] >= len(tokens): raise ValueError("Unexpected end of expression")
             t_type, t_val = tokens[idx[0]]
             
-            # Support unary minus (-) and unary plus (+) for negative numbers
+            # Unary minus and plus
             if t_type == "OP" and t_val == "-":
                 idx[0] += 1
                 return -parse_primary()
@@ -345,36 +345,32 @@ class DynamicParameter:
             count += 1
         return res
 
-    # Numerical & Logical proxy magic methods
-    def __float__(self): return float(self.evaluate())
-    def __int__(self): return int(self.evaluate())
-    def __str__(self): return str(self.evaluate())
-    def __repr__(self): return f"{self.evaluate()}"
-    def __bool__(self): return bool(self.evaluate())
-    def __lt__(self, other): return self.evaluate() < (float(other) if isinstance(other, DynamicParameter) else other)
-    def __le__(self, other): return self.evaluate() <= (float(other) if isinstance(other, DynamicParameter) else other)
-    def __gt__(self, other): return self.evaluate() > (float(other) if isinstance(other, DynamicParameter) else other)
-    def __ge__(self, other): return self.evaluate() >= (float(other) if isinstance(other, DynamicParameter) else other)
-    def __eq__(self, other): return self.evaluate() == (float(other) if isinstance(other, DynamicParameter) else other)
-    def __ne__(self, other): return self.evaluate() != (float(other) if isinstance(other, DynamicParameter) else other)
-    def __add__(self, other): return self.evaluate() + (float(other) if isinstance(other, DynamicParameter) else other)
-    def __radd__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) + self.evaluate()
-    def __sub__(self, other): return self.evaluate() - (float(other) if isinstance(other, DynamicParameter) else other)
-    def __rsub__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) - self.evaluate()
-    def __mul__(self, other): return self.evaluate() * (float(other) if isinstance(other, DynamicParameter) else other)
-    def __rmul__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) * self.evaluate()
-    def __truediv__(self, other): return self.evaluate() / (float(other) if isinstance(other, DynamicParameter) else other)
-    def __rtruediv__(self, other): return (float(other) if isinstance(other, DynamicParameter) else other) / self.evaluate()
+
+# =====================================================================
+# PATH CONSTANTS & WORKSPACE SETUP
+# =====================================================================
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+is_termux = "com.termux" in sys.executable or "/data/data/com.termux" in str(BASE_DIR)
+is_emulated = "emulated" in str(BASE_DIR)
+
+if is_termux or is_emulated:
+    SAFE_DB_DIR = Path.home() / ".baziliksina"
+    SAFE_DB_DIR.mkdir(parents=True, exist_ok=True)
+else:
+    SAFE_DB_DIR = BASE_DIR
+
+WORKSPACE_DIR = BASE_DIR / "bot_workspace"
+WORKSPACE_DIR.mkdir(exist_ok=True)
+
+CONFIG_JSON_PATH = BASE_DIR / "config" / "config.json"
 
 
 # =====================================================================
-# ALL DYNAMIC PARAMETERS REGISTRY (_PARAMS DICTIONARY)
+# CENTRAL SYSTEM PARAMETERS REGISTRY (_PARAMS)
 # =====================================================================
 _PARAMS: Dict[str, DynamicParameter] = {
     # --- 1. Telegram Core, Sessions & Admin Ranks ---
-    "API_ID": DynamicParameter("TELEGRAM_API_ID", 0, int, allow_dsl=False, description="Telegram API ID alias"),
-    "API_HASH": DynamicParameter("TELEGRAM_API_HASH", "", str, allow_dsl=False, description="Telegram API Hash alias"),
-    "SESSION_NAME": DynamicParameter("TELEGRAM_SESSION_NAME", "baziliksina_session", str, allow_dsl=False, description="Session name alias"),
     "TELEGRAM_API_ID": DynamicParameter("TELEGRAM_API_ID", 0, int, allow_dsl=False, description="Telegram API ID"),
     "TELEGRAM_API_HASH": DynamicParameter("TELEGRAM_API_HASH", "", str, allow_dsl=False, description="Telegram API Hash"),
     "TELEGRAM_SESSION_NAME": DynamicParameter("TELEGRAM_SESSION_NAME", "baziliksina_session", str, allow_dsl=False, description="Telegram session name"),
@@ -396,7 +392,12 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "SAFETY_DANGEROUS_CONTENT": DynamicParameter("SAFETY_DANGEROUS_CONTENT", "BLOCK_NONE", str, allow_dsl=False),
     "CHARACTER_FILE": DynamicParameter("CHARACTER_FILE", "character.txt", str, allow_dsl=False),
 
-    # --- 3. Generative Media & Pollinations ---
+    # --- 3. Database & Bootstrap Settings ---
+    "BOOTSTRAP_DATABASE": DynamicParameter("BOOTSTRAP_DATABASE", False, bool, description="Bootstrap chat history on first run"),
+    "DB_NAME": DynamicParameter("DB_NAME", "bot_context.db", str, allow_dsl=False),
+    "SQLITE_JOURNAL_MODE": DynamicParameter("SQLITE_JOURNAL_MODE", "WAL", str, allow_dsl=False),
+
+    # --- 4. Generative Media & Pollinations ---
     "POLLINATIONS_KEYS": DynamicParameter("POLLINATIONS_KEYS", [], list, allow_dsl=False, description="Pollinations API keys pool"),
     "DEFAULT_IMAGE_MODEL": DynamicParameter("DEFAULT_IMAGE_MODEL", "flux", str, allow_dsl=False),
     "DEFAULT_IMAGE_WIDTH": DynamicParameter("DEFAULT_IMAGE_WIDTH", 1024, int, min_val=1),
@@ -423,7 +424,7 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "VIDEO_GEN_AUTO_UPLOAD_TO_GOOGLE": DynamicParameter("VIDEO_GEN_AUTO_UPLOAD_TO_GOOGLE", True, bool),
     "PUBLIC_UPLOAD_TIMEOUT": DynamicParameter("PUBLIC_UPLOAD_TIMEOUT", 60.0, float, min_val=0.1),
 
-    # --- 4. Context, Token Strategies & Memory Modes ---
+    # --- 5. Context, Token Strategies & Memory Modes ---
     "CONTEXT_MANAGEMENT_MODE": DynamicParameter("CONTEXT_MANAGEMENT_MODE", "summarize", str, allow_dsl=False, description="Text context strategy: summarize, trim, hybrid, none"),
     "TEXT_LIMIT_TYPE": DynamicParameter("TEXT_LIMIT_TYPE", "tokens", str, allow_dsl=False, description="Text limit type: tokens or messages_count"),
     "TEXT_TOKEN_LIMIT": DynamicParameter("TEXT_TOKEN_LIMIT", 524288, int, min_val=1000, description="Max text token budget"),
@@ -442,7 +443,7 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "MEDIA_LIMIT": DynamicParameter("MEDIA_LIMIT", 250, int, min_val=1),
     "AUTO_ATTACH_FILES_TO_CONTEXT": DynamicParameter("AUTO_ATTACH_FILES_TO_CONTEXT", False, bool, description="Auto attach media to Gemini context without explicit tool call"),
 
-    # --- 5. Triggers, Rules & Flow Matrix ---
+    # --- 6. Triggers, Rules & Flow Matrix ---
     "AUTO_SAVE_TEXT_RULE": DynamicParameter("AUTO_SAVE_TEXT_RULE", "all", str, description="DSL filter rule for auto saving text messages"),
     "AUTO_SAVE_FILE_RULE": DynamicParameter("AUTO_SAVE_FILE_RULE", "all", str, description="DSL filter rule for auto saving files"),
     "AI_RESPONSE_MODE": DynamicParameter("AI_RESPONSE_MODE", "all", str, allow_dsl=False, description="AI response scope: all, private_only, group_only, channel_only"),
@@ -464,11 +465,7 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "TRIGGER_ON_OUTGOING_MANUAL_MESSAGES": DynamicParameter("TRIGGER_ON_OUTGOING_MANUAL_MESSAGES", False, bool, description="Trigger AI on manual outgoing messages"),
     "TRIGGER_ON_COMMANDS": DynamicParameter("TRIGGER_ON_COMMANDS", False, bool, description="Trigger AI generation on CLI commands"),
 
-    "BOOTSTRAP_TRIGGER_GENERATION": DynamicParameter("BOOTSTRAP_TRIGGER_GENERATION", True, bool),
-    "CATCH_UP_TRIGGER_GENERATION": DynamicParameter("CATCH_UP_TRIGGER_GENERATION", True, bool),
-    "USE_SYSTEM_PROMPT": DynamicParameter("USE_SYSTEM_PROMPT", True, bool),
-
-    # --- 6. Advanced Filters & Whitelists / Blacklists ---
+    # --- 7. Advanced Filters & Whitelists / Blacklists ---
     "FILTER_POLICY": DynamicParameter("FILTER_POLICY", "blacklist_first", str, allow_dsl=False),
     "MSG_SAVE_WHITELIST": DynamicParameter("MSG_SAVE_WHITELIST", [], list, allow_dsl=False),
     "MSG_SAVE_BLACKLIST": DynamicParameter("MSG_SAVE_BLACKLIST", [], list, allow_dsl=False),
@@ -509,7 +506,7 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "AI_ALLOWED_MIMES": DynamicParameter("AI_ALLOWED_MIMES", ["all"], list, allow_dsl=False),
     "AI_BLOCKED_MIMES": DynamicParameter("AI_BLOCKED_MIMES", ["none"], list, allow_dsl=False),
 
-    # --- 7. AI Pipeline & Granular CRUD + INVOKE Permission Matrix ---
+    # --- 8. AI Pipeline & Granular CRUD + INVOKE Permission Matrix ---
     "AI_ALLOW_PIPELINES": DynamicParameter("AI_ALLOW_PIPELINES", True, bool, description="Allow AI to chain tools/tags via pipeline operators"),
     "AI_ALLOWED_PIPELINE_OPERATORS": DynamicParameter("AI_ALLOWED_PIPELINE_OPERATORS", ";,&&,||,|", str, allow_dsl=False),
     "AI_BLOCKED_PIPELINE_OPERATORS": DynamicParameter("AI_BLOCKED_PIPELINE_OPERATORS", "", str, allow_dsl=False),
@@ -562,7 +559,7 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "AI_PERM_SITES_LIST": DynamicParameter("AI_PERM_SITES_LIST", True, bool),
     "AI_PERM_SITES_INVOKE": DynamicParameter("AI_PERM_SITES_INVOKE", True, bool),
 
-    # --- 8. Network, Limits, Timeouts & Intervals ---
+    # --- 9. Network, Limits, Timeouts & Intervals ---
     "TELEGRAM_CONNECT_TIMEOUT": DynamicParameter("TELEGRAM_CONNECT_TIMEOUT", 15.0, float, min_val=1.0),
     "TELEGRAM_CONNECTION_RETRIES": DynamicParameter("TELEGRAM_CONNECTION_RETRIES", 5, int, min_val=0),
     "TELEGRAM_RETRY_DELAY": DynamicParameter("TELEGRAM_RETRY_DELAY", 5.0, float, min_val=0.1),
@@ -596,7 +593,7 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "AVATAR_CACHE_TIME": DynamicParameter("AVATAR_CACHE_TIME", 86400, int, min_val=0),
     "DEFAULT_RESULT_INDEX": DynamicParameter("DEFAULT_RESULT_INDEX", 0, int),
 
-    # --- 9. Proxy Pools & Tor Configuration ---
+    # --- 10. Proxy Pools & Tor Configuration ---
     "TELEGRAM_PROXIES": DynamicParameter("TELEGRAM_PROXIES", [], list, allow_dsl=False),
     "GEMINI_PROXIES": DynamicParameter("GEMINI_PROXIES", [], list, allow_dsl=False),
     "POLLINATIONS_PROXIES": DynamicParameter("POLLINATIONS_PROXIES", [], list, allow_dsl=False),
@@ -612,7 +609,7 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "PROXY_CHECK_TIMEOUT": DynamicParameter("PROXY_CHECK_TIMEOUT", 3.0, float, min_val=0.1),
     "PROXY_STRICT_CHECK": DynamicParameter("PROXY_STRICT_CHECK", False, bool),
 
-    # --- 10. Sandbox, Scrapers, Commands & Security ---
+    # --- 11. Sandbox, Scrapers, Commands & Security ---
     "SQL_SELECT_LIMIT": DynamicParameter("SQL_SELECT_LIMIT", 100, int, min_val=1),
     "SQL_STDOUT_CHAR_LIMIT": DynamicParameter("SQL_STDOUT_CHAR_LIMIT", 3500, int, min_val=1),
     "TELEGRAM_ACTION_CHAR_LIMIT": DynamicParameter("TELEGRAM_ACTION_CHAR_LIMIT", 5000, int, min_val=1),
@@ -639,6 +636,8 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "GAME_EMOJI_BLACKLIST": DynamicParameter("GAME_EMOJI_BLACKLIST", [], list, allow_dsl=False),
     "SANDBOX_COMMAND_WHITELIST": DynamicParameter("SANDBOX_COMMAND_WHITELIST", ["all"], list, allow_dsl=False),
     "SANDBOX_COMMAND_BLACKLIST": DynamicParameter("SANDBOX_COMMAND_BLACKLIST", ["rm", "sudo", "reboot", "shutdown", "init", "passwd", "chown", "chmod", "dd", "mkfs", "parted", "fdisk", "mkswap", "killall", "pkill", "kill", "mv", "systemctl", "service"], list, allow_dsl=False),
+    "SANDBOX_COMMAND_REGEX_BLACKLIST": DynamicParameter("SANDBOX_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|\.session|\.db|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|context_manager\.py|permission_manager\.py|service_manager\.py|command_manager\.py|prompt_interpolator\.py|response_executor\.py|sandbox\.py|registry\.py|utils\.py|parser\.py|downloader\.py|proxy_manager\.py|server\.py|services\.py|main\.py|tools|core|database|services|server|utils|\.txt|\.json)", str, allow_dsl=False),
+    "SANDBOX_COMMAND_REGEX_WHITELIST": DynamicParameter("SANDBOX_COMMAND_REGEX_WHITELIST", "", str, allow_dsl=False),
     "BOT_COMMAND_WHITELIST": DynamicParameter("BOT_COMMAND_WHITELIST", ["all"], list, allow_dsl=False),
     "BOT_COMMAND_BLACKLIST": DynamicParameter("BOT_COMMAND_BLACKLIST", [], list, allow_dsl=False),
     "OUTGOING_FILE_WHITELIST": DynamicParameter("OUTGOING_FILE_WHITELIST", ["all"], list, allow_dsl=False),
@@ -666,7 +665,7 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "ACCOUNT_SETTINGS_WHITELIST": DynamicParameter("ACCOUNT_SETTINGS_WHITELIST", ["all"], list, allow_dsl=False),
     "ACCOUNT_SETTINGS_BLACKLIST": DynamicParameter("ACCOUNT_SETTINGS_BLACKLIST", [], list, allow_dsl=False),
 
-    # --- 11. RESTful Web Server Parameters ---
+    # --- 12. RESTful Web Server Parameters ---
     "WEB_SERVER_ENABLE": DynamicParameter("WEB_SERVER_ENABLE", True, bool),
     "WEB_SERVER_HOST": DynamicParameter("WEB_SERVER_HOST", "0.0.0.0", str, allow_dsl=False),
     "WEB_SERVER_PORT": DynamicParameter("WEB_SERVER_PORT", 8080, int, min_val=1, max_val=65535),
@@ -685,7 +684,7 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "GEMINI_DAILY_LIMIT_COOLDOWN": DynamicParameter("GEMINI_DAILY_LIMIT_COOLDOWN", 86400, int, min_val=1),
     "RECURSIVE_REPLY_DEPTH_LIMIT": DynamicParameter("RECURSIVE_REPLY_DEPTH_LIMIT", 3, int, min_val=1),
 
-    # --- 12. Dynamic Site Hosting Defaults ---
+    # --- 13. Dynamic Site Hosting Defaults ---
     "SITE_STORAGE_LIMIT_DEFAULT": DynamicParameter("SITE_STORAGE_LIMIT_DEFAULT", 10 * 1024 * 1024, int, min_val=1),
     "SITE_TIMEOUT_DEFAULT": DynamicParameter("SITE_TIMEOUT_DEFAULT", 5.0, float, min_val=0.1),
     "SITE_ALLOWED_IMPORTS_DEFAULT": DynamicParameter("SITE_ALLOWED_IMPORTS_DEFAULT", "json,math,random,urllib,hashlib,datetime", str, allow_dsl=False),
@@ -695,19 +694,14 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "SITE_MAX_REQUEST_SIZE_DEFAULT": DynamicParameter("SITE_MAX_REQUEST_SIZE_DEFAULT", 1048576, int, min_val=1),
     "SITE_STORAGE_LIMIT_MAX": DynamicParameter("SITE_STORAGE_LIMIT_MAX", 52428800, int, min_val=1),
     "SITE_TIMEOUT_MAX": DynamicParameter("SITE_TIMEOUT_MAX", 30.0, float, min_val=0.1),
-
-    "SANDBOX_COMMAND_REGEX_BLACKLIST": DynamicParameter("SANDBOX_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|\.session|\.db|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|context_manager\.py|permission_manager\.py|service_manager\.py|command_manager\.py|prompt_interpolator\.py|response_executor\.py|sandbox\.py|registry\.py|utils\.py|parser\.py|downloader\.py|proxy_manager\.py|server\.py|services\.py|main\.py|tools|core|database|services|server|utils|\.txt|\.json)", str, allow_dsl=False),
-    "SANDBOX_COMMAND_REGEX_WHITELIST": DynamicParameter("SANDBOX_COMMAND_REGEX_WHITELIST", "", str, allow_dsl=False),
-    "SITE_COMMAND_REGEX_BLACKLIST": DynamicParameter("SITE_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|\.session|\.db|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|context_manager\.py|permission_manager\.py|service_manager\.py|command_manager\.py|prompt_interpolator\.py|response_executor\.py|sandbox\.py|registry\.py|utils\.py|parser\.py|downloader\.py|proxy_manager\.py|server\.py|services\.py|main\.py|tools|core|database|services|server|utils|\.txt|\.json)", str, allow_dsl=False),
     "SITE_COMMAND_WHITELIST": DynamicParameter("SITE_COMMAND_WHITELIST", "all", str, allow_dsl=False),
-    "SITE_COMMAND_REGEX_BLACKLIST": DynamicParameter("SITE_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|tools\.py|sandbox\.py|utils\.py|downloader\.py)", str, allow_dsl=False),
+    "SITE_COMMAND_BLACKLIST": DynamicParameter("SITE_COMMAND_BLACKLIST", "sudo,reboot,shutdown,passwd,chown,chmod", str, allow_dsl=False),
+    "SITE_COMMAND_REGEX_BLACKLIST": DynamicParameter("SITE_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|\.session|\.db|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|context_manager\.py|permission_manager\.py|service_manager\.py|command_manager\.py|prompt_interpolator\.py|response_executor\.py|sandbox\.py|registry\.py|utils\.py|parser\.py|downloader\.py|proxy_manager\.py|server\.py|services\.py|main\.py|tools|core|database|services|server|utils|\.txt|\.json)", str, allow_dsl=False),
     "SITE_COMMAND_REGEX_WHITELIST": DynamicParameter("SITE_COMMAND_REGEX_WHITELIST", "", str, allow_dsl=False),
     "SITE_PYTHON_WHITELIST": DynamicParameter("SITE_PYTHON_WHITELIST", "all", str, allow_dsl=False),
     "SITE_PYTHON_BLACKLIST": DynamicParameter("SITE_PYTHON_BLACKLIST", "os.system,os.popen,subprocess,shutil.rmtree,eval,exec", str, allow_dsl=False),
-    
-    # Structural Assets & File Names
-    "DB_NAME": DynamicParameter("DB_NAME", "bot_context.db", str, allow_dsl=False),
-    "SQLITE_JOURNAL_MODE": DynamicParameter("SQLITE_JOURNAL_MODE", "WAL", str, allow_dsl=False),
+
+    # --- 14. Cache & Asset File Names ---
     "EMOJI_CACHE_DIR_NAME": DynamicParameter("EMOJI_CACHE_DIR_NAME", "emoji_cache", str, allow_dsl=False),
     "AVATAR_CACHE_DIR_NAME": DynamicParameter("AVATAR_CACHE_DIR_NAME", "avatar_cache", str, allow_dsl=False),
     "GIFT_CACHE_DIR_NAME": DynamicParameter("GIFT_CACHE_DIR_NAME", "gift_cache", str, allow_dsl=False),
@@ -716,27 +710,40 @@ _PARAMS: Dict[str, DynamicParameter] = {
     "DEFAULT_IMAGE_NAME": DynamicParameter("DEFAULT_IMAGE_NAME", "generated_image.png", str, allow_dsl=False),
     "DEFAULT_AUDIO_NAME": DynamicParameter("DEFAULT_AUDIO_NAME", "generated_audio.mp3", str, allow_dsl=False),
     "DEFAULT_VIDEO_NAME": DynamicParameter("DEFAULT_VIDEO_NAME", "generated_video.mp4", str, allow_dsl=False),
+
+    "RE_SEQ_BLOCK": DynamicParameter("RE_SEQ_BLOCK", r"<(seq|par|bg)>(.*?)</\1>", str, allow_dsl=False),
+    "RE_REPLY_TAG": DynamicParameter("RE_REPLY_TAG", r"(?<!\\)\[Reply(?:\s+to\s+message\s+#?|:\s*)(\d+)\]", str, allow_dsl=False),
+    "RE_REACT_TAG": DynamicParameter("RE_REACT_TAG", r"(?<!\\)\[React:\s*(\d+)\s*\|\s*(.*?)\s*\]", str, allow_dsl=False),
+    "RE_ATTACH_TAG": DynamicParameter("RE_ATTACH_TAG", r"(?<!\\)\[Attach:\s*([^|\]]+?)\s*(?:\|\s*(.*?))?\s*\]", str, allow_dsl=False),
+    "RE_EDIT_TAG": DynamicParameter("RE_EDIT_TAG", r"(?<!\\)\[Edit:\s*(\d+)\s*\|\s*(.*?)\s*\]", str, allow_dsl=False),
+    "RE_DELETE_TAG": DynamicParameter("RE_DELETE_TAG", r"(?<!\\)\[Delete:\s*(\d+)\s*\]", str, allow_dsl=False),
+    "RE_NOOP_TAG": DynamicParameter("RE_NOOP_TAG", r"(?<!\\)\[(?:NoOp|No_Op_Ignore|NoOpIgnore):\s*([^|\]]+?)\s*(?:\|\s*continue\s*=\s*(true|false))?\s*\]", str, allow_dsl=False),
+    "RE_TOOL_TAG": DynamicParameter("RE_TOOL_TAG", r"(?<!\\)\[Tool:\s*([a-zA-Z0-9_]+)\s*\|\s*(.*?)\s*\]", str, allow_dsl=False),
 }
 
 
 # =====================================================================
-# PATH CONSTANTS & HELPER FUNCTIONS
+# SYNCHRONIZE EXPLICIT GLOBALS (ZERO-MAGIC IMPORT COMPATIBILITY)
 # =====================================================================
-BASE_DIR = Path(__file__).resolve().parent.parent
+def _sync_globals():
+    """Evaluates all DynamicParameters and assigns explicit variables into module globals()."""
+    for key, param in _PARAMS.items():
+        globals()[key] = param.evaluate()
 
-is_termux = "com.termux" in sys.executable or "/data/data/com.termux" in str(BASE_DIR)
-is_emulated = "emulated" in str(BASE_DIR)
+    # Dynamic computed session path
+    s_name = globals().get("TELEGRAM_SESSION_NAME") or globals().get("SESSION_NAME") or "baziliksina_session"
+    globals()["SESSION_NAME"] = s_name
+    globals()["SESSION_PATH"] = str(SAFE_DB_DIR / s_name)
 
-if is_termux or is_emulated:
-    SAFE_DB_DIR = Path.home() / ".baziliksina"
-    SAFE_DB_DIR.mkdir(parents=True, exist_ok=True)
-else:
-    SAFE_DB_DIR = BASE_DIR
+    # Aliases
+    globals()["API_ID"] = int(globals().get("TELEGRAM_API_ID") or 0)
+    globals()["API_HASH"] = str(globals().get("TELEGRAM_API_HASH") or "")
+    globals()["GEMINI_KEYS"] = globals().get("GEMINI_API_KEYS") or []
+    globals()["FFMPEG_PATH"] = os.getenv("FFMPEG_PATH", "ffmpeg")
+    globals()["USER_AGENT"] = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-WORKSPACE_DIR = BASE_DIR / "bot_workspace"
-WORKSPACE_DIR.mkdir(exist_ok=True)
-
-CONFIG_JSON_PATH = BASE_DIR / "config" / "config.json"
+# Execute primary initialization of explicit globals
+_sync_globals()
 
 
 def check_proxy_active(proxy_url_str: str) -> bool:
@@ -750,7 +757,7 @@ def check_proxy_active(proxy_url_str: str) -> bool:
         port = parsed.port
         if not host or not port:
             return False
-        timeout_val = float(_PARAMS["PROXY_CHECK_TIMEOUT"].evaluate()) if "PROXY_CHECK_TIMEOUT" in _PARAMS else 3.0
+        timeout_val = float(globals().get("PROXY_CHECK_TIMEOUT", 3.0))
         with socket.create_connection((host, port), timeout=timeout_val):
             return True
     except Exception:
@@ -771,8 +778,10 @@ async def reload_config_from_db(db):
                 _PARAMS[key].set_override(parsed_val)
             else:
                 globals()[key] = parsed_val
-        
-        # Self-healing: Ensure administrative Web Server API key exists
+
+        # Re-evaluate all parameters into module globals()
+        _sync_globals()
+
         raw_keys = os.getenv("WEB_SERVER_API_KEYS", "")
         if raw_keys:
             try:
@@ -806,18 +815,17 @@ if CONFIG_JSON_PATH.exists():
                 _PARAMS[k].set_override(v)
             else:
                 globals()[k] = v
+        _sync_globals()
         logger.info("Tier 3 Config Overwrite successfully completed using config.json.")
     except Exception as e:
         logger.error(f"Error loading Tier 3 config.json: {str(e)}")
 
 
 # =====================================================================
-# MODULE ATTRIBUTE INTERCEPTORS
+# MODULE ATTRIBUTE INTERCEPTORS (CLEAN & ZERO-MAGIC)
 # =====================================================================
 def __getattr__(name: str) -> Any:
-    if name == "SESSION_PATH":
-        s_name = _PARAMS["TELEGRAM_SESSION_NAME"].evaluate() if "TELEGRAM_SESSION_NAME" in _PARAMS else "baziliksina_session"
-        return str(SAFE_DB_DIR / s_name)
+    """Intercepts module variable lookups and returns evaluated DynamicParameter primitives."""
     if name in _PARAMS:
         return _PARAMS[name].evaluate()
     if name in globals():
@@ -825,11 +833,10 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 def __setattr__(name: str, value: Any):
-    """Intercepts dynamic assignments to config variables."""
+    """Intercepts dynamic assignments to config variables and updates module globals()."""
     if name in _PARAMS:
         _PARAMS[name].set_override(value)
-    else:
-        globals()[name] = value
+    globals()[name] = value
 
 def __dir__():
     """Allows standard Python autocompletion and inspection across all parameters."""
