@@ -5,8 +5,16 @@ import json
 import time
 import httpx
 import asyncio
+import os
 from google import genai
-from config import GEMINI_KEYS, POLLINATIONS_KEYS, GEMINI_MODELS, INPUT_TOKEN_LIMIT, OUTPUT_LENGTH, KEY_INFO_TIMEOUT, GEMINI_FREE_RECOVERY_TIME, GEMINI_PRO_RECOVERY_TIME, POLLINATIONS_KEY_RECOVERY_TIME
+from google.genai import types
+from proxy_manager import proxy_rotator
+from config import (
+    GEMINI_KEYS, POLLINATIONS_KEYS, GEMINI_MODELS, INPUT_TOKEN_LIMIT, 
+    OUTPUT_LENGTH, KEY_INFO_TIMEOUT, GEMINI_FREE_RECOVERY_TIME, 
+    GEMINI_PRO_RECOVERY_TIME, POLLINATIONS_KEY_RECOVERY_TIME
+)
+
 logger = logging.getLogger("KeyManager")
 
 def get_seconds_until_pacific_midnight() -> int:
@@ -68,7 +76,6 @@ def parse_gemini_error_cooldown(ex_str: str, default_cooldown: int = 18000) -> i
                             return cooldown
     except Exception:
         return default_cooldown if 'default_cooldown' in locals() else 18000
-        pass
     return default_cooldown
 
 
@@ -113,6 +120,19 @@ class GeminiKeyManager:
 
         now = int(time.time())
 
+        # Resolve active Gemini proxy and configure environment + HttpOptions
+        proxy_url = proxy_rotator.get_proxy("gemini")
+        http_opts = None
+        if proxy_url:
+            os.environ["HTTP_PROXY"] = proxy_url
+            os.environ["HTTPS_PROXY"] = proxy_url
+            os.environ["ALL_PROXY"] = proxy_url
+            os.environ["all_proxy"] = proxy_url
+            http_opts = types.HttpOptions(
+                client_args={"proxy": proxy_url},
+                async_client_args={"proxy": proxy_url}
+            )
+
         async def validate_single_key(key, idx):
             meta = await self.db.get_key_meta(key) if self.db else None
             if meta and meta.get("status") == "exhausted":
@@ -132,7 +152,7 @@ class GeminiKeyManager:
                     if self.db:
                         await self.db.save_key_meta(key, "gemini", status="active", exhausted_at=None)
             try:
-                temp_client = genai.Client(api_key=key)
+                temp_client = genai.Client(api_key=key, http_options=http_opts)
                 model_info = await temp_client.aio.models.get(model=current_model)
                 inp_limit = getattr(model_info, 'input_token_limit', 1000000)
                 out_limit = getattr(model_info, 'output_token_limit', 8192)
@@ -191,7 +211,7 @@ class GeminiKeyManager:
         else:
             logger.warning("No working Gemini keys found in the pool. Defaulting to the first key.")
             self.current_key_index = 0
-            self._client = genai.Client(api_key=self.keys[0])
+            self._client = genai.Client(api_key=self.keys[0], http_options=http_opts)
             self.input_token_limit = 1000000
             self.output_token_limit = 8192
 
