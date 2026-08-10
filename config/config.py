@@ -13,341 +13,7 @@ logger = logging.getLogger("Config")
 load_dotenv(override=True)
 
 # =====================================================================
-# DYNAMIC CONFIGURATION PARAMETER ENGINE (DSL PARSER & NUMERIC PROXY)
-# =====================================================================
-class DynamicParameter:
-    """
-    An enhanced configuration proxy class that dynamically parses environment settings,
-    supports sequence rotations, random choices, ranges, step iterations, type casts,
-    min/max clamping, optional DSL feature toggling, and DSL function white/blacklists.
-    """
-    GLOBAL_STATE = {}
-
-    def __init__(
-        self, 
-        env_key: str, 
-        default_val: Any, 
-        expected_type: type = float, 
-        min_val: Optional[float] = None, 
-        max_val: Optional[float] = None,
-        allow_dsl: bool = True,
-        dsl_whitelist: Optional[List[str]] = None,
-        dsl_blacklist: Optional[List[str]] = None,
-        description: str = ""
-    ):
-        self.env_key = env_key
-        self.default_val = default_val
-        self.expected_type = expected_type
-        self.min_val = min_val
-        self.max_val = max_val
-        self.allow_dsl = allow_dsl
-        self.dsl_whitelist = [w.lower().strip() for w in dsl_whitelist] if dsl_whitelist else []
-        self.dsl_blacklist = [b.lower().strip() for b in dsl_blacklist] if dsl_blacklist else []
-        self.description = description
-        self._override_val = None
-        self._seq_index = 0
-
-    def set_override(self, val: Any):
-        """Sets a dynamic database or JSON override value."""
-        self._override_val = val
-
-    def _get_raw_str(self) -> str:
-        if self._override_val is not None:
-            return str(self._override_val)
-        val = os.getenv(self.env_key)
-        if val is not None:
-            return str(val).strip()
-        return str(self.default_val)
-
-    def evaluate(self) -> Any:
-        """Parses the current raw rule string, evaluates DSL expressions, type-casts, and clamps boundaries."""
-        raw_str = self._get_raw_str()
-        try:
-            if self.expected_type in [str, list, dict] and not self.allow_dsl:
-                return self._cast_value(raw_str)
-
-            if not self.allow_dsl:
-                return self._cast_value(raw_str)
-
-            val = self._parse_and_evaluate_str(raw_str)
-            casted = self._cast_value(val)
-            
-            if isinstance(casted, (int, float)):
-                if self.min_val is not None and casted < self.min_val:
-                    logger.warning(f"Bound warning: {self.env_key} evaluated to {casted}, clamped to min {self.min_val}")
-                    casted = self.expected_type(self.min_val)
-                if self.max_val is not None and casted > self.max_val:
-                    logger.warning(f"Bound warning: {self.env_key} evaluated to {casted}, clamped to max {self.max_val}")
-                    casted = self.expected_type(self.max_val)
-            return casted
-        except Exception as e:
-            logger.error(f"Failed to evaluate parameter {self.env_key} from raw '{raw_str}': {str(e)}. Falling back to default.")
-            return self._cast_value(self.default_val)
-
-    def _cast_value(self, val: Any) -> Any:
-        if self.expected_type == bool:
-            return str(val).lower() in ["true", "1", "yes"]
-        if self.expected_type == str:
-            return str(val)
-        if self.expected_type == list:
-            if isinstance(val, list):
-                return val
-            if isinstance(val, str):
-                s = val.strip()
-                if not s:
-                    return []
-                if s.startswith("[") and s.endswith("]"):
-                    try: return json.loads(s)
-                    except Exception: pass
-                return [p.strip() for p in s.split(",") if p.strip()]
-            return [val]
-        if self.expected_type == dict:
-            if isinstance(val, dict):
-                return val
-            if isinstance(val, str):
-                try: return json.loads(val)
-                except Exception: return self.default_val
-            return self.default_val
-        return self.expected_type(val)
-
-    def _is_dsl_func_allowed(self, func_name: str) -> bool:
-        fn = func_name.lower().strip()
-        if self.dsl_blacklist and fn in self.dsl_blacklist:
-            return False
-        if self.dsl_whitelist and fn not in self.dsl_whitelist and "all" not in self.dsl_whitelist:
-            return False
-        return True
-
-    def _parse_and_evaluate_str(self, s: str) -> Any:
-        s = s.strip()
-        if not s:
-            return self.default_val
-
-        # Pre-checks for weighted choices: "val1:weight1 | val2:weight2"
-        if "|" in s and ":" in s and self._is_dsl_func_allowed("choice"):
-            parts = [p.strip() for p in s.split("|") if p.strip()]
-            population, weights = [], []
-            is_valid_weighted = True
-            for p in parts:
-                if ":" in p:
-                    v_str, w_str = p.split(":", 1)
-                    try:
-                        population.append(v_str.strip())
-                        weights.append(float(w_str.strip()))
-                    except ValueError:
-                        is_valid_weighted = False
-                        break
-                else:
-                    is_valid_weighted = False
-                    break
-            if is_valid_weighted and population:
-                resolved_pop = [self._parse_and_evaluate_str(v) for v in population]
-                return random.choices(resolved_pop, weights=weights)[0]
-
-        # Shorthand step notation: start-stop:step
-        m_shorthand_step = re.match(r"^([^-]+)-([^:]+):(.+)$", s)
-        if m_shorthand_step and self._is_dsl_func_allowed("step"):
-            start, stop, step_part = float(m_shorthand_step.group(1)), float(m_shorthand_step.group(2)), m_shorthand_step.group(3).strip().lower()
-            if step_part in ["random", "rand"]:
-                return random.uniform(start, stop)
-            else:
-                step_size = float(step_part)
-                steps = self._generate_steps(start, stop, step_size)
-                if steps:
-                    val = steps[self._seq_index % len(steps)]
-                    self._seq_index += 1
-                    return val
-
-        # Shorthand range notation: vmin-vmax
-        if re.match(r"^\s*[0-9]+(?:\.[0-9]+)?\s*-\s*[0-9]+(?:\.[0-9]+)?\s*$", s) and self._is_dsl_func_allowed("range"):
-            m_shorthand_range = re.match(r"^([^-]+)-([^-]+)$", s)
-            if m_shorthand_range:
-                vmin, vmax = float(m_shorthand_range.group(1)), float(m_shorthand_range.group(2))
-                return random.uniform(vmin, vmax)
-
-        # Comma rotation
-        if "," in s and not ("(" in s or ")" in s) and self._is_dsl_func_allowed("seq"):
-            parts = [p.strip() for p in s.split(",") if p.strip()]
-            if parts:
-                val = parts[self._seq_index % len(parts)]
-                self._seq_index += 1
-                try: return float(val)
-                except ValueError: return val
-
-        # Token-based lexical analyzer
-        token_pattern = re.compile(
-            r'\s*(?:([a-zA-Z_][a-zA-Z0-9_]*)\s*\(|([0-9]+(?:\.[0-9]+)?)|([+\-*/%<>=!~]+)|(\()|(\))|([,])|([a-zA-Z_][a-zA-Z0-9_]*)|(\S))\s*'
-        )
-        tokens = []
-        for m in token_pattern.finditer(s):
-            func, num, op, lparen, rparen, comma, name, err = m.groups()
-            if err: raise ValueError(f"Syntax error near token: {err}")
-            if func: tokens.append(("FUNC", func.lower()))
-            elif num: tokens.append(("NUM", float(num)))
-            elif op: tokens.append(("OP", op))
-            elif lparen: tokens.append(("LPAREN", "("))
-            elif rparen: tokens.append(("RPAREN", ")"))
-            elif comma: tokens.append(("COMMA", ","))
-            elif name: tokens.append(("NAME", name))
-
-        idx = [0]
-
-        def parse_expression():
-            left = parse_term()
-            while idx[0] < len(tokens) and tokens[idx[0]][0] == "OP" and tokens[idx[0]][1] in ["==", "!=", "<", ">", "<=", ">="]:
-                op = tokens[idx[0]][1]
-                idx[0] += 1
-                right = parse_term()
-                if op == "==": left = (left == right)
-                elif op == "!=": left = (left != right)
-                elif op == "<": left = (left < right)
-                elif op == ">": left = (left > right)
-                elif op == "<=": left = (left <= right)
-                elif op == ">=": left = (left >= right)
-            return left
-
-        def parse_term():
-            left = parse_factor()
-            while idx[0] < len(tokens) and tokens[idx[0]][0] == "OP" and tokens[idx[0]][1] in ["+", "-", "~"]:
-                op = tokens[idx[0]][1]
-                idx[0] += 1
-                right = parse_factor()
-                if op == "+": left = left + right
-                elif op == "-": left = left - right
-                elif op == "~": left = left + random.uniform(-right, right)
-            return left
-
-        def parse_factor():
-            left = parse_primary()
-            while idx[0] < len(tokens) and tokens[idx[0]][0] == "OP" and tokens[idx[0]][1] in ["*", "/", "%"]:
-                op = tokens[idx[0]][1]
-                idx[0] += 1
-                right = parse_primary()
-                if op == "*": left = left * right
-                elif op == "/": left = left / right
-                elif op == "%": left = left % right
-            return left
-
-        def parse_primary():
-            if idx[0] >= len(tokens): raise ValueError("Unexpected end of expression")
-            t_type, t_val = tokens[idx[0]]
-            
-            # Unary minus and plus
-            if t_type == "OP" and t_val == "-":
-                idx[0] += 1
-                return -parse_primary()
-            if t_type == "OP" and t_val == "+":
-                idx[0] += 1
-                return parse_primary()
-
-            idx[0] += 1
-            if t_type == "NUM": return t_val
-            elif t_type == "LPAREN":
-                expr_val = parse_expression()
-                if idx[0] >= len(tokens) or tokens[idx[0]][0] != "RPAREN": raise ValueError("Expected ')' matching '('")
-                idx[0] += 1
-                return expr_val
-            elif t_type == "NAME":
-                if t_val.lower() == "true": return True
-                if t_val.lower() == "false": return False
-                return DynamicParameter.GLOBAL_STATE.get(t_val, 0)
-            elif t_type == "FUNC":
-                if not self._is_dsl_func_allowed(t_val):
-                    raise ValueError(f"DSL function '{t_val}' is blocked for parameter {self.env_key}")
-                args = []
-                if idx[0] < len(tokens) and tokens[idx[0]][0] == "RPAREN":
-                    idx[0] += 1
-                else:
-                    while True:
-                        args.append(parse_expression())
-                        if idx[0] < len(tokens) and tokens[idx[0]][0] == "COMMA":
-                            idx[0] += 1
-                        elif idx[0] < len(tokens) and tokens[idx[0]][0] == "RPAREN":
-                            idx[0] += 1
-                            break
-                        else:
-                            raise ValueError("Expected ',' or ')' in function parameters")
-                return evaluate_function(t_val, args)
-            else:
-                raise ValueError(f"Unexpected token: {t_val}")
-
-        def evaluate_function(name, args):
-            if name == "if": return args[1] if args[0] else args[2]
-            elif name == "set":
-                var_name = str(args[0])
-                DynamicParameter.GLOBAL_STATE[var_name] = args[1]
-                return args[1]
-            elif name == "get":
-                var_name = str(args[0])
-                default = args[1] if len(args) > 1 else 0
-                return DynamicParameter.GLOBAL_STATE.get(var_name, default)
-            elif name == "seq":
-                val = args[self._seq_index % len(args)]
-                self._seq_index += 1
-                return val
-            elif name in ["choice", "rand"]: return random.choice(args)
-            elif name in ["range", "rand_range"]: return random.uniform(args[0], args[1])
-            elif name == "step":
-                steps = self._generate_steps(args[0], args[1], args[2])
-                if steps:
-                    val = steps[self._seq_index % len(steps)]
-                    self._seq_index += 1
-                    return val
-                return args[0]
-            elif name == "rand_step":
-                steps = self._generate_steps(args[0], args[1], args[2])
-                return random.choice(steps) if steps else args[0]
-            elif name == "jitter": return args[0] + random.uniform(-args[1], args[1])
-            elif name in ["normal", "gaussian"]: return random.gauss(args[0], args[1])
-            elif name == "backoff":
-                base, factor = args[0], args[1]
-                max_val = args[2] if len(args) > 2 else None
-                val = base * (factor ** self._seq_index)
-                self._seq_index += 1
-                if max_val is not None: val = min(val, max_val)
-                return val
-            elif name == "fib":
-                base = args[0]
-                max_val = args[1] if len(args) > 1 else None
-                def _get_fib(n):
-                    if n <= 0: return 0
-                    if n == 1: return 1
-                    a, b = 0, 1
-                    for _ in range(2, n + 1): a, b = b, a + b
-                    return b
-                val = base * _get_fib(self._seq_index + 1)
-                self._seq_index += 1
-                if max_val is not None: val = min(val, max_val)
-                return val
-            elif name == "min": return min(args)
-            elif name == "max": return max(args)
-            elif name == "sin":
-                import math
-                return math.sin(args[0])
-            elif name == "cos":
-                import math
-                return math.cos(args[0])
-            raise ValueError(f"Unknown dynamic function: {name}")
-
-        res = parse_expression()
-        if idx[0] < len(tokens):
-            raise ValueError(f"Dangling tokens at end of expression: {tokens[idx[0]:]}")
-        return res
-
-    def _generate_steps(self, start, stop, step):
-        if step <= 0: return [start]
-        res = []
-        curr = start
-        count = 0
-        while curr <= stop and count < 1000:
-            res.append(curr)
-            curr += step
-            count += 1
-        return res
-
-
-# =====================================================================
-# PATH CONSTANTS & WORKSPACE SETUP
+# SECTION 1: BASE PATHS & SYSTEM DIRECTORIES
 # =====================================================================
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -364,404 +30,525 @@ WORKSPACE_DIR = BASE_DIR / "bot_workspace"
 WORKSPACE_DIR.mkdir(exist_ok=True)
 
 CONFIG_JSON_PATH = BASE_DIR / "config" / "config.json"
+CHARACTER_FILE = os.getenv("CHARACTER_FILE", "character.txt")
+FFMPEG_PATH = os.getenv("FFMPEG_PATH", "ffmpeg")
+USER_AGENT = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 
 # =====================================================================
-# CENTRAL SYSTEM PARAMETERS REGISTRY (_PARAMS)
+# HELPER FUNCTIONS FOR TYPE CASTING & ENV PARSING
 # =====================================================================
-_PARAMS: Dict[str, DynamicParameter] = {
-    # --- 1. Telegram Core, Sessions & Admin Ranks ---
-    "TELEGRAM_API_ID": DynamicParameter("TELEGRAM_API_ID", 0, int, allow_dsl=False, description="Telegram API ID"),
-    "TELEGRAM_API_HASH": DynamicParameter("TELEGRAM_API_HASH", "", str, allow_dsl=False, description="Telegram API Hash"),
-    "TELEGRAM_SESSION_NAME": DynamicParameter("TELEGRAM_SESSION_NAME", "baziliksina_session", str, allow_dsl=False, description="Telegram session name"),
-    "OWNER_ID": DynamicParameter("OWNER_ID", 2113692455, int, allow_dsl=False, description="Sole Creator numerical Telegram ID"),
-    "ADMINS": DynamicParameter("ADMINS", {2113692455: {"rank": 100, "permissions": ["all"]}}, dict, allow_dsl=False, description="Immutable root admins mapping"),
+def _parse_list(key: str, default: list = None) -> list:
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return default if default is not None else []
+    return [p.strip() for p in raw.split(",") if p.strip()]
 
-    # --- 2. Core AI & Gemini Settings ---
-    "GEMINI_API_KEYS": DynamicParameter("GEMINI_API_KEYS", [], list, allow_dsl=False, description="Comma-separated Gemini API keys pool"),
-    "GEMINI_MODELS": DynamicParameter("GEMINI_MODELS", ["gemini-3.1-flash-lite"], list, allow_dsl=False, description="Comma-separated Gemini models rotation pool"),
-    "THINKING_LEVEL": DynamicParameter("THINKING_LEVEL", "high", str, allow_dsl=False, description="Gemini reasoning level"),
-    "TEMPERATURE": DynamicParameter("TEMPERATURE", 0.7, float, min_val=0.0, max_val=2.0, description="Model sampling temperature"),
-    "TOP_P": DynamicParameter("TOP_P", 0.95, float, min_val=0.0, max_val=1.0, description="Model top_p nucleus sampling"),
-    "STOP_SEQUENCES": DynamicParameter("STOP_SEQUENCES", [], list, allow_dsl=False, description="Model stop sequences"),
-    "OUTPUT_LENGTH": DynamicParameter("OUTPUT_LENGTH", 65536, int, min_val=1, description="Max output tokens count"),
-    "INPUT_TOKEN_LIMIT": DynamicParameter("INPUT_TOKEN_LIMIT", 524288, int, min_val=1000, description="Max input context token limit"),
-    "SAFETY_HATE_SPEECH": DynamicParameter("SAFETY_HATE_SPEECH", "BLOCK_NONE", str, allow_dsl=False),
-    "SAFETY_HARASSMENT": DynamicParameter("SAFETY_HARASSMENT", "BLOCK_NONE", str, allow_dsl=False),
-    "SAFETY_SEXUALLY_EXPLICIT": DynamicParameter("SAFETY_SEXUALLY_EXPLICIT", "BLOCK_NONE", str, allow_dsl=False),
-    "SAFETY_DANGEROUS_CONTENT": DynamicParameter("SAFETY_DANGEROUS_CONTENT", "BLOCK_NONE", str, allow_dsl=False),
-    "CHARACTER_FILE": DynamicParameter("CHARACTER_FILE", "character.txt", str, allow_dsl=False),
+def _parse_int_list(key: str, default: list = None) -> list:
+    raw = _parse_list(key, default)
+    res = []
+    for item in raw:
+        try:
+            res.append(int(item))
+        except ValueError:
+            res.append(item)
+    return res
 
-    # --- 3. Database & Bootstrap Settings ---
-    "BOOTSTRAP_DATABASE": DynamicParameter("BOOTSTRAP_DATABASE", False, bool, description="Bootstrap chat history on first run"),
-    "DB_NAME": DynamicParameter("DB_NAME", "bot_context.db", str, allow_dsl=False),
-    "SQLITE_JOURNAL_MODE": DynamicParameter("SQLITE_JOURNAL_MODE", "WAL", str, allow_dsl=False),
+def _get_bool(key: str, default: bool) -> bool:
+    val = os.getenv(key)
+    if val is not None:
+        return val.strip().lower() in ["true", "1", "yes"]
+    return default
 
-    # --- 4. Generative Media & Pollinations ---
-    "POLLINATIONS_KEYS": DynamicParameter("POLLINATIONS_KEYS", [], list, allow_dsl=False, description="Pollinations API keys pool"),
-    "DEFAULT_IMAGE_MODEL": DynamicParameter("DEFAULT_IMAGE_MODEL", "flux", str, allow_dsl=False),
-    "DEFAULT_IMAGE_WIDTH": DynamicParameter("DEFAULT_IMAGE_WIDTH", 1024, int, min_val=1),
-    "DEFAULT_IMAGE_HEIGHT": DynamicParameter("DEFAULT_IMAGE_HEIGHT", 1024, int, min_val=1),
-    "MEDIA_RESOLUTION": DynamicParameter("MEDIA_RESOLUTION", "high", str, allow_dsl=False),
-    "ASPECT_RATIO": DynamicParameter("ASPECT_RATIO", "auto", str, allow_dsl=False),
-    "GENERATE_IMAGE_TIMEOUT": DynamicParameter("GENERATE_IMAGE_TIMEOUT", 180.0, float, min_val=0.1),
-    "DEFAULT_AUDIO_VOICE": DynamicParameter("DEFAULT_AUDIO_VOICE", "nova", str, allow_dsl=False),
-    "DEFAULT_AUDIO_MODEL": DynamicParameter("DEFAULT_AUDIO_MODEL", "qwen-tts-instruct", str, allow_dsl=False),
-    "GENERATE_AUDIO_TIMEOUT": DynamicParameter("GENERATE_AUDIO_TIMEOUT", 120.0, float, min_val=0.1),
-    "DEFAULT_VIDEO_MODEL": DynamicParameter("DEFAULT_VIDEO_MODEL", "wan", str, allow_dsl=False),
-    "DEFAULT_VIDEO_DURATION": DynamicParameter("DEFAULT_VIDEO_DURATION", 5, int, min_val=1),
-    "DEFAULT_VIDEO_ASPECT_RATIO": DynamicParameter("DEFAULT_VIDEO_ASPECT_RATIO", "1:1", str, allow_dsl=False),
-    "GENERATE_VIDEO_TIMEOUT": DynamicParameter("GENERATE_VIDEO_TIMEOUT", 180.0, float, min_val=0.1),
-    "POLLINATIONS_SEED_MIN": DynamicParameter("POLLINATIONS_SEED_MIN", 1, int, min_val=1),
-    "POLLINATIONS_SEED_MAX": DynamicParameter("POLLINATIONS_SEED_MAX", 999999999, int, min_val=1),
-    "POLLINATIONS_UPLOAD_JPEG_QUALITY": DynamicParameter("POLLINATIONS_UPLOAD_JPEG_QUALITY", 95, int, min_val=1, max_val=100),
-    "DEFAULT_PUBLIC_UPLOAD_PROVIDER": DynamicParameter("DEFAULT_PUBLIC_UPLOAD_PROVIDER", "auto", str, allow_dsl=False),
-    "IMAGE_GEN_AUTO_DOWNLOAD": DynamicParameter("IMAGE_GEN_AUTO_DOWNLOAD", True, bool),
-    "IMAGE_GEN_AUTO_UPLOAD_TO_GOOGLE": DynamicParameter("IMAGE_GEN_AUTO_UPLOAD_TO_GOOGLE", True, bool),
-    "AUDIO_GEN_AUTO_DOWNLOAD": DynamicParameter("AUDIO_GEN_AUTO_DOWNLOAD", True, bool),
-    "AUDIO_GEN_AUTO_UPLOAD_TO_GOOGLE": DynamicParameter("AUDIO_GEN_AUTO_UPLOAD_TO_GOOGLE", True, bool),
-    "VIDEO_GEN_AUTO_DOWNLOAD": DynamicParameter("VIDEO_GEN_AUTO_DOWNLOAD", True, bool),
-    "VIDEO_GEN_AUTO_UPLOAD_TO_GOOGLE": DynamicParameter("VIDEO_GEN_AUTO_UPLOAD_TO_GOOGLE", True, bool),
-    "PUBLIC_UPLOAD_TIMEOUT": DynamicParameter("PUBLIC_UPLOAD_TIMEOUT", 60.0, float, min_val=0.1),
+def _get_int(key: str, default: int) -> int:
+    val = os.getenv(key)
+    if val is not None:
+        try: return int(val.strip())
+        except ValueError: pass
+    return default
 
-    # --- 5. Context, Token Strategies & Memory Modes ---
-    "CONTEXT_MANAGEMENT_MODE": DynamicParameter("CONTEXT_MANAGEMENT_MODE", "summarize", str, allow_dsl=False, description="Text context strategy: summarize, trim, hybrid, none"),
-    "TEXT_LIMIT_TYPE": DynamicParameter("TEXT_LIMIT_TYPE", "tokens", str, allow_dsl=False, description="Text limit type: tokens or messages_count"),
-    "TEXT_TOKEN_LIMIT": DynamicParameter("TEXT_TOKEN_LIMIT", 524288, int, min_val=1000, description="Max text token budget"),
-    "CONTEXT_TRIM_COUNT": DynamicParameter("CONTEXT_TRIM_COUNT", 20, int, min_val=1, description="Messages count to drop when trimming text context"),
-    "MESSAGES_LIMIT": DynamicParameter("MESSAGES_LIMIT", 150, int, min_val=1),
-    "CONTEXT_LOCAL_RATIO": DynamicParameter("CONTEXT_LOCAL_RATIO", 0.7, float, min_val=0.0, max_val=1.0),
-    "CONTEXT_LOCAL_MIN_LIMIT": DynamicParameter("CONTEXT_LOCAL_MIN_LIMIT", 15, int, min_val=1),
-    "SUMMARIZATION_MESSAGES_LIMIT": DynamicParameter("SUMMARIZATION_MESSAGES_LIMIT", 500, int, min_val=1),
-    "SUMMARIZATION_KEEP_LIMIT": DynamicParameter("SUMMARIZATION_KEEP_LIMIT", 15, int, min_val=1),
-    "CROSS_CHAT_CONTEXT": DynamicParameter("CROSS_CHAT_CONTEXT", True, bool),
-    
-    "FILE_CONTEXT_MODE": DynamicParameter("FILE_CONTEXT_MODE", "trim", str, allow_dsl=False, description="File context strategy: trim, summarize, hybrid, none"),
-    "FILE_LIMIT_TYPE": DynamicParameter("FILE_LIMIT_TYPE", "tokens", str, allow_dsl=False, description="File limit type: tokens or files_count"),
-    "FILE_TOKEN_LIMIT": DynamicParameter("FILE_TOKEN_LIMIT", 200000, int, min_val=1000, description="Max file token budget"),
-    "FILE_TRIM_COUNT": DynamicParameter("FILE_TRIM_COUNT", 5, int, min_val=1, description="Files count to drop when trimming media context"),
-    "MEDIA_LIMIT": DynamicParameter("MEDIA_LIMIT", 250, int, min_val=1),
-    "AUTO_ATTACH_FILES_TO_CONTEXT": DynamicParameter("AUTO_ATTACH_FILES_TO_CONTEXT", False, bool, description="Auto attach media to Gemini context without explicit tool call"),
+def _get_float(key: str, default: float) -> float:
+    val = os.getenv(key)
+    if val is not None:
+        try: return float(val.strip())
+        except ValueError: pass
+    return default
 
-    # --- 6. Triggers, Rules & Flow Matrix ---
-    "AUTO_SAVE_TEXT_RULE": DynamicParameter("AUTO_SAVE_TEXT_RULE", "all", str, description="DSL filter rule for auto saving text messages"),
-    "AUTO_SAVE_FILE_RULE": DynamicParameter("AUTO_SAVE_FILE_RULE", "all", str, description="DSL filter rule for auto saving files"),
-    "AI_RESPONSE_MODE": DynamicParameter("AI_RESPONSE_MODE", "all", str, allow_dsl=False, description="AI response scope: all, private_only, group_only, channel_only"),
-    "AI_RESPONSE_TRIGGERS": DynamicParameter("AI_RESPONSE_TRIGGERS", ["name", "username", "mentioned", "reply_to_me"], list, allow_dsl=False),
-    
-    "SAVE_INCOMING_MESSAGES": DynamicParameter("SAVE_INCOMING_MESSAGES", True, bool),
-    "SAVE_EDITED_MESSAGES": DynamicParameter("SAVE_EDITED_MESSAGES", True, bool),
-    "SAVE_DELETED_MESSAGES": DynamicParameter("SAVE_DELETED_MESSAGES", True, bool),
-    "SAVE_OUTGOING_NEW_MESSAGES": DynamicParameter("SAVE_OUTGOING_NEW_MESSAGES", True, bool),
-    "SAVE_OUTGOING_EDITED_MESSAGES": DynamicParameter("SAVE_OUTGOING_EDITED_MESSAGES", True, bool),
-    "SAVE_OUTGOING_DELETED_MESSAGES": DynamicParameter("SAVE_OUTGOING_DELETED_MESSAGES", True, bool),
 
-    "TRIGGER_ON_INCOMING": DynamicParameter("TRIGGER_ON_INCOMING", True, bool),
-    "TRIGGER_ON_EDITED": DynamicParameter("TRIGGER_ON_EDITED", False, bool),
-    "TRIGGER_ON_DELETED": DynamicParameter("TRIGGER_ON_DELETED", False, bool),
-    "TRIGGER_ON_OUTGOING_NEW_MESSAGES": DynamicParameter("TRIGGER_ON_OUTGOING_NEW_MESSAGES", False, bool),
-    "TRIGGER_ON_OUTGOING_EDITED_MESSAGES": DynamicParameter("TRIGGER_ON_OUTGOING_EDITED_MESSAGES", False, bool),
-    "TRIGGER_ON_OUTGOING_DELETED_MESSAGES": DynamicParameter("TRIGGER_ON_OUTGOING_DELETED_MESSAGES", False, bool),
-    "TRIGGER_ON_OUTGOING_MANUAL_MESSAGES": DynamicParameter("TRIGGER_ON_OUTGOING_MANUAL_MESSAGES", False, bool, description="Trigger AI on manual outgoing messages"),
-    "TRIGGER_ON_COMMANDS": DynamicParameter("TRIGGER_ON_COMMANDS", False, bool, description="Trigger AI generation on CLI commands"),
+# =====================================================================
+# SECTION 2: TELEGRAM CORE, SESSIONS & ADMIN RANKS
+# =====================================================================
+TELEGRAM_API_ID = _get_int("TELEGRAM_API_ID", 0)
+API_ID = TELEGRAM_API_ID
 
-    # --- 7. Advanced Filters & Whitelists / Blacklists ---
-    "FILTER_POLICY": DynamicParameter("FILTER_POLICY", "blacklist_first", str, allow_dsl=False),
-    "MSG_SAVE_WHITELIST": DynamicParameter("MSG_SAVE_WHITELIST", [], list, allow_dsl=False),
-    "MSG_SAVE_BLACKLIST": DynamicParameter("MSG_SAVE_BLACKLIST", [], list, allow_dsl=False),
-    "MSG_GEN_WHITELIST": DynamicParameter("MSG_GEN_WHITELIST", [], list, allow_dsl=False),
-    "MSG_GEN_BLACKLIST": DynamicParameter("MSG_GEN_BLACKLIST", [], list, allow_dsl=False),
-    "ALLOWED_MESSAGE_TYPES": DynamicParameter("ALLOWED_MESSAGE_TYPES", ["text", "voice", "video", "photo", "document", "gif", "sticker", "location", "contact", "poll", "venue", "album", "list"], list, allow_dsl=False),
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
+API_HASH = TELEGRAM_API_HASH
 
-    "SAVE_INCOMING_REACTION_ADD": DynamicParameter("SAVE_INCOMING_REACTION_ADD", True, bool),
-    "SAVE_INCOMING_REACTION_REMOVE": DynamicParameter("SAVE_INCOMING_REACTION_REMOVE", True, bool),
-    "SAVE_OUTGOING_REACTION_ADD": DynamicParameter("SAVE_OUTGOING_REACTION_ADD", True, bool),
-    "SAVE_OUTGOING_REACTION_REMOVE": DynamicParameter("SAVE_OUTGOING_REACTION_REMOVE", True, bool),
-    "TRIGGER_ON_INCOMING_REACTION_ADD": DynamicParameter("TRIGGER_ON_INCOMING_REACTION_ADD", False, bool),
-    "TRIGGER_ON_INCOMING_REACTION_REMOVE": DynamicParameter("TRIGGER_ON_INCOMING_REACTION_REMOVE", False, bool),
-    "TRIGGER_ON_OUTGOING_REACTION_ADD": DynamicParameter("TRIGGER_ON_OUTGOING_REACTION_ADD", False, bool),
-    "TRIGGER_ON_OUTGOING_REACTION_REMOVE": DynamicParameter("TRIGGER_ON_OUTGOING_REACTION_REMOVE", False, bool),
-    "REACTION_WHITELIST": DynamicParameter("REACTION_WHITELIST", [], list, allow_dsl=False),
-    "REACTION_BLACKLIST": DynamicParameter("REACTION_BLACKLIST", [], list, allow_dsl=False),
+TELEGRAM_SESSION_NAME = os.getenv("TELEGRAM_SESSION_NAME", "baziliksina_session")
+SESSION_NAME = TELEGRAM_SESSION_NAME
+SESSION_PATH = str(SAFE_DB_DIR / SESSION_NAME)
 
-    "SAVE_USER_METADATA": DynamicParameter("SAVE_USER_METADATA", True, bool),
-    "SAVE_CHAT_METADATA": DynamicParameter("SAVE_CHAT_METADATA", True, bool),
-    "USER_CACHE_WHITELIST": DynamicParameter("USER_CACHE_WHITELIST", [], list, allow_dsl=False),
-    "USER_CACHE_BLACKLIST": DynamicParameter("USER_CACHE_BLACKLIST", [], list, allow_dsl=False),
-    "CHAT_CACHE_WHITELIST": DynamicParameter("CHAT_CACHE_WHITELIST", [], list, allow_dsl=False),
-    "CHAT_CACHE_BLACKLIST": DynamicParameter("CHAT_CACHE_BLACKLIST", [], list, allow_dsl=False),
+OWNER_ID = _get_int("OWNER_ID", 2113692455)
 
-    "CHAT_WHITELIST": DynamicParameter("CHAT_WHITELIST", [], list, allow_dsl=False),
-    "CHAT_BLACKLIST": DynamicParameter("CHAT_BLACKLIST", [], list, allow_dsl=False),
-    "READ_ACK_WHITELIST": DynamicParameter("READ_ACK_WHITELIST", ["all"], list, allow_dsl=False),
-    "READ_ACK_BLACKLIST": DynamicParameter("READ_ACK_BLACKLIST", [], list, allow_dsl=False),
+_raw_admins = os.getenv("ADMINS", "")
+ADMINS = {}
+if _raw_admins:
+    try:
+        ADMINS = json.loads(_raw_admins)
+    except Exception:
+        ADMINS = {OWNER_ID: {"rank": 100, "permissions": ["all"]}}
+else:
+    ADMINS = {OWNER_ID: {"rank": 100, "permissions": ["all"]}}
 
-    "AI_OUTPUT_WHITELIST_REGEX": DynamicParameter("AI_OUTPUT_WHITELIST_REGEX", [], list, allow_dsl=False),
-    "AI_OUTPUT_BLACKLIST_REGEX": DynamicParameter("AI_OUTPUT_BLACKLIST_REGEX", [], list, allow_dsl=False),
+TELEGRAM_CONNECT_TIMEOUT = _get_float("TELEGRAM_CONNECT_TIMEOUT", 15.0)
+TELEGRAM_CONNECTION_RETRIES = _get_int("TELEGRAM_CONNECTION_RETRIES", 5)
+TELEGRAM_RETRY_DELAY = _get_float("TELEGRAM_RETRY_DELAY", 5.0)
+TELEGRAM_AUTO_RECONNECT = _get_bool("TELEGRAM_AUTO_RECONNECT", True)
+TELEGRAM_TIMEOUT = _get_float("TELEGRAM_TIMEOUT", 15.0)
 
-    "AI_ALLOWED_ROOT_TOOLS": DynamicParameter("AI_ALLOWED_ROOT_TOOLS", ["all"], list, allow_dsl=False),
-    "AI_BLOCKED_ROOT_TOOLS": DynamicParameter("AI_BLOCKED_ROOT_TOOLS", ["execute_python_code", "run_sandboxed_command"], list, allow_dsl=False),
-    "AI_ALLOWED_CUSTOM_TOOLS": DynamicParameter("AI_ALLOWED_CUSTOM_TOOLS", ["all"], list, allow_dsl=False),
-    "AI_BLOCKED_CUSTOM_TOOLS": DynamicParameter("AI_BLOCKED_CUSTOM_TOOLS", [], list, allow_dsl=False),
-    "AI_ALLOWED_MIMES": DynamicParameter("AI_ALLOWED_MIMES", ["all"], list, allow_dsl=False),
-    "AI_BLOCKED_MIMES": DynamicParameter("AI_BLOCKED_MIMES", ["none"], list, allow_dsl=False),
-
-    # --- 8. AI Pipeline & Granular CRUD + INVOKE Permission Matrix ---
-    "AI_ALLOW_PIPELINES": DynamicParameter("AI_ALLOW_PIPELINES", True, bool, description="Allow AI to chain tools/tags via pipeline operators"),
-    "AI_ALLOWED_PIPELINE_OPERATORS": DynamicParameter("AI_ALLOWED_PIPELINE_OPERATORS", ";,&&,||,|", str, allow_dsl=False),
-    "AI_BLOCKED_PIPELINE_OPERATORS": DynamicParameter("AI_BLOCKED_PIPELINE_OPERATORS", "", str, allow_dsl=False),
-
-    "AI_PERM_COMMANDS_CREATE": DynamicParameter("AI_PERM_COMMANDS_CREATE", True, bool),
-    "AI_PERM_COMMANDS_EDIT": DynamicParameter("AI_PERM_COMMANDS_EDIT", True, bool),
-    "AI_PERM_COMMANDS_DELETE": DynamicParameter("AI_PERM_COMMANDS_DELETE", True, bool),
-    "AI_PERM_COMMANDS_VIEW_INFO": DynamicParameter("AI_PERM_COMMANDS_VIEW_INFO", True, bool),
-    "AI_PERM_COMMANDS_VIEW_CONTENT": DynamicParameter("AI_PERM_COMMANDS_VIEW_CONTENT", True, bool),
-    "AI_PERM_COMMANDS_LIST": DynamicParameter("AI_PERM_COMMANDS_LIST", True, bool),
-    "AI_PERM_COMMANDS_INVOKE": DynamicParameter("AI_PERM_COMMANDS_INVOKE", True, bool),
-
-    "AI_PERM_TOOLS_CREATE": DynamicParameter("AI_PERM_TOOLS_CREATE", True, bool),
-    "AI_PERM_TOOLS_EDIT": DynamicParameter("AI_PERM_TOOLS_EDIT", True, bool),
-    "AI_PERM_TOOLS_DELETE": DynamicParameter("AI_PERM_TOOLS_DELETE", True, bool),
-    "AI_PERM_TOOLS_VIEW_INFO": DynamicParameter("AI_PERM_TOOLS_VIEW_INFO", True, bool),
-    "AI_PERM_TOOLS_VIEW_CONTENT": DynamicParameter("AI_PERM_TOOLS_VIEW_CONTENT", True, bool),
-    "AI_PERM_TOOLS_LIST": DynamicParameter("AI_PERM_TOOLS_LIST", True, bool),
-    "AI_PERM_TOOLS_INVOKE": DynamicParameter("AI_PERM_TOOLS_INVOKE", True, bool),
-
-    "AI_PERM_TAGS_CREATE": DynamicParameter("AI_PERM_TAGS_CREATE", True, bool),
-    "AI_PERM_TAGS_EDIT": DynamicParameter("AI_PERM_TAGS_EDIT", True, bool),
-    "AI_PERM_TAGS_DELETE": DynamicParameter("AI_PERM_TAGS_DELETE", True, bool),
-    "AI_PERM_TAGS_VIEW_INFO": DynamicParameter("AI_PERM_TAGS_VIEW_INFO", True, bool),
-    "AI_PERM_TAGS_VIEW_CONTENT": DynamicParameter("AI_PERM_TAGS_VIEW_CONTENT", True, bool),
-    "AI_PERM_TAGS_LIST": DynamicParameter("AI_PERM_TAGS_LIST", True, bool),
-    "AI_PERM_TAGS_INVOKE": DynamicParameter("AI_PERM_TAGS_INVOKE", True, bool),
-
-    "AI_PERM_SERVICES_CREATE": DynamicParameter("AI_PERM_SERVICES_CREATE", True, bool),
-    "AI_PERM_SERVICES_EDIT": DynamicParameter("AI_PERM_SERVICES_EDIT", True, bool),
-    "AI_PERM_SERVICES_DELETE": DynamicParameter("AI_PERM_SERVICES_DELETE", True, bool),
-    "AI_PERM_SERVICES_VIEW_INFO": DynamicParameter("AI_PERM_SERVICES_VIEW_INFO", True, bool),
-    "AI_PERM_SERVICES_VIEW_CONTENT": DynamicParameter("AI_PERM_SERVICES_VIEW_CONTENT", True, bool),
-    "AI_PERM_SERVICES_LIST": DynamicParameter("AI_PERM_SERVICES_LIST", True, bool),
-    "AI_PERM_SERVICES_INVOKE": DynamicParameter("AI_PERM_SERVICES_INVOKE", True, bool),
-
-    "AI_PERM_CRON_CREATE": DynamicParameter("AI_PERM_CRON_CREATE", True, bool),
-    "AI_PERM_CRON_EDIT": DynamicParameter("AI_PERM_CRON_EDIT", True, bool),
-    "AI_PERM_CRON_DELETE": DynamicParameter("AI_PERM_CRON_DELETE", True, bool),
-    "AI_PERM_CRON_VIEW_INFO": DynamicParameter("AI_PERM_CRON_VIEW_INFO", True, bool),
-    "AI_PERM_CRON_VIEW_CONTENT": DynamicParameter("AI_PERM_CRON_VIEW_CONTENT", True, bool),
-    "AI_PERM_CRON_LIST": DynamicParameter("AI_PERM_CRON_LIST", True, bool),
-    "AI_PERM_CRON_INVOKE": DynamicParameter("AI_PERM_CRON_INVOKE", True, bool),
-
-    "AI_PERM_SITES_CREATE": DynamicParameter("AI_PERM_SITES_CREATE", True, bool),
-    "AI_PERM_SITES_EDIT": DynamicParameter("AI_PERM_SITES_EDIT", True, bool),
-    "AI_PERM_SITES_DELETE": DynamicParameter("AI_PERM_SITES_DELETE", True, bool),
-    "AI_PERM_SITES_VIEW_INFO": DynamicParameter("AI_PERM_SITES_VIEW_INFO", True, bool),
-    "AI_PERM_SITES_VIEW_CONTENT": DynamicParameter("AI_PERM_SITES_VIEW_CONTENT", True, bool),
-    "AI_PERM_SITES_LIST": DynamicParameter("AI_PERM_SITES_LIST", True, bool),
-    "AI_PERM_SITES_INVOKE": DynamicParameter("AI_PERM_SITES_INVOKE", True, bool),
-
-    # --- 9. Network, Limits, Timeouts & Intervals ---
-    "TELEGRAM_CONNECT_TIMEOUT": DynamicParameter("TELEGRAM_CONNECT_TIMEOUT", 15.0, float, min_val=1.0),
-    "TELEGRAM_CONNECTION_RETRIES": DynamicParameter("TELEGRAM_CONNECTION_RETRIES", 5, int, min_val=0),
-    "TELEGRAM_RETRY_DELAY": DynamicParameter("TELEGRAM_RETRY_DELAY", 5.0, float, min_val=0.1),
-    "TELEGRAM_AUTO_RECONNECT": DynamicParameter("TELEGRAM_AUTO_RECONNECT", True, bool),
-    "TELEGRAM_TIMEOUT": DynamicParameter("TELEGRAM_TIMEOUT", 15.0, float, min_val=1.0),
-    
-    "TIMERS_LOOP_INTERVAL": DynamicParameter("TIMERS_LOOP_INTERVAL", 1.0, float, min_val=0.1),
-    "KEEP_ALIVE_INTERVAL": DynamicParameter("KEEP_ALIVE_INTERVAL", 120, int, min_val=1),
-    "CONNECTION_MONITOR_INTERVAL": DynamicParameter("CONNECTION_MONITOR_INTERVAL", 10, int, min_val=1),
-    "GEMINI_TIMEOUT": DynamicParameter("GEMINI_TIMEOUT", 90.0, float, min_val=0.1),
-    "TYPING_INTERVAL": DynamicParameter("TYPING_INTERVAL", 10.0, float, min_val=0.1),
-    "TIMEOUT_SLEEP": DynamicParameter("TIMEOUT_SLEEP", 2.0, float, min_val=0.1),
-    "QUEUE_PROMOTION_DELAY": DynamicParameter("QUEUE_PROMOTION_DELAY", 2.0, float, min_val=0.1),
-    "RATE_LIMIT_SLEEP": DynamicParameter("RATE_LIMIT_SLEEP", 5.0, float, min_val=0.1),
-    "API_ERROR_SLEEP": DynamicParameter("API_ERROR_SLEEP", 2.0, float, min_val=0.1),
-    "PROFILE_UPDATE_INTERVAL": DynamicParameter("PROFILE_UPDATE_INTERVAL", 3600, int, min_val=1),
-    "TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT": DynamicParameter("TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT", 10, int, min_val=1),
-    "BOT_RESPONSE_TIMEOUT": DynamicParameter("BOT_RESPONSE_TIMEOUT", 6.0, float, min_val=0.1),
-    "BUTTON_CLICK_TIMEOUT": DynamicParameter("BUTTON_CLICK_TIMEOUT", 15.0, float, min_val=0.1),
-    "DOWNLOAD_MEDIA_TIMEOUT": DynamicParameter("DOWNLOAD_MEDIA_TIMEOUT", 120.0, float, min_val=0.1),
-    "TELEGRAM_ACTION_TIMEOUT": DynamicParameter("TELEGRAM_ACTION_TIMEOUT", 60.0, float, min_val=0.1),
-    "CONVERSION_TIMEOUT": DynamicParameter("CONVERSION_TIMEOUT", 30.0, float, min_val=0.1),
-    "GOOGLE_UPLOAD_TIMEOUT": DynamicParameter("GOOGLE_UPLOAD_TIMEOUT", 120.0, float, min_val=0.1),
-    "GEMINI_FREE_RECOVERY_TIME": DynamicParameter("GEMINI_FREE_RECOVERY_TIME", 18000, int, min_val=1),
-    "GEMINI_PRO_RECOVERY_TIME": DynamicParameter("GEMINI_PRO_RECOVERY_TIME", 86400, int, min_val=1),
-    "GEMINI_DEAD_KEY_COOLDOWN": DynamicParameter("GEMINI_DEAD_KEY_COOLDOWN", 31536000, int, min_val=1),
-    "POLLINATIONS_KEY_RECOVERY_TIME": DynamicParameter("POLLINATIONS_KEY_RECOVERY_TIME", 3600, int, min_val=1),
-    "KEY_INFO_TIMEOUT": DynamicParameter("KEY_INFO_TIMEOUT", 10.0, float, min_val=0.1),
-    "MAX_FILE_SIZE": DynamicParameter("MAX_FILE_SIZE", 15 * 1024 * 1024, int, min_val=0),
-    "DUPLICATE_CACHE_SIZE": DynamicParameter("DUPLICATE_CACHE_SIZE", 1000, int, min_val=1),
-    "AVATAR_CACHE_TIME": DynamicParameter("AVATAR_CACHE_TIME", 86400, int, min_val=0),
-    "DEFAULT_RESULT_INDEX": DynamicParameter("DEFAULT_RESULT_INDEX", 0, int),
-
-    # --- 10. Proxy Pools & Tor Configuration ---
-    "TELEGRAM_PROXIES": DynamicParameter("TELEGRAM_PROXIES", [], list, allow_dsl=False),
-    "GEMINI_PROXIES": DynamicParameter("GEMINI_PROXIES", [], list, allow_dsl=False),
-    "POLLINATIONS_PROXIES": DynamicParameter("POLLINATIONS_PROXIES", [], list, allow_dsl=False),
-    "SCRAPER_PROXIES": DynamicParameter("SCRAPER_PROXIES", [], list, allow_dsl=False),
-    "ALL_PROXY": DynamicParameter("ALL_PROXY", "", str, allow_dsl=False),
-    "TOR_HOST": DynamicParameter("TOR_HOST", "127.0.0.1", str, allow_dsl=False),
-    "TOR_SOCKS_PORT": DynamicParameter("TOR_SOCKS_PORT", 9050, int, min_val=1),
-    "TOR_CONTROL_PORT": DynamicParameter("TOR_CONTROL_PORT", 9051, int, min_val=1),
-    "TOR_PASSWORD": DynamicParameter("TOR_PASSWORD", "", str, allow_dsl=False),
-    "TOR_ROTATION_TIMEOUT": DynamicParameter("TOR_ROTATION_TIMEOUT", 15.0, float, min_val=0.1),
-    "POLLINATIONS_MAX_ATTEMPTS": DynamicParameter("POLLINATIONS_MAX_ATTEMPTS", 8, int, min_val=1),
-    "TOR_MAX_CONSECUTIVE_FAILURES": DynamicParameter("TOR_MAX_CONSECUTIVE_FAILURES", 2, int, min_val=1),
-    "PROXY_CHECK_TIMEOUT": DynamicParameter("PROXY_CHECK_TIMEOUT", 3.0, float, min_val=0.1),
-    "PROXY_STRICT_CHECK": DynamicParameter("PROXY_STRICT_CHECK", False, bool),
-
-    # --- 11. Sandbox, Scrapers, Commands & Security ---
-    "SQL_SELECT_LIMIT": DynamicParameter("SQL_SELECT_LIMIT", 100, int, min_val=1),
-    "SQL_STDOUT_CHAR_LIMIT": DynamicParameter("SQL_STDOUT_CHAR_LIMIT", 3500, int, min_val=1),
-    "TELEGRAM_ACTION_CHAR_LIMIT": DynamicParameter("TELEGRAM_ACTION_CHAR_LIMIT", 5000, int, min_val=1),
-    "TELEGRAM_ACTION_CONFIRM_LIMIT": DynamicParameter("TELEGRAM_ACTION_CONFIRM_LIMIT", 500, int, min_val=1),
-    "VM_STDOUT_NOTICE_LIMIT": DynamicParameter("VM_STDOUT_NOTICE_LIMIT", 1500, int, min_val=1),
-    "SANDBOX_COMMAND_CHAR_LIMIT": DynamicParameter("SANDBOX_COMMAND_CHAR_LIMIT", 3000, int, min_val=1),
-    "SANDBOX_ALLOWED_FILES": DynamicParameter("SANDBOX_ALLOWED_FILES", "all", str),
-    "SANDBOX_BLOCKED_FILES": DynamicParameter("SANDBOX_BLOCKED_FILES", "bot.py,config.py,db_manager.py,key_manager.py,gemini_manager.py,context_manager.py,permission_manager.py,service_manager.py,command_manager.py,prompt_interpolator.py,response_executor.py,sandbox.py,registry.py,utils.py,parser.py,downloader.py,proxy_manager.py,server.py,services.py,main.py,system_tools.py,file_tools.py,web_tools.py,telegram_tools.py,scheduler_tools.py,media_tools.py,site_tools.py,command_tools.py,service_tools.py,tag_block_tools.py,.env,.env.example,bot_context.db,bot_context.db-wal,bot_context.db-shm,baziliksina.session,baziliksina.session-journal,config.json,character.txt,system_prompt.txt,rules_prompt.txt,env_prompt.txt,summarize_prompt.txt,feedback_prompt.txt", str, allow_dsl=False),
-    "WEB_SEARCH_RESULTS_LIMIT": DynamicParameter("WEB_SEARCH_RESULTS_LIMIT", 50, int, min_val=1),
-    "WEB_MEDIA_SEARCH_RESULTS_LIMIT": DynamicParameter("WEB_MEDIA_SEARCH_RESULTS_LIMIT", 3, int, min_val=1, max_val=30),
-    "WEB_MEDIA_SEARCH_CANDIDATES_LIMIT": DynamicParameter("WEB_MEDIA_SEARCH_CANDIDATES_LIMIT", 50, int, min_val=1, max_val=100),
-    "WEB_DEEP_SEARCH_CANDIDATES_LIMIT": DynamicParameter("WEB_DEEP_SEARCH_CANDIDATES_LIMIT", 3, int, min_val=1, max_val=10),
-    "WEB_DEEP_SEARCH_CHAR_LIMIT": DynamicParameter("WEB_DEEP_SEARCH_CHAR_LIMIT", 10000, int, min_val=1000, max_val=50000),
-    "SCRAPE_CHAR_LIMIT": DynamicParameter("SCRAPE_CHAR_LIMIT", 4000, int, min_val=1),
-    "WEB_SEARCH_TIMEOUT": DynamicParameter("WEB_SEARCH_TIMEOUT", 10.0, float, min_val=0.1),
-    "WEB_MEDIA_SEARCH_TIMEOUT": DynamicParameter("WEB_MEDIA_SEARCH_TIMEOUT", 10.0, float, min_val=0.1),
-    "SCRAPE_TIMEOUT": DynamicParameter("SCRAPE_TIMEOUT", 10.0, float, min_val=0.1),
-    "MEDIA_SEARCH_AUTO_DOWNLOAD": DynamicParameter("MEDIA_SEARCH_AUTO_DOWNLOAD", True, bool),
-    "MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE": DynamicParameter("MEDIA_SEARCH_AUTO_UPLOAD_TO_GOOGLE", True, bool),
-
-    "SANDBOX_CONFIG_WHITELIST": DynamicParameter("SANDBOX_CONFIG_WHITELIST", ["all"], list, allow_dsl=False),
-    "SANDBOX_CONFIG_BLACKLIST": DynamicParameter("SANDBOX_CONFIG_BLACKLIST", ["API_HASH", "TELEGRAM_API_HASH", "GEMINI_API_KEYS", "GEMINI_KEYS", "POLLINATIONS_KEYS", "TOR_PASSWORD", "ALL_PROXY", "all_proxy", "TELEGRAM_PROXIES", "GEMINI_PROXIES", "POLLINATIONS_PROXIES", "SCRAPER_PROXIES"], list, allow_dsl=False),
-    "GAME_EMOJI_WHITELIST": DynamicParameter("GAME_EMOJI_WHITELIST", ["🎲", "🎯", "🎳", "🏀", "⚽", "🎰"], list, allow_dsl=False),
-    "GAME_EMOJI_BLACKLIST": DynamicParameter("GAME_EMOJI_BLACKLIST", [], list, allow_dsl=False),
-    "SANDBOX_COMMAND_WHITELIST": DynamicParameter("SANDBOX_COMMAND_WHITELIST", ["all"], list, allow_dsl=False),
-    "SANDBOX_COMMAND_BLACKLIST": DynamicParameter("SANDBOX_COMMAND_BLACKLIST", ["rm", "sudo", "reboot", "shutdown", "init", "passwd", "chown", "chmod", "dd", "mkfs", "parted", "fdisk", "mkswap", "killall", "pkill", "kill", "mv", "systemctl", "service"], list, allow_dsl=False),
-    "SANDBOX_COMMAND_REGEX_BLACKLIST": DynamicParameter("SANDBOX_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|\.session|\.db|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|context_manager\.py|permission_manager\.py|service_manager\.py|command_manager\.py|prompt_interpolator\.py|response_executor\.py|sandbox\.py|registry\.py|utils\.py|parser\.py|downloader\.py|proxy_manager\.py|server\.py|services\.py|main\.py|tools|core|database|services|server|utils|\.txt|\.json)", str, allow_dsl=False),
-    "SANDBOX_COMMAND_REGEX_WHITELIST": DynamicParameter("SANDBOX_COMMAND_REGEX_WHITELIST", "", str, allow_dsl=False),
-    "BOT_COMMAND_WHITELIST": DynamicParameter("BOT_COMMAND_WHITELIST", ["all"], list, allow_dsl=False),
-    "BOT_COMMAND_BLACKLIST": DynamicParameter("BOT_COMMAND_BLACKLIST", [], list, allow_dsl=False),
-    "OUTGOING_FILE_WHITELIST": DynamicParameter("OUTGOING_FILE_WHITELIST", ["all"], list, allow_dsl=False),
-    "OUTGOING_FILE_BLACKLIST": DynamicParameter("OUTGOING_FILE_BLACKLIST", [], list, allow_dsl=False),
-    "TELEGRAM_ACTION_WHITELIST": DynamicParameter("TELEGRAM_ACTION_WHITELIST", ["all"], list, allow_dsl=False),
-    "TELEGRAM_ACTION_BLACKLIST": DynamicParameter("TELEGRAM_ACTION_BLACKLIST", ["log_out", "delete_account", "disconnect", "sign_in", "send_code_request", "switch_account"], list, allow_dsl=False),
-    "SANDBOX_PYTHON_WHITELIST": DynamicParameter("SANDBOX_PYTHON_WHITELIST", ["all"], list, allow_dsl=False),
-    "SANDBOX_PYTHON_BLACKLIST": DynamicParameter("SANDBOX_PYTHON_BLACKLIST", ["os.system", "os.popen", "subprocess", "shutil.rmtree", "eval", "exec"], list, allow_dsl=False),
-    "INCOMING_FILE_WHITELIST": DynamicParameter("INCOMING_FILE_WHITELIST", ["all"], list, allow_dsl=False),
-    "INCOMING_FILE_BLACKLIST": DynamicParameter("INCOMING_FILE_BLACKLIST", [], list, allow_dsl=False),
-    "INLINE_CALLBACK_WHITELIST": DynamicParameter("INLINE_CALLBACK_WHITELIST", ["all"], list, allow_dsl=False),
-    "INLINE_CALLBACK_BLACKLIST": DynamicParameter("INLINE_CALLBACK_BLACKLIST", [], list, allow_dsl=False),
-    "KEYBOARD_BUTTON_WHITELIST": DynamicParameter("KEYBOARD_BUTTON_WHITELIST", ["all"], list, allow_dsl=False),
-    "KEYBOARD_BUTTON_BLACKLIST": DynamicParameter("KEYBOARD_BUTTON_BLACKLIST", [], list, allow_dsl=False),
-    "AI_TAG_WHITELIST": DynamicParameter("AI_TAG_WHITELIST", ["all"], list, allow_dsl=False),
-    "AI_TAG_BLACKLIST": DynamicParameter("AI_TAG_BLACKLIST", [], list, allow_dsl=False),
-    "AI_BLOCK_WHITELIST": DynamicParameter("AI_BLOCK_WHITELIST", ["all"], list, allow_dsl=False),
-    "AI_BLOCK_BLACKLIST": DynamicParameter("AI_BLOCK_BLACKLIST", [], list, allow_dsl=False),
-    "CUSTOM_TAG_BLOCK_CODE_WHITELIST": DynamicParameter("CUSTOM_TAG_BLOCK_CODE_WHITELIST", ["all"], list, allow_dsl=False),
-    "CUSTOM_TAG_BLOCK_CODE_BLACKLIST": DynamicParameter("CUSTOM_TAG_BLOCK_CODE_BLACKLIST", [], list, allow_dsl=False),
-    "GROUP_SETTINGS_WHITELIST": DynamicParameter("GROUP_SETTINGS_WHITELIST", ["all"], list, allow_dsl=False),
-    "GROUP_SETTINGS_BLACKLIST": DynamicParameter("GROUP_SETTINGS_BLACKLIST", [], list, allow_dsl=False),
-    "CONTACTS_MANAGE_WHITELIST": DynamicParameter("CONTACTS_MANAGE_WHITELIST", ["all"], list, allow_dsl=False),
-    "CONTACTS_MANAGE_BLACKLIST": DynamicParameter("CONTACTS_MANAGE_BLACKLIST", [], list, allow_dsl=False),
-    "ACCOUNT_SETTINGS_WHITELIST": DynamicParameter("ACCOUNT_SETTINGS_WHITELIST", ["all"], list, allow_dsl=False),
-    "ACCOUNT_SETTINGS_BLACKLIST": DynamicParameter("ACCOUNT_SETTINGS_BLACKLIST", [], list, allow_dsl=False),
-
-    # --- 12. RESTful Web Server Parameters ---
-    "WEB_SERVER_ENABLE": DynamicParameter("WEB_SERVER_ENABLE", True, bool),
-    "WEB_SERVER_HOST": DynamicParameter("WEB_SERVER_HOST", "0.0.0.0", str, allow_dsl=False),
-    "WEB_SERVER_PORT": DynamicParameter("WEB_SERVER_PORT", 8080, int, min_val=1, max_val=65535),
-    "WEB_SERVER_SUBDOMAIN": DynamicParameter("WEB_SERVER_SUBDOMAIN", "", str, allow_dsl=False),
-    "WEB_SERVER_LOG_PATH": DynamicParameter("WEB_SERVER_LOG_PATH", "bot.log", str, allow_dsl=False),
-    "WEB_SERVER_IP_ACL": DynamicParameter("WEB_SERVER_IP_ACL", [], list, allow_dsl=False),
-    "WEB_SERVER_IP_DETECTION_HOST": DynamicParameter("WEB_SERVER_IP_DETECTION_HOST", "8.8.8.8", str, allow_dsl=False),
-    "WEB_SERVER_IP_DETECTION_PORT": DynamicParameter("WEB_SERVER_IP_DETECTION_PORT", 80, int, min_val=1),
-    "WEB_SERVER_DEFAULT_LOG_LIMIT": DynamicParameter("WEB_SERVER_DEFAULT_LOG_LIMIT", 150, int, min_val=1),
-    "WEB_SERVER_DEFAULT_META_LIMIT": DynamicParameter("WEB_SERVER_DEFAULT_META_LIMIT", 50, int, min_val=1),
-    "WEB_SERVER_DEFAULT_TIMER_DELAY": DynamicParameter("WEB_SERVER_DEFAULT_TIMER_DELAY", 60, int, min_val=1),
-    "WEB_SERVER_REBOOT_DELAY": DynamicParameter("WEB_SERVER_REBOOT_DELAY", 2.0, float, min_val=0.1),
-    "PACIFIC_STANDARD_TIME_OFFSET": DynamicParameter("PACIFIC_STANDARD_TIME_OFFSET", -8, int),
-    "PACIFIC_DAYLIGHT_TIME_OFFSET": DynamicParameter("PACIFIC_DAYLIGHT_TIME_OFFSET", -7, int),
-    "GEMINI_MIN_COOLDOWN_SECONDS": DynamicParameter("GEMINI_MIN_COOLDOWN_SECONDS", 5, int, min_val=1),
-    "GEMINI_DAILY_LIMIT_COOLDOWN": DynamicParameter("GEMINI_DAILY_LIMIT_COOLDOWN", 86400, int, min_val=1),
-    "RECURSIVE_REPLY_DEPTH_LIMIT": DynamicParameter("RECURSIVE_REPLY_DEPTH_LIMIT", 3, int, min_val=1),
-
-    # --- 13. Dynamic Site Hosting Defaults ---
-    "SITE_STORAGE_LIMIT_DEFAULT": DynamicParameter("SITE_STORAGE_LIMIT_DEFAULT", 10 * 1024 * 1024, int, min_val=1),
-    "SITE_TIMEOUT_DEFAULT": DynamicParameter("SITE_TIMEOUT_DEFAULT", 5.0, float, min_val=0.1),
-    "SITE_ALLOWED_IMPORTS_DEFAULT": DynamicParameter("SITE_ALLOWED_IMPORTS_DEFAULT", "json,math,random,urllib,hashlib,datetime", str, allow_dsl=False),
-    "SITE_BLOCKED_IMPORTS_DEFAULT": DynamicParameter("SITE_BLOCKED_IMPORTS_DEFAULT", "os,sys,subprocess,shutil,builtins", str, allow_dsl=False),
-    "SITE_ALLOWED_METHODS_DEFAULT": DynamicParameter("SITE_ALLOWED_METHODS_DEFAULT", "GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS,TRACE,QUERY,CONNECT,PRI", str, allow_dsl=False),
-    "SITE_BLOCKED_METHODS_DEFAULT": DynamicParameter("SITE_BLOCKED_METHODS_DEFAULT", "", str, allow_dsl=False),
-    "SITE_MAX_REQUEST_SIZE_DEFAULT": DynamicParameter("SITE_MAX_REQUEST_SIZE_DEFAULT", 1048576, int, min_val=1),
-    "SITE_STORAGE_LIMIT_MAX": DynamicParameter("SITE_STORAGE_LIMIT_MAX", 52428800, int, min_val=1),
-    "SITE_TIMEOUT_MAX": DynamicParameter("SITE_TIMEOUT_MAX", 30.0, float, min_val=0.1),
-    "SITE_COMMAND_WHITELIST": DynamicParameter("SITE_COMMAND_WHITELIST", "all", str, allow_dsl=False),
-    "SITE_COMMAND_BLACKLIST": DynamicParameter("SITE_COMMAND_BLACKLIST", "sudo,reboot,shutdown,passwd,chown,chmod", str, allow_dsl=False),
-    "SITE_COMMAND_REGEX_BLACKLIST": DynamicParameter("SITE_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|\.session|\.db|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|context_manager\.py|permission_manager\.py|service_manager\.py|command_manager\.py|prompt_interpolator\.py|response_executor\.py|sandbox\.py|registry\.py|utils\.py|parser\.py|downloader\.py|proxy_manager\.py|server\.py|services\.py|main\.py|tools|core|database|services|server|utils|\.txt|\.json)", str, allow_dsl=False),
-    "SITE_COMMAND_REGEX_WHITELIST": DynamicParameter("SITE_COMMAND_REGEX_WHITELIST", "", str, allow_dsl=False),
-    "SITE_PYTHON_WHITELIST": DynamicParameter("SITE_PYTHON_WHITELIST", "all", str, allow_dsl=False),
-    "SITE_PYTHON_BLACKLIST": DynamicParameter("SITE_PYTHON_BLACKLIST", "os.system,os.popen,subprocess,shutil.rmtree,eval,exec", str, allow_dsl=False),
-
-    # --- 14. Cache & Asset File Names ---
-    "EMOJI_CACHE_DIR_NAME": DynamicParameter("EMOJI_CACHE_DIR_NAME", "emoji_cache", str, allow_dsl=False),
-    "AVATAR_CACHE_DIR_NAME": DynamicParameter("AVATAR_CACHE_DIR_NAME", "avatar_cache", str, allow_dsl=False),
-    "GIFT_CACHE_DIR_NAME": DynamicParameter("GIFT_CACHE_DIR_NAME", "gift_cache", str, allow_dsl=False),
-    "TEMP_MEDIA_DIR_NAME": DynamicParameter("TEMP_MEDIA_DIR_NAME", "temp_media", str, allow_dsl=False),
-    "BOT_AVATAR_NAME": DynamicParameter("BOT_AVATAR_NAME", "bot_avatar.jpg", str, allow_dsl=False),
-    "DEFAULT_IMAGE_NAME": DynamicParameter("DEFAULT_IMAGE_NAME", "generated_image.png", str, allow_dsl=False),
-    "DEFAULT_AUDIO_NAME": DynamicParameter("DEFAULT_AUDIO_NAME", "generated_audio.mp3", str, allow_dsl=False),
-    "DEFAULT_VIDEO_NAME": DynamicParameter("DEFAULT_VIDEO_NAME", "generated_video.mp4", str, allow_dsl=False),
-
-    "RE_SEQ_BLOCK": DynamicParameter("RE_SEQ_BLOCK", r"<(seq|par|bg)>(.*?)</\1>", str, allow_dsl=False),
-    "RE_REPLY_TAG": DynamicParameter("RE_REPLY_TAG", r"(?<!\\)\[Reply(?:\s+to\s+message\s+#?|:\s*)(\d+)\]", str, allow_dsl=False),
-    "RE_REACT_TAG": DynamicParameter("RE_REACT_TAG", r"(?<!\\)\[React:\s*(\d+)\s*\|\s*(.*?)\s*\]", str, allow_dsl=False),
-    "RE_ATTACH_TAG": DynamicParameter("RE_ATTACH_TAG", r"(?<!\\)\[Attach:\s*([^|\]]+?)\s*(?:\|\s*(.*?))?\s*\]", str, allow_dsl=False),
-    "RE_EDIT_TAG": DynamicParameter("RE_EDIT_TAG", r"(?<!\\)\[Edit:\s*(\d+)\s*\|\s*(.*?)\s*\]", str, allow_dsl=False),
-    "RE_DELETE_TAG": DynamicParameter("RE_DELETE_TAG", r"(?<!\\)\[Delete:\s*(\d+)\s*\]", str, allow_dsl=False),
-    "RE_NOOP_TAG": DynamicParameter("RE_NOOP_TAG", r"(?<!\\)\[(?:NoOp|No_Op_Ignore|NoOpIgnore):\s*([^|\]]+?)\s*(?:\|\s*continue\s*=\s*(true|false))?\s*\]", str, allow_dsl=False),
-    "RE_TOOL_TAG": DynamicParameter("RE_TOOL_TAG", r"(?<!\\)\[Tool:\s*([a-zA-Z0-9_]+)\s*\|\s*(.*?)\s*\]", str, allow_dsl=False),
+TELEGRAM_METHOD_BLACKLIST = {
+    "log_out", "delete_account", "disconnect", "sign_in", "send_code_request", "switch_account"
 }
 
 
 # =====================================================================
-# SYNCHRONIZE EXPLICIT GLOBALS (ZERO-MAGIC IMPORT COMPATIBILITY)
+# SECTION 3: DATABASE CONFIGURATION
 # =====================================================================
-def _sync_globals():
-    """Evaluates all DynamicParameters and assigns explicit variables into module globals()."""
-    for key, param in _PARAMS.items():
-        globals()[key] = param.evaluate()
-
-    # Dynamic computed session path
-    s_name = globals().get("TELEGRAM_SESSION_NAME") or globals().get("SESSION_NAME") or "baziliksina_session"
-    globals()["SESSION_NAME"] = s_name
-    globals()["SESSION_PATH"] = str(SAFE_DB_DIR / s_name)
-
-    # Aliases
-    globals()["API_ID"] = int(globals().get("TELEGRAM_API_ID") or 0)
-    globals()["API_HASH"] = str(globals().get("TELEGRAM_API_HASH") or "")
-    globals()["GEMINI_KEYS"] = globals().get("GEMINI_API_KEYS") or []
-    globals()["FFMPEG_PATH"] = os.getenv("FFMPEG_PATH", "ffmpeg")
-    globals()["USER_AGENT"] = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-# Execute primary initialization of explicit globals
-_sync_globals()
+DB_NAME = os.getenv("DB_NAME", "bot_context.db")
+SQLITE_JOURNAL_MODE = os.getenv("SQLITE_JOURNAL_MODE", "WAL")
+BOOTSTRAP_DATABASE = _get_bool("BOOTSTRAP_DATABASE", False)
 
 
-def check_proxy_active(proxy_url_str: str) -> bool:
-    import socket
-    import urllib.parse
-    if not proxy_url_str:
-        return False
+# =====================================================================
+# SECTION 4: GOOGLE GEMINI AI CONFIGURATION
+# =====================================================================
+_gemini_keys_raw = os.getenv("GEMINI_API_KEYS", "")
+GEMINI_API_KEYS = [k.strip() for k in _gemini_keys_raw.split(",") if k.strip()]
+GEMINI_KEYS = GEMINI_API_KEYS
+
+_gemini_models_raw = os.getenv("GEMINI_MODELS", "") or os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+GEMINI_MODELS = [m.strip() for m in _gemini_models_raw.split(",") if m.strip()]
+
+THINKING_LEVEL = os.getenv("THINKING_LEVEL", "high").lower()
+TEMPERATURE = _get_float("TEMPERATURE", 0.7)
+TOP_P = _get_float("TOP_P", 0.95)
+STOP_SEQUENCES = _parse_list("STOP_SEQUENCES", [])
+OUTPUT_LENGTH = _get_int("OUTPUT_LENGTH", 65536)
+INPUT_TOKEN_LIMIT = _get_int("INPUT_TOKEN_LIMIT", 524288)
+
+SAFETY_HATE_SPEECH = os.getenv("SAFETY_HATE_SPEECH", "BLOCK_NONE")
+SAFETY_HARASSMENT = os.getenv("SAFETY_HARASSMENT", "BLOCK_NONE")
+SAFETY_SEXUALLY_EXPLICIT = os.getenv("SAFETY_SEXUALLY_EXPLICIT", "BLOCK_NONE")
+SAFETY_DANGEROUS_CONTENT = os.getenv("SAFETY_DANGEROUS_CONTENT", "BLOCK_NONE")
+
+
+# =====================================================================
+# SECTION 5: POLLINATIONS AI GENERATIVE MEDIA
+# =====================================================================
+_pollinations_keys_raw = os.getenv("POLLINATIONS_KEYS", "")
+POLLINATIONS_KEYS = [k.strip() for k in _pollinations_keys_raw.split(",") if k.strip()]
+
+DEFAULT_IMAGE_MODEL = os.getenv("DEFAULT_IMAGE_MODEL", "flux")
+DEFAULT_IMAGE_WIDTH = _get_int("DEFAULT_IMAGE_WIDTH", 1024)
+DEFAULT_IMAGE_HEIGHT = _get_int("DEFAULT_IMAGE_HEIGHT", 1024)
+MEDIA_RESOLUTION = os.getenv("MEDIA_RESOLUTION", "high").lower()
+ASPECT_RATIO = os.getenv("ASPECT_RATIO", "auto").lower()
+GENERATE_IMAGE_TIMEOUT = _get_float("GENERATE_IMAGE_TIMEOUT", 180.0)
+
+DEFAULT_AUDIO_VOICE = os.getenv("DEFAULT_AUDIO_VOICE", "nova")
+DEFAULT_AUDIO_MODEL = os.getenv("DEFAULT_AUDIO_MODEL", "qwen-tts-instruct")
+GENERATE_AUDIO_TIMEOUT = _get_float("GENERATE_AUDIO_TIMEOUT", 120.0)
+
+DEFAULT_VIDEO_MODEL = os.getenv("DEFAULT_VIDEO_MODEL", "wan")
+DEFAULT_VIDEO_DURATION = _get_int("DEFAULT_VIDEO_DURATION", 5)
+DEFAULT_VIDEO_ASPECT_RATIO = os.getenv("DEFAULT_VIDEO_ASPECT_RATIO", "1:1")
+GENERATE_VIDEO_TIMEOUT = _get_float("GENERATE_VIDEO_TIMEOUT", 180.0)
+
+POLLINATIONS_SEED_MIN = _get_int("POLLINATIONS_SEED_MIN", 1)
+POLLINATIONS_SEED_MAX = _get_int("POLLINATIONS_SEED_MAX", 999999999)
+POLLINATIONS_UPLOAD_JPEG_QUALITY = _get_int("POLLINATIONS_UPLOAD_JPEG_QUALITY", 95)
+DEFAULT_PUBLIC_UPLOAD_PROVIDER = os.getenv("DEFAULT_PUBLIC_UPLOAD_PROVIDER", "auto")
+
+IMAGE_GEN_AUTO_DOWNLOAD = _get_bool("IMAGE_GEN_AUTO_DOWNLOAD", True)
+IMAGE_GEN_AUTO_UPLOAD_TO_GOOGLE = _get_bool("IMAGE_GEN_AUTO_UPLOAD_TO_GOOGLE", True)
+AUDIO_GEN_AUTO_DOWNLOAD = _get_bool("AUDIO_GEN_AUTO_DOWNLOAD", True)
+AUDIO_GEN_AUTO_UPLOAD_TO_GOOGLE = _get_bool("AUDIO_GEN_AUTO_UPLOAD_TO_GOOGLE", True)
+VIDEO_GEN_AUTO_DOWNLOAD = _get_bool("VIDEO_GEN_AUTO_DOWNLOAD", True)
+VIDEO_GEN_AUTO_UPLOAD_TO_GOOGLE = _get_bool("VIDEO_GEN_AUTO_UPLOAD_TO_GOOGLE", True)
+PUBLIC_UPLOAD_TIMEOUT = _get_float("PUBLIC_UPLOAD_TIMEOUT", 60.0)
+
+
+# =====================================================================
+# SECTION 6: CONTEXT, TOKENS & FILE STRATEGIES
+# =====================================================================
+CONTEXT_MANAGEMENT_MODE = os.getenv("CONTEXT_MANAGEMENT_MODE", "summarize").lower()
+TEXT_LIMIT_TYPE = os.getenv("TEXT_LIMIT_TYPE", "tokens").lower()
+TEXT_TOKEN_LIMIT = _get_int("TEXT_TOKEN_LIMIT", 524288)
+CONTEXT_TRIM_COUNT = _get_int("CONTEXT_TRIM_COUNT", 20)
+MESSAGES_LIMIT = _get_int("MESSAGES_LIMIT", 150)
+CONTEXT_LOCAL_RATIO = _get_float("CONTEXT_LOCAL_RATIO", 0.7)
+CONTEXT_LOCAL_MIN_LIMIT = _get_int("CONTEXT_LOCAL_MIN_LIMIT", 15)
+SUMMARIZATION_MESSAGES_LIMIT = _get_int("SUMMARIZATION_MESSAGES_LIMIT", 500)
+SUMMARIZATION_KEEP_LIMIT = _get_int("SUMMARIZATION_KEEP_LIMIT", 15)
+CROSS_CHAT_CONTEXT = _get_bool("CROSS_CHAT_CONTEXT", True)
+
+FILE_CONTEXT_MODE = os.getenv("FILE_CONTEXT_MODE", "trim").lower()
+FILE_LIMIT_TYPE = os.getenv("FILE_LIMIT_TYPE", "tokens").lower()
+FILE_TOKEN_LIMIT = _get_int("FILE_TOKEN_LIMIT", 200000)
+FILE_TRIM_COUNT = _get_int("FILE_TRIM_COUNT", 5)
+MEDIA_LIMIT = _get_int("MEDIA_LIMIT", 250)
+AUTO_ATTACH_FILES_TO_CONTEXT = _get_bool("AUTO_ATTACH_FILES_TO_CONTEXT", False)
+
+AUTO_SAVE_TEXT_RULE = os.getenv("AUTO_SAVE_TEXT_RULE", "all")
+AUTO_SAVE_FILE_RULE = os.getenv("AUTO_SAVE_FILE_RULE", "all")
+
+
+# =====================================================================
+# SECTION 7: TRIGGERS, RULES & FLOW MATRIX
+# =====================================================================
+AI_RESPONSE_MODE = os.getenv("AI_RESPONSE_MODE", "all").strip().lower()
+AI_RESPONSE_TRIGGERS = _parse_list("AI_RESPONSE_TRIGGERS", ["name", "username", "mentioned", "reply_to_me"])
+
+SAVE_INCOMING_MESSAGES = _get_bool("SAVE_INCOMING_MESSAGES", True)
+SAVE_EDITED_MESSAGES = _get_bool("SAVE_EDITED_MESSAGES", True)
+SAVE_DELETED_MESSAGES = _get_bool("SAVE_DELETED_MESSAGES", True)
+SAVE_OUTGOING_NEW_MESSAGES = _get_bool("SAVE_OUTGOING_NEW_MESSAGES", True)
+SAVE_OUTGOING_EDITED_MESSAGES = _get_bool("SAVE_OUTGOING_EDITED_MESSAGES", True)
+SAVE_OUTGOING_DELETED_MESSAGES = _get_bool("SAVE_OUTGOING_DELETED_MESSAGES", True)
+
+TRIGGER_ON_INCOMING = _get_bool("TRIGGER_ON_INCOMING", True)
+TRIGGER_ON_EDITED = _get_bool("TRIGGER_ON_EDITED", False)
+TRIGGER_ON_DELETED = _get_bool("TRIGGER_ON_DELETED", False)
+TRIGGER_ON_OUTGOING_NEW_MESSAGES = _get_bool("TRIGGER_ON_OUTGOING_NEW_MESSAGES", False)
+TRIGGER_ON_OUTGOING_EDITED_MESSAGES = _get_bool("TRIGGER_ON_OUTGOING_EDITED_MESSAGES", False)
+TRIGGER_ON_OUTGOING_DELETED_MESSAGES = _get_bool("TRIGGER_ON_OUTGOING_DELETED_MESSAGES", False)
+TRIGGER_ON_OUTGOING_MANUAL_MESSAGES = _get_bool("TRIGGER_ON_OUTGOING_MANUAL_MESSAGES", False)
+TRIGGER_ON_COMMANDS = _get_bool("TRIGGER_ON_COMMANDS", False)
+
+BOOTSTRAP_TRIGGER_GENERATION = _get_bool("BOOTSTRAP_TRIGGER_GENERATION", True)
+CATCH_UP_TRIGGER_GENERATION = _get_bool("CATCH_UP_TRIGGER_GENERATION", True)
+USE_SYSTEM_PROMPT = _get_bool("USE_SYSTEM_PROMPT", True)
+
+
+# =====================================================================
+# SECTION 8: ADVANCED FILTERS, WHITELISTS & BLACKLISTS
+# =====================================================================
+FILTER_POLICY = os.getenv("FILTER_POLICY", "blacklist_first").strip().lower()
+MSG_SAVE_WHITELIST = _parse_list("MSG_SAVE_WHITELIST", [])
+MSG_SAVE_BLACKLIST = _parse_list("MSG_SAVE_BLACKLIST", [])
+MSG_GEN_WHITELIST = _parse_list("MSG_GEN_WHITELIST", [])
+MSG_GEN_BLACKLIST = _parse_list("MSG_GEN_BLACKLIST", [])
+ALLOWED_MESSAGE_TYPES = _parse_list("ALLOWED_MESSAGE_TYPES", ["text", "voice", "video", "photo", "document", "gif", "sticker", "location", "contact", "poll", "venue", "album", "list"])
+
+SAVE_INCOMING_REACTION_ADD = _get_bool("SAVE_INCOMING_REACTION_ADD", True)
+SAVE_INCOMING_REACTION_REMOVE = _get_bool("SAVE_INCOMING_REACTION_REMOVE", True)
+SAVE_OUTGOING_REACTION_ADD = _get_bool("SAVE_OUTGOING_REACTION_ADD", True)
+SAVE_OUTGOING_REACTION_REMOVE = _get_bool("SAVE_OUTGOING_REACTION_REMOVE", True)
+
+TRIGGER_ON_INCOMING_REACTION_ADD = _get_bool("TRIGGER_ON_INCOMING_REACTION_ADD", False)
+TRIGGER_ON_INCOMING_REACTION_REMOVE = _get_bool("TRIGGER_ON_INCOMING_REACTION_REMOVE", False)
+TRIGGER_ON_OUTGOING_REACTION_ADD = _get_bool("TRIGGER_ON_OUTGOING_REACTION_ADD", False)
+TRIGGER_ON_OUTGOING_REACTION_REMOVE = _get_bool("TRIGGER_ON_OUTGOING_REACTION_REMOVE", False)
+
+REACTION_WHITELIST = _parse_list("REACTION_WHITELIST", [])
+REACTION_BLACKLIST = _parse_list("REACTION_BLACKLIST", [])
+
+SAVE_USER_METADATA = _get_bool("SAVE_USER_METADATA", True)
+SAVE_CHAT_METADATA = _get_bool("SAVE_CHAT_METADATA", True)
+USER_CACHE_WHITELIST = _parse_int_list("USER_CACHE_WHITELIST", [])
+USER_CACHE_BLACKLIST = _parse_int_list("USER_CACHE_BLACKLIST", [])
+CHAT_CACHE_WHITELIST = _parse_int_list("CHAT_CACHE_WHITELIST", [])
+CHAT_CACHE_BLACKLIST = _parse_int_list("CHAT_CACHE_BLACKLIST", [])
+
+CHAT_WHITELIST = _parse_int_list("CHAT_WHITELIST", [])
+CHAT_BLACKLIST = _parse_int_list("CHAT_BLACKLIST", [])
+READ_ACK_WHITELIST = _parse_list("READ_ACK_WHITELIST", ["all"])
+READ_ACK_BLACKLIST = _parse_list("READ_ACK_BLACKLIST", [])
+
+AI_OUTPUT_WHITELIST_REGEX = _parse_list("AI_OUTPUT_WHITELIST_REGEX", [])
+AI_OUTPUT_BLACKLIST_REGEX = _parse_list("AI_OUTPUT_BLACKLIST_REGEX", [])
+
+AI_ALLOWED_ROOT_TOOLS = _parse_list("AI_ALLOWED_ROOT_TOOLS", ["all"])
+AI_BLOCKED_ROOT_TOOLS = _parse_list("AI_BLOCKED_ROOT_TOOLS", ["execute_python_code", "run_sandboxed_command"])
+AI_ALLOWED_CUSTOM_TOOLS = _parse_list("AI_ALLOWED_CUSTOM_TOOLS", ["all"])
+AI_BLOCKED_CUSTOM_TOOLS = _parse_list("AI_BLOCKED_CUSTOM_TOOLS", [])
+AI_ALLOWED_MIMES = _parse_list("AI_ALLOWED_MIMES", ["all"])
+AI_BLOCKED_MIMES = _parse_list("AI_BLOCKED_MIMES", ["none"])
+
+
+# =====================================================================
+# SECTION 9: AI PIPELINE & GRANULAR PERMISSIONS MATRIX
+# =====================================================================
+AI_ALLOW_PIPELINES = _get_bool("AI_ALLOW_PIPELINES", True)
+AI_ALLOWED_PIPELINE_OPERATORS = os.getenv("AI_ALLOWED_PIPELINE_OPERATORS", ";,&&,||,|")
+AI_BLOCKED_PIPELINE_OPERATORS = os.getenv("AI_BLOCKED_PIPELINE_OPERATORS", "")
+
+AI_PERM_COMMANDS_CREATE = _get_bool("AI_PERM_COMMANDS_CREATE", True)
+AI_PERM_COMMANDS_EDIT = _get_bool("AI_PERM_COMMANDS_EDIT", True)
+AI_PERM_COMMANDS_DELETE = _get_bool("AI_PERM_COMMANDS_DELETE", True)
+AI_PERM_COMMANDS_VIEW_INFO = _get_bool("AI_PERM_COMMANDS_VIEW_INFO", True)
+AI_PERM_COMMANDS_VIEW_CONTENT = _get_bool("AI_PERM_COMMANDS_VIEW_CONTENT", True)
+AI_PERM_COMMANDS_LIST = _get_bool("AI_PERM_COMMANDS_LIST", True)
+AI_PERM_COMMANDS_INVOKE = _get_bool("AI_PERM_COMMANDS_INVOKE", True)
+
+AI_PERM_TOOLS_CREATE = _get_bool("AI_PERM_TOOLS_CREATE", True)
+AI_PERM_TOOLS_EDIT = _get_bool("AI_PERM_TOOLS_EDIT", True)
+AI_PERM_TOOLS_DELETE = _get_bool("AI_PERM_TOOLS_DELETE", True)
+AI_PERM_TOOLS_VIEW_INFO = _get_bool("AI_PERM_TOOLS_VIEW_INFO", True)
+AI_PERM_TOOLS_VIEW_CONTENT = _get_bool("AI_PERM_TOOLS_VIEW_CONTENT", True)
+AI_PERM_TOOLS_LIST = _get_bool("AI_PERM_TOOLS_LIST", True)
+AI_PERM_TOOLS_INVOKE = _get_bool("AI_PERM_TOOLS_INVOKE", True)
+
+AI_PERM_TAGS_CREATE = _get_bool("AI_PERM_TAGS_CREATE", True)
+AI_PERM_TAGS_EDIT = _get_bool("AI_PERM_TAGS_EDIT", True)
+AI_PERM_TAGS_DELETE = _get_bool("AI_PERM_TAGS_DELETE", True)
+AI_PERM_TAGS_VIEW_INFO = _get_bool("AI_PERM_TAGS_VIEW_INFO", True)
+AI_PERM_TAGS_VIEW_CONTENT = _get_bool("AI_PERM_TAGS_VIEW_CONTENT", True)
+AI_PERM_TAGS_LIST = _get_bool("AI_PERM_TAGS_LIST", True)
+AI_PERM_TAGS_INVOKE = _get_bool("AI_PERM_TAGS_INVOKE", True)
+
+AI_PERM_SERVICES_CREATE = _get_bool("AI_PERM_SERVICES_CREATE", True)
+AI_PERM_SERVICES_EDIT = _get_bool("AI_PERM_SERVICES_EDIT", True)
+AI_PERM_SERVICES_DELETE = _get_bool("AI_PERM_SERVICES_DELETE", True)
+AI_PERM_SERVICES_VIEW_INFO = _get_bool("AI_PERM_SERVICES_VIEW_INFO", True)
+AI_PERM_SERVICES_VIEW_CONTENT = _get_bool("AI_PERM_SERVICES_VIEW_CONTENT", True)
+AI_PERM_SERVICES_LIST = _get_bool("AI_PERM_SERVICES_LIST", True)
+AI_PERM_SERVICES_INVOKE = _get_bool("AI_PERM_SERVICES_INVOKE", True)
+
+AI_PERM_CRON_CREATE = _get_bool("AI_PERM_CRON_CREATE", True)
+AI_PERM_CRON_EDIT = _get_bool("AI_PERM_CRON_EDIT", True)
+AI_PERM_CRON_DELETE = _get_bool("AI_PERM_CRON_DELETE", True)
+AI_PERM_CRON_VIEW_INFO = _get_bool("AI_PERM_CRON_VIEW_INFO", True)
+AI_PERM_CRON_VIEW_CONTENT = _get_bool("AI_PERM_CRON_VIEW_CONTENT", True)
+AI_PERM_CRON_LIST = _get_bool("AI_PERM_CRON_LIST", True)
+AI_PERM_CRON_INVOKE = _get_bool("AI_PERM_CRON_INVOKE", True)
+
+AI_PERM_SITES_CREATE = _get_bool("AI_PERM_SITES_CREATE", True)
+AI_PERM_SITES_EDIT = _get_bool("AI_PERM_SITES_EDIT", True)
+AI_PERM_SITES_DELETE = _get_bool("AI_PERM_SITES_DELETE", True)
+AI_PERM_SITES_VIEW_INFO = _get_bool("AI_PERM_SITES_VIEW_INFO", True)
+AI_PERM_SITES_VIEW_CONTENT = _get_bool("AI_PERM_SITES_VIEW_CONTENT", True)
+AI_PERM_SITES_LIST = _get_bool("AI_PERM_SITES_LIST", True)
+AI_PERM_SITES_INVOKE = _get_bool("AI_PERM_SITES_INVOKE", True)
+
+
+# =====================================================================
+# SECTION 10: TIMEOUTS, INTERVALS & LIMITS
+# =====================================================================
+MAX_TURNS = _get_int("MAX_TURNS", 1000)
+DEBOUNCE_DELAY = _get_float("DEBOUNCE_DELAY", 7.0)
+TIMERS_LOOP_INTERVAL = _get_float("TIMERS_LOOP_INTERVAL", 1.0)
+KEEP_ALIVE_INTERVAL = _get_int("KEEP_ALIVE_INTERVAL", 120)
+CONNECTION_MONITOR_INTERVAL = _get_int("CONNECTION_MONITOR_INTERVAL", 10)
+GEMINI_TIMEOUT = _get_float("GEMINI_TIMEOUT", 90.0)
+TYPING_INTERVAL = _get_float("TYPING_INTERVAL", 10.0)
+TIMEOUT_SLEEP = _get_float("TIMEOUT_SLEEP", 2.0)
+QUEUE_PROMOTION_DELAY = _get_float("QUEUE_PROMOTION_DELAY", 2.0)
+RATE_LIMIT_SLEEP = _get_float("RATE_LIMIT_SLEEP", 5.0)
+API_ERROR_SLEEP = _get_float("API_ERROR_SLEEP", 2.0)
+PROFILE_UPDATE_INTERVAL = _get_int("PROFILE_UPDATE_INTERVAL", 3600)
+TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT = _get_int("TELEGRAM_KEYBOARD_BUTTON_SEARCH_LIMIT", 10)
+BOT_RESPONSE_TIMEOUT = _get_float("BOT_RESPONSE_TIMEOUT", 6.0)
+BUTTON_CLICK_TIMEOUT = _get_float("BUTTON_CLICK_TIMEOUT", 15.0)
+DOWNLOAD_MEDIA_TIMEOUT = _get_float("DOWNLOAD_MEDIA_TIMEOUT", 120.0)
+TELEGRAM_ACTION_TIMEOUT = _get_float("TELEGRAM_ACTION_TIMEOUT", 60.0)
+CONVERSION_TIMEOUT = _get_float("CONVERSION_TIMEOUT", 30.0)
+GOOGLE_UPLOAD_TIMEOUT = _get_float("GOOGLE_UPLOAD_TIMEOUT", 120.0)
+KEY_INFO_TIMEOUT = _get_float("KEY_INFO_TIMEOUT", 10.0)
+
+GEMINI_FREE_RECOVERY_TIME = _get_int("GEMINI_FREE_RECOVERY_TIME", 18000)
+GEMINI_PRO_RECOVERY_TIME = _get_int("GEMINI_PRO_RECOVERY_TIME", 86400)
+GEMINI_DEAD_KEY_COOLDOWN = _get_int("GEMINI_DEAD_KEY_COOLDOWN", 31536000)
+POLLINATIONS_KEY_RECOVERY_TIME = _get_int("POLLINATIONS_KEY_RECOVERY_TIME", 3600)
+
+MAX_FILE_SIZE = _get_int("MAX_FILE_SIZE", 15 * 1024 * 1024)
+DUPLICATE_CACHE_SIZE = _get_int("DUPLICATE_CACHE_SIZE", 1000)
+AVATAR_CACHE_TIME = _get_int("AVATAR_CACHE_TIME", 86400)
+DEFAULT_RESULT_INDEX = _get_int("DEFAULT_RESULT_INDEX", 0)
+
+DIALOGS_LIMIT = _get_int("DIALOGS_LIMIT", 50)
+BOOTSTRAP_MESSAGES_LIMIT = _get_int("BOOTSTRAP_MESSAGES_LIMIT", 20)
+MISSED_MESSAGES_LIMIT = _get_int("MISSED_MESSAGES_LIMIT", 50)
+
+
+# =====================================================================
+# SECTION 11: PROXY & TOR CONFIGURATION
+# =====================================================================
+TELEGRAM_PROXIES = _parse_list("TELEGRAM_PROXIES", [])
+GEMINI_PROXIES = _parse_list("GEMINI_PROXIES", [])
+POLLINATIONS_PROXIES = _parse_list("POLLINATIONS_PROXIES", [])
+SCRAPER_PROXIES = _parse_list("SCRAPER_PROXIES", [])
+
+_raw_all_proxy = os.getenv("ALL_PROXY") or os.getenv("all_proxy") or ""
+ALL_PROXY = _raw_all_proxy
+
+TOR_HOST = os.getenv("TOR_HOST", "127.0.0.1")
+TOR_SOCKS_PORT = _get_int("TOR_SOCKS_PORT", 9050)
+TOR_CONTROL_PORT = _get_int("TOR_CONTROL_PORT", 9051)
+TOR_PASSWORD = os.getenv("TOR_PASSWORD", "")
+TOR_ROTATION_TIMEOUT = _get_float("TOR_ROTATION_TIMEOUT", 15.0)
+
+POLLINATIONS_MAX_ATTEMPTS = _get_int("POLLINATIONS_MAX_ATTEMPTS", 8)
+TOR_MAX_CONSECUTIVE_FAILURES = _get_int("TOR_MAX_CONSECUTIVE_FAILURES", 2)
+PROXY_CHECK_TIMEOUT = _get_float("PROXY_CHECK_TIMEOUT", 3.0)
+PROXY_STRICT_CHECK = _get_bool("PROXY_STRICT_CHECK", False)
+
+if GEMINI_PROXIES:
+    os.environ["HTTP_PROXY"] = GEMINI_PROXIES[0]
+    os.environ["HTTPS_PROXY"] = GEMINI_PROXIES[0]
+    os.environ["ALL_PROXY"] = GEMINI_PROXIES[0]
+
+
+# =====================================================================
+# SECTION 12: SECURITY BLACKLISTS & REGEXES
+# =====================================================================
+SQL_SELECT_LIMIT = _get_int("SQL_SELECT_LIMIT", 100)
+SQL_STDOUT_CHAR_LIMIT = _get_int("SQL_STDOUT_CHAR_LIMIT", 3500)
+TELEGRAM_ACTION_CHAR_LIMIT = _get_int("TELEGRAM_ACTION_CHAR_LIMIT", 5000)
+TELEGRAM_ACTION_CONFIRM_LIMIT = _get_int("TELEGRAM_ACTION_CONFIRM_LIMIT", 500)
+VM_STDOUT_NOTICE_LIMIT = _get_int("VM_STDOUT_NOTICE_LIMIT", 1500)
+SANDBOX_COMMAND_CHAR_LIMIT = _get_int("SANDBOX_COMMAND_CHAR_LIMIT", 3000)
+
+WEB_SEARCH_RESULTS_LIMIT = _get_int("WEB_SEARCH_RESULTS_LIMIT", 50)
+WEB_MEDIA_SEARCH_RESULTS_LIMIT = _get_int("WEB_MEDIA_SEARCH_RESULTS_LIMIT", 3)
+WEB_MEDIA_SEARCH_CANDIDATES_LIMIT = _get_int("WEB_MEDIA_SEARCH_CANDIDATES_LIMIT", 50)
+WEB_DEEP_SEARCH_CANDIDATES_LIMIT = _get_int("WEB_DEEP_SEARCH_CANDIDATES_LIMIT", 3)
+WEB_DEEP_SEARCH_CHAR_LIMIT = _get_int("WEB_DEEP_SEARCH_CHAR_LIMIT", 10000)
+SCRAPE_CHAR_LIMIT = _get_int("SCRAPE_CHAR_LIMIT", 4000)
+WEB_SEARCH_TIMEOUT = _get_float("WEB_SEARCH_TIMEOUT", 10.0)
+WEB_MEDIA_SEARCH_TIMEOUT = _get_float("WEB_MEDIA_SEARCH_TIMEOUT", 10.0)
+SCRAPE_TIMEOUT = _get_float("SCRAPE_TIMEOUT", 10.0)
+
+SANDBOX_ALLOWED_FILES = os.getenv("SANDBOX_ALLOWED_FILES", "all")
+SANDBOX_BLOCKED_FILES = os.getenv("SANDBOX_BLOCKED_FILES", "bot.py,config.py,db_manager.py,key_manager.py,gemini_manager.py,context_manager.py,permission_manager.py,service_manager.py,command_manager.py,prompt_interpolator.py,response_executor.py,sandbox.py,registry.py,utils.py,parser.py,downloader.py,proxy_manager.py,server.py,services.py,main.py,system_tools.py,file_tools.py,web_tools.py,telegram_tools.py,scheduler_tools.py,media_tools.py,site_tools.py,command_tools.py,service_tools.py,tag_block_tools.py,.env,.env.example,bot_context.db,bot_context.db-wal,bot_context.db-shm,baziliksina.session,baziliksina.session-journal,config.json,character.txt,system_prompt.txt,rules_prompt.txt,env_prompt.txt,summarize_prompt.txt,feedback_prompt.txt")
+
+SANDBOX_CONFIG_WHITELIST = _parse_list("SANDBOX_CONFIG_WHITELIST", ["all"])
+SANDBOX_CONFIG_BLACKLIST = _parse_list("SANDBOX_CONFIG_BLACKLIST", ["API_HASH", "TELEGRAM_API_HASH", "GEMINI_API_KEYS", "GEMINI_KEYS", "POLLINATIONS_KEYS", "TOR_PASSWORD", "ALL_PROXY", "all_proxy", "TELEGRAM_PROXIES", "GEMINI_PROXIES", "POLLINATIONS_PROXIES", "SCRAPER_PROXIES"])
+
+GAME_EMOJI_WHITELIST = _parse_list("GAME_EMOJI_WHITELIST", ["🎲", "🎯", "🎳", "🏀", "⚽", "🎰"])
+GAME_EMOJI_BLACKLIST = _parse_list("GAME_EMOJI_BLACKLIST", [])
+
+SANDBOX_COMMAND_WHITELIST = _parse_list("SANDBOX_COMMAND_WHITELIST", ["all"])
+SANDBOX_COMMAND_BLACKLIST = _parse_list("SANDBOX_COMMAND_BLACKLIST", ["rm", "sudo", "reboot", "shutdown", "init", "passwd", "chown", "chmod", "dd", "mkfs", "parted", "fdisk", "mkswap", "killall", "pkill", "kill", "mv", "systemctl", "service"])
+SANDBOX_COMMAND_REGEX_BLACKLIST = os.getenv("SANDBOX_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|\.session|\.db|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|context_manager\.py|permission_manager\.py|service_manager\.py|command_manager\.py|prompt_interpolator\.py|response_executor\.py|sandbox\.py|registry\.py|utils\.py|parser\.py|downloader\.py|proxy_manager\.py|server\.py|services\.py|main\.py|tools|core|database|services|server|utils|\.txt|\.json)")
+SANDBOX_COMMAND_REGEX_WHITELIST = os.getenv("SANDBOX_COMMAND_REGEX_WHITELIST", "")
+
+BOT_COMMAND_WHITELIST = _parse_list("BOT_COMMAND_WHITELIST", ["all"])
+BOT_COMMAND_BLACKLIST = _parse_list("BOT_COMMAND_BLACKLIST", [])
+
+OUTGOING_FILE_WHITELIST = _parse_list("OUTGOING_FILE_WHITELIST", ["all"])
+OUTGOING_FILE_BLACKLIST = _parse_list("OUTGOING_FILE_BLACKLIST", [])
+
+TELEGRAM_ACTION_WHITELIST = _parse_list("TELEGRAM_ACTION_WHITELIST", ["all"])
+TELEGRAM_ACTION_BLACKLIST = _parse_list("TELEGRAM_ACTION_BLACKLIST", ["log_out", "delete_account", "disconnect", "sign_in", "send_code_request", "switch_account"])
+
+SANDBOX_PYTHON_WHITELIST = _parse_list("SANDBOX_PYTHON_WHITELIST", ["all"])
+SANDBOX_PYTHON_BLACKLIST = _parse_list("SANDBOX_PYTHON_BLACKLIST", ["os.system", "os.popen", "subprocess", "shutil.rmtree", "eval", "exec"])
+
+INCOMING_FILE_WHITELIST = _parse_list("INCOMING_FILE_WHITELIST", ["all"])
+INCOMING_FILE_BLACKLIST = _parse_list("INCOMING_FILE_BLACKLIST", [])
+INLINE_CALLBACK_WHITELIST = _parse_list("INLINE_CALLBACK_WHITELIST", ["all"])
+INLINE_CALLBACK_BLACKLIST = _parse_list("INLINE_CALLBACK_BLACKLIST", [])
+KEYBOARD_BUTTON_WHITELIST = _parse_list("KEYBOARD_BUTTON_WHITELIST", ["all"])
+KEYBOARD_BUTTON_BLACKLIST = _parse_list("KEYBOARD_BUTTON_BLACKLIST", [])
+AI_TAG_WHITELIST = _parse_list("AI_TAG_WHITELIST", ["all"])
+AI_TAG_BLACKLIST = _parse_list("AI_TAG_BLACKLIST", [])
+AI_BLOCK_WHITELIST = _parse_list("AI_BLOCK_WHITELIST", ["all"])
+AI_BLOCK_BLACKLIST = _parse_list("AI_BLOCK_BLACKLIST", [])
+CUSTOM_TAG_BLOCK_CODE_WHITELIST = _parse_list("CUSTOM_TAG_BLOCK_CODE_WHITELIST", ["all"])
+CUSTOM_TAG_BLOCK_CODE_BLACKLIST = _parse_list("CUSTOM_TAG_BLOCK_CODE_BLACKLIST", [])
+GROUP_SETTINGS_WHITELIST = _parse_list("GROUP_SETTINGS_WHITELIST", ["all"])
+GROUP_SETTINGS_BLACKLIST = _parse_list("GROUP_SETTINGS_BLACKLIST", [])
+CONTACTS_MANAGE_WHITELIST = _parse_list("CONTACTS_MANAGE_WHITELIST", ["all"])
+CONTACTS_MANAGE_BLACKLIST = _parse_list("CONTACTS_MANAGE_BLACKLIST", [])
+ACCOUNT_SETTINGS_WHITELIST = _parse_list("ACCOUNT_SETTINGS_WHITELIST", ["all"])
+ACCOUNT_SETTINGS_BLACKLIST = _parse_list("ACCOUNT_SETTINGS_BLACKLIST", [])
+
+
+# =====================================================================
+# SECTION 13: RESTful WEB SERVER PARAMETERS
+# =====================================================================
+WEB_SERVER_ENABLE = _get_bool("WEB_SERVER_ENABLE", True)
+WEB_SERVER_HOST = os.getenv("WEB_SERVER_HOST", "0.0.0.0")
+WEB_SERVER_PORT = _get_int("WEB_SERVER_PORT", 8080)
+WEB_SERVER_SUBDOMAIN = os.getenv("WEB_SERVER_SUBDOMAIN", "").strip()
+WEB_SERVER_LOG_PATH = os.getenv("WEB_SERVER_LOG_PATH", "bot.log")
+WEB_SERVER_IP_ACL = _parse_list("WEB_SERVER_IP_ACL", [])
+WEB_SERVER_IP_DETECTION_HOST = os.getenv("WEB_SERVER_IP_DETECTION_HOST", "8.8.8.8")
+WEB_SERVER_IP_DETECTION_PORT = _get_int("WEB_SERVER_IP_DETECTION_PORT", 80)
+WEB_SERVER_DEFAULT_LOG_LIMIT = _get_int("WEB_SERVER_DEFAULT_LOG_LIMIT", 150)
+WEB_SERVER_DEFAULT_META_LIMIT = _get_int("WEB_SERVER_DEFAULT_META_LIMIT", 50)
+WEB_SERVER_DEFAULT_TIMER_DELAY = _get_int("WEB_SERVER_DEFAULT_TIMER_DELAY", 60)
+WEB_SERVER_REBOOT_DELAY = _get_float("WEB_SERVER_REBOOT_DELAY", 2.0)
+PACIFIC_STANDARD_TIME_OFFSET = _get_int("PACIFIC_STANDARD_TIME_OFFSET", -8)
+PACIFIC_DAYLIGHT_TIME_OFFSET = _get_int("PACIFIC_DAYLIGHT_TIME_OFFSET", -7)
+GEMINI_MIN_COOLDOWN_SECONDS = _get_int("GEMINI_MIN_COOLDOWN_SECONDS", 5)
+GEMINI_DAILY_LIMIT_COOLDOWN = _get_int("GEMINI_DAILY_LIMIT_COOLDOWN", 86400)
+RECURSIVE_REPLY_DEPTH_LIMIT = _get_int("RECURSIVE_REPLY_DEPTH_LIMIT", 3)
+
+SITE_STORAGE_LIMIT_DEFAULT = _get_int("SITE_STORAGE_LIMIT_DEFAULT", 10 * 1024 * 1024)
+SITE_TIMEOUT_DEFAULT = _get_float("SITE_TIMEOUT_DEFAULT", 5.0)
+SITE_ALLOWED_IMPORTS_DEFAULT = os.getenv("SITE_ALLOWED_IMPORTS_DEFAULT", "json,math,random,urllib,hashlib,datetime")
+SITE_BLOCKED_IMPORTS_DEFAULT = os.getenv("SITE_BLOCKED_IMPORTS_DEFAULT", "os,sys,subprocess,shutil,builtins")
+SITE_ALLOWED_METHODS_DEFAULT = os.getenv("SITE_ALLOWED_METHODS_DEFAULT", "GET,POST,PUT,PATCH,DELETE,HEAD,OPTIONS,TRACE,QUERY,CONNECT,PRI")
+SITE_BLOCKED_METHODS_DEFAULT = os.getenv("SITE_BLOCKED_METHODS_DEFAULT", "")
+SITE_MAX_REQUEST_SIZE_DEFAULT = _get_int("SITE_MAX_REQUEST_SIZE_DEFAULT", 1048576)
+SITE_STORAGE_LIMIT_MAX = _get_int("SITE_STORAGE_LIMIT_MAX", 52428800)
+SITE_TIMEOUT_MAX = _get_float("SITE_TIMEOUT_MAX", 30.0)
+
+SITE_COMMAND_WHITELIST = os.getenv("SITE_COMMAND_WHITELIST", "all")
+SITE_COMMAND_BLACKLIST = os.getenv("SITE_COMMAND_BLACKLIST", "sudo,reboot,shutdown,passwd,chown,chmod")
+SITE_COMMAND_REGEX_BLACKLIST = os.getenv("SITE_COMMAND_REGEX_BLACKLIST", r"\b(rm\s+-rf|sudo|reboot|shutdown|init|passwd|chown|chmod|dd|mkfs|parted|fdisk|mkswap|killall|pkill|kill\s+-9|mv\s+/|rm\s+/)\b|(\.env|\.session|\.db|bot\.py|config\.py|db_manager\.py|key_manager\.py|gemini_manager\.py|context_manager\.py|permission_manager\.py|service_manager\.py|command_manager\.py|prompt_interpolator\.py|response_executor\.py|sandbox\.py|registry\.py|utils\.py|parser\.py|downloader\.py|proxy_manager\.py|server\.py|services\.py|main\.py|tools|core|database|services|server|utils|\.txt|\.json)")
+SITE_COMMAND_REGEX_WHITELIST = os.getenv("SITE_COMMAND_REGEX_WHITELIST", "")
+SITE_PYTHON_WHITELIST = os.getenv("SITE_PYTHON_WHITELIST", "all")
+SITE_PYTHON_BLACKLIST = os.getenv("SITE_PYTHON_BLACKLIST", "os.system,os.popen,subprocess,shutil.rmtree,eval,exec")
+
+
+# =====================================================================
+# SECTION 14: CACHE & ASSET FILE NAMES
+# =====================================================================
+EMOJI_CACHE_DIR_NAME = os.getenv("EMOJI_CACHE_DIR_NAME", "emoji_cache")
+AVATAR_CACHE_DIR_NAME = os.getenv("AVATAR_CACHE_DIR_NAME", "avatar_cache")
+GIFT_CACHE_DIR_NAME = os.getenv("GIFT_CACHE_DIR_NAME", "gift_cache")
+TEMP_MEDIA_DIR_NAME = os.getenv("TEMP_MEDIA_DIR_NAME", "temp_media")
+BOT_AVATAR_NAME = os.getenv("BOT_AVATAR_NAME", "bot_avatar.jpg")
+DEFAULT_IMAGE_NAME = os.getenv("DEFAULT_IMAGE_NAME", "generated_image.png")
+DEFAULT_AUDIO_NAME = os.getenv("DEFAULT_AUDIO_NAME", "generated_audio.mp3")
+DEFAULT_VIDEO_NAME = os.getenv("DEFAULT_VIDEO_NAME", "generated_video.mp4")
+
+RE_SEQ_BLOCK = os.getenv("RE_SEQ_BLOCK", r"<(seq|par|bg)>(.*?)</\1>")
+RE_REPLY_TAG = os.getenv("RE_REPLY_TAG", r"(?<!\\)\[Reply(?:\s+to\s+message\s+#?|:\s*)(\d+)\]")
+RE_REACT_TAG = os.getenv("RE_REACT_TAG", r"(?<!\\)\[React:\s*(\d+)\s*\|\s*(.*?)\s*\]")
+RE_ATTACH_TAG = os.getenv("RE_ATTACH_TAG", r"(?<!\\)\[Attach:\s*([^|\]]+?)\s*(?:\|\s*(.*?))?\s*\]")
+RE_EDIT_TAG = os.getenv("RE_EDIT_TAG", r"(?<!\\)\[Edit:\s*(\d+)\s*\|\s*(.*?)\s*\]")
+RE_DELETE_TAG = os.getenv("RE_DELETE_TAG", r"(?<!\\)\[Delete:\s*(\d+)\s*\]")
+RE_NOOP_TAG = os.getenv("RE_NOOP_TAG", r"(?<!\\)\[(?:NoOp|No_Op_Ignore|NoOpIgnore):\s*([^|\]]+?)\s*(?:\|\s*continue\s*=\s*(true|false))?\s*\]")
+RE_TOOL_TAG = os.getenv("RE_TOOL_TAG", r"(?<!\\)\[Tool:\s*([a-zA-Z0-9_]+)\s*\|\s*(.*?)\s*\]")
+
+_api_keys_raw = os.getenv("WEB_SERVER_API_KEYS", "")
+if _api_keys_raw:
     try:
-        parsed = urllib.parse.urlparse(proxy_url_str)
-        host = parsed.hostname
-        port = parsed.port
-        if not host or not port:
-            return False
-        timeout_val = float(globals().get("PROXY_CHECK_TIMEOUT", 3.0))
-        with socket.create_connection((host, port), timeout=timeout_val):
-            return True
+        WEB_SERVER_API_KEYS = json.loads(_api_keys_raw)
     except Exception:
-        return False
+        import secrets
+        fallback_key = secrets.token_hex(24)
+        WEB_SERVER_API_KEYS = {fallback_key: {"permissions": ["all"], "rate_limit": 100}}
+else:
+    WEB_SERVER_API_KEYS = {}
+
+
+# =====================================================================
+# TIER 3 & 4 OVERRIDES (RELOAD FROM DB / JSON)
+# =====================================================================
+if CONFIG_JSON_PATH.exists():
+    try:
+        with open(CONFIG_JSON_PATH, "r", encoding="utf-8") as f:
+            local_json = json.load(f)
+        for k, v in local_json.items():
+            globals()[k] = v
+        logger.info("Tier 3 Config Overwrite successfully completed using config.json.")
+    except Exception as e:
+        logger.error(f"Error loading Tier 3 config.json: {str(e)}")
 
 
 async def reload_config_from_db(db):
@@ -773,23 +560,9 @@ async def reload_config_from_db(db):
                 parsed_val = json.loads(val)
             except Exception:
                 parsed_val = val
-            
-            if key in _PARAMS:
-                _PARAMS[key].set_override(parsed_val)
-            else:
-                globals()[key] = parsed_val
+            globals()[key] = parsed_val
 
-        # Re-evaluate all parameters into module globals()
-        _sync_globals()
-
-        raw_keys = os.getenv("WEB_SERVER_API_KEYS", "")
-        if raw_keys:
-            try:
-                globals()["WEB_SERVER_API_KEYS"] = json.loads(raw_keys)
-            except Exception:
-                pass
-        
-        if "WEB_SERVER_API_KEYS" not in globals() or not globals()["WEB_SERVER_API_KEYS"]:
+        if not globals().get("WEB_SERVER_API_KEYS"):
             import secrets
             saved_key = await db.get_memory("web_server_persistent_admin_token")
             if not saved_key:
@@ -803,43 +576,3 @@ async def reload_config_from_db(db):
         logger.info("Tier 4 Config Overwrite successfully synchronized with database settings!")
     except Exception as e:
         logger.error(f"Error reloading config from DB settings table: {str(e)}")
-
-
-# Tier 3 config overwrite using config.json
-if CONFIG_JSON_PATH.exists():
-    try:
-        with open(CONFIG_JSON_PATH, "r", encoding="utf-8") as f:
-            local_json = json.load(f)
-        for k, v in local_json.items():
-            if k in _PARAMS:
-                _PARAMS[k].set_override(v)
-            else:
-                globals()[k] = v
-        _sync_globals()
-        logger.info("Tier 3 Config Overwrite successfully completed using config.json.")
-    except Exception as e:
-        logger.error(f"Error loading Tier 3 config.json: {str(e)}")
-
-
-# =====================================================================
-# MODULE ATTRIBUTE INTERCEPTORS (CLEAN & ZERO-MAGIC)
-# =====================================================================
-def __getattr__(name: str) -> Any:
-    """Intercepts module variable lookups and returns evaluated DynamicParameter primitives."""
-    if name in _PARAMS:
-        return _PARAMS[name].evaluate()
-    if name in globals():
-        return globals()[name]
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
-def __setattr__(name: str, value: Any):
-    """Intercepts dynamic assignments to config variables and updates module globals()."""
-    if name in _PARAMS:
-        _PARAMS[name].set_override(value)
-    globals()[name] = value
-
-def __dir__():
-    """Allows standard Python autocompletion and inspection across all parameters."""
-    return sorted(list(globals().keys()) + list(_PARAMS.keys()))
-
-__all__ = sorted(list(globals().keys()) + list(_PARAMS.keys()))
