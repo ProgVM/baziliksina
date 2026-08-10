@@ -1,163 +1,173 @@
-# tools/service_tools.py
+# tools/__init__.py
 import os
-import json
 import logging
-from typing import List, Dict, Any, Optional
+from contextvars import ContextVar
 
-import config
-import tools
-from permission_manager import permission_manager
-from service_manager import service_manager
+logger = logging.getLogger("Tools")
 
-logger = logging.getLogger("Tools.Services")
+# Global context variables and bot core references
+current_chat_id: ContextVar[int] = ContextVar("current_chat_id")
+current_reply_to_id: ContextVar[int] = ContextVar("current_reply_to_id")
+client = None
+db = None
+key_manager = None
+pollinations_key_manager = None
+bot_callback_fn = None
+ai_manager = None
 
-class AIToolKitServices:
-    async def create_or_update_custom_service(self, name: str, code: str, description: str = None, status: str = "stopped", **kwargs) -> str:
-        """
-        Creates a new or updates an existing background service.
+processed_msg_ids = set()
 
-        Args:
-            name: Unique service identifier.
-            code: Asynchronous Python code running in a background task loop.
-            description: Short description of the service's background task.
-            status: Initial status ('running' or 'stopped').
-        """
-        if not permission_manager.can_ai_perform("SERVICES", "CREATE") and not permission_manager.can_ai_perform("SERVICES", "EDIT"):
-            return "Error: Permission denied. AI cannot create/edit services."
+# Tracks the highest user message ID fully processed by the AI in each chat
+last_processed_user_msg_id = {}
 
-        if not tools.db:
-            return "Error: Database is not initialized."
+# Universal redirect imports for full backward compatibility
+from tools.system_tools import *
+from tools.file_tools import *
+from tools.web_tools import *
+from tools.telegram_tools import *
+from tools.scheduler_tools import *
+from tools.media_tools import *
+from tools.tag_block_tools import *
+from tools.site_tools import *
+from tools.command_tools import *
+from tools.service_tools import *
 
-        from utils import matches_filter
-        if not matches_filter(code, config.SANDBOX_PYTHON_WHITELIST, config.SANDBOX_PYTHON_BLACKLIST):
-            return "Security error: Service Python code contains blocked terms."
+ROOT_TOOL_CATEGORIES = {
+    # Category 1: File System and Sandbox (Workspace File Management)
+    "delete_file_from_workspace": "Category 1: File System and Sandbox (Workspace File Management)",
+    "download_content_from_url": "Category 1: File System and Sandbox (Workspace File Management)",
+    "list_workspace_files": "Category 1: File System and Sandbox (Workspace File Management)",
+    "read_file_from_workspace": "Category 1: File System and Sandbox (Workspace File Management)",
+    "save_file_from_telegram": "Category 1: File System and Sandbox (Workspace File Management)",
+    "save_file_to_workspace": "Category 1: File System and Sandbox (Workspace File Management)",
+    "send_uncompressed_file": "Category 1: File System and Sandbox (Workspace File Management)",
 
-        try:
-            await tools.db.save_custom_service(name, code, description=description, status=status)
-            service_manager.register_service(name, code, description=description or "Custom Service", is_custom=True, status=status)
-            if status == "running":
-                await service_manager.start_service(name)
-            return f"Success! Custom service '{name}' created/updated."
-        except Exception as e:
-            return f"Error saving custom service: {str(e)}"
+    # Category 2: Web Search and Data Scraping (Web Search & Data Scraping)
+    "internet_deep_search": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
+    "internet_media_search": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
+    "internet_search": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
+    "scrape_url": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
+    "send_http_request": "Category 2: Web Search and Data Scraping (Web Search & Data Scraping)",
 
-    async def delete_custom_service(self, name: str, **kwargs) -> str:
-        """Deletes a custom background service."""
-        if not permission_manager.can_ai_perform("SERVICES", "DELETE"):
-            return "Error: Permission denied."
+    # Category 3: Telegram Automation (Telegram Automation Actions)
+    "ban_user": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "click_inline_button": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "click_keyboard_button": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "delete_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "edit_chat_participant_settings": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "edit_chat_settings": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "edit_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "execute_telegram_action": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "forward_messages": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "get_bot_commands": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "get_chat_participant_info": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "get_group_members": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "join_telegram_chat": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "kick_user": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "manage_contact": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "mute_user": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "pin_telegram_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_agent_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_bot_command": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_geolocation": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_inline_bot_result": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_media_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_poll": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_premium_list": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_telegram_media": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "send_rich_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "set_message_reaction": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "unpin_telegram_message": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "unrestrict_user": "Category 3: Telegram Automation (Telegram Automation Actions)",
+    "update_avatar": "Category 3: Telegram Automation (Telegram Automation Actions)",
 
-        if not tools.db:
-            return "Error: Database is not initialized."
+    # Category 4: Timers and Scheduler (SQLite Schedulers & Services)
+    "delete_task_timer": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "list_task_timers": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "set_task_timer": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "create_or_update_custom_service": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "delete_custom_service": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "start_service": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "stop_service": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "list_services": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "create_or_update_custom_cron_job": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "delete_custom_cron_job": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "start_cron_job": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "stop_cron_job": "Category 4: Timers and Scheduler (SQLite Schedulers)",
+    "list_cron_jobs": "Category 4: Timers and Scheduler (SQLite Schedulers)",
 
-        try:
-            await service_manager.stop_service(name)
-            deleted = await tools.db.delete_custom_service(name)
-            return f"Success. Service '{name}' deleted." if deleted else f"Error: Service '{name}' not found."
-        except Exception as e:
-            return f"Error deleting custom service: {str(e)}"
+    # Category 5: Triggers and Auto-Wake (Wake Triggers)
+    "delete_wake_trigger": "Category 5: Triggers and Auto-Wake (Wake Triggers)",
+    "list_task_triggers": "Category 5: Triggers and Auto-Wake (Wake Triggers)",
+    "set_wake_trigger": "Category 5: Triggers and Auto-Wake (Wake Triggers)",
 
-    async def start_service(self, name: str, **kwargs) -> str:
-        """Starts a registered background service by name."""
-        if not permission_manager.can_ai_perform("SERVICES", "INVOKE"):
-            return "Error: Permission denied."
+    # Category 6: Multimedia and Generative AI (Generative Multimedia AI)
+    "generate_audio": "Category 6: Multimedia and Generative AI (Generative Multimedia AI)",
+    "generate_image": "Category 6: Multimedia and Generative AI (Generative Multimedia AI)",
+    "generate_video": "Category 6: Multimedia and Generative AI (Generative Multimedia AI)",
+    "send_audio_music": "Category 6: Multimedia and Generative AI (Generative Multimedia AI)",
+    "send_game_emoji": "Category 6: Multimedia and Generative AI (Generative Multimedia AI)",
+    "upload_file_to_public_host": "Category 6: Multimedia and Generative AI (Generative Multimedia AI)",
 
-        ok = await service_manager.start_service(name)
-        return f"Service '{name}' started." if ok else f"Error starting service '{name}'."
+    # Category 7: System Control, DB & Dynamic Commands
+    "create_or_update_custom_tag_block": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "create_or_update_custom_tool": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "delete_custom_tag_block": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "delete_custom_tool": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "execute_python_code": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "execute_sql_query": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "get_chat_history_from_db": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "get_tag_block_details": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "get_telegram_message_details": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "get_telegram_object_info": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "get_tool_details": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "list_custom_tags_blocks": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "no_op_ignore": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "run_sandboxed_command": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "update_account_info": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "upload_file_to_google": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "create_or_update_custom_command": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "delete_custom_command": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "list_custom_commands": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "get_custom_command_details": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "manage_user_rank": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
 
-    async def stop_service(self, name: str, **kwargs) -> str:
-        """Stops a running background service by name."""
-        if not permission_manager.can_ai_perform("SERVICES", "INVOKE"):
-            return "Error: Permission denied."
+    # Category 8: Dynamic Sites Management
+    "create_or_update_site": "Category 8: Dynamic Sites Management",
+    "delete_site": "Category 8: Dynamic Sites Management",
+    "execute_site_python_code": "Category 8: Dynamic Sites Management",
+    "get_site_details": "Category 8: Dynamic Sites Management",
+    "get_site_logs": "Category 8: Dynamic Sites Management",
+    "list_sites": "Category 8: Dynamic Sites Management",
+    "run_site_command": "Category 8: Dynamic Sites Management"
+}
 
-        ok = await service_manager.stop_service(name)
-        return f"Service '{name}' stopped." if ok else f"Error stopping service '{name}'."
+class ModularToolKit:
+    def __getattr__(self, name):
+        if name in ROOT_TOOL_CATEGORIES:
+            return globals()[name]
+        raise AttributeError(f"'ModularToolKit' object has no attribute '{name}'")
 
-    async def list_services(self, **kwargs) -> str:
-        """Returns a formatted list of all registered background services and their statuses."""
-        if not permission_manager.can_ai_perform("SERVICES", "LIST"):
-            return "Error: Permission denied."
+toolkit = ModularToolKit()
 
-        services = service_manager.list_services()
-        if not services:
-            return "No registered services found."
-        lines = [f"- {s['name']} [{s['status']}] {'(Custom)' if s['is_custom'] else '(System)'}: {s['description'] or 'No description'}" for s in services]
-        return f"=== Registered Services ({len(services)}) ===\n" + "\n".join(lines)
+def register_system_tools():
+    """Automatically registers all root methods in the global FunctionRegistry."""
+    from registry import registry
+    for method_name, category in ROOT_TOOL_CATEGORIES.items():
+        func = globals().get(method_name)
+        if func:
+            registry.register(
+                name=method_name,
+                callable_func=func,
+                category=category,
+                description=getattr(func, "__doc__", ""),
+                is_custom=False
+            )
+    logger.info(f"Automatic registration completed. Successfully imported system tools: {len(ROOT_TOOL_CATEGORIES)}")
+    
+    from tools.tag_block_tools import register_system_tags_blocks
+    register_system_tags_blocks()
 
-    # --- CRON JOBS TOOLS ---
-    async def create_or_update_custom_cron_job(self, name: str, schedule_spec: str, code: str, description: str = None, status: str = "active", **kwargs) -> str:
-        """
-        Creates a new or updates an existing recurring cron job.
-
-        Args:
-            name: Unique cron job identifier.
-            schedule_spec: Interval spec (e.g. '60' for 60s, '300', 'every 5m').
-            code: Python code executed at each cron interval.
-            description: Short description of the cron job's task.
-            status: Initial status ('active' or 'stopped').
-        """
-        if not permission_manager.can_ai_perform("CRON", "CREATE") and not permission_manager.can_ai_perform("CRON", "EDIT"):
-            return "Error: Permission denied."
-
-        if not tools.db:
-            return "Error: Database is not initialized."
-
-        from utils import matches_filter
-        if not matches_filter(code, config.SANDBOX_PYTHON_WHITELIST, config.SANDBOX_PYTHON_BLACKLIST):
-            return "Security error: Cron job Python code contains blocked terms."
-
-        try:
-            await tools.db.save_custom_cron_job(name, schedule_spec, code, description=description, status=status)
-            service_manager.register_cron_job(name, schedule_spec, code, description=description or "Custom Cron Job", is_custom=True, status=status)
-            if status == "active":
-                await service_manager.start_cron_job(name)
-            return f"Success! Custom cron job '{name}' created/updated."
-        except Exception as e:
-            return f"Error saving custom cron job: {str(e)}"
-
-    async def delete_custom_cron_job(self, name: str, **kwargs) -> str:
-        """Deletes a custom cron job."""
-        if not permission_manager.can_ai_perform("CRON", "DELETE"):
-            return "Error: Permission denied."
-
-        if not tools.db:
-            return "Error: Database is not initialized."
-
-        try:
-            await service_manager.stop_cron_job(name)
-            deleted = await tools.db.delete_custom_cron_job(name)
-            return f"Success. Cron job '{name}' deleted." if deleted else f"Error: Cron job '{name}' not found."
-        except Exception as e:
-            return f"Error deleting custom cron job: {str(e)}"
-
-    async def start_cron_job(self, name: str, **kwargs) -> str:
-        """Starts a registered cron job ticker."""
-        if not permission_manager.can_ai_perform("CRON", "INVOKE"):
-            return "Error: Permission denied."
-
-        ok = await service_manager.start_cron_job(name)
-        return f"Cron job '{name}' started." if ok else f"Error starting cron job '{name}'."
-
-    async def stop_cron_job(self, name: str, **kwargs) -> str:
-        """Stops a running cron job ticker."""
-        if not permission_manager.can_ai_perform("CRON", "INVOKE"):
-            return "Error: Permission denied."
-
-        ok = await service_manager.stop_cron_job(name)
-        return f"Cron job '{name}' stopped." if ok else f"Error stopping cron job '{name}'."
-
-    async def list_cron_jobs(self, **kwargs) -> str:
-        """Returns a formatted list of all registered cron jobs and their statuses."""
-        if not permission_manager.can_ai_perform("CRON", "LIST"):
-            return "Error: Permission denied."
-
-        cron_jobs = service_manager.list_cron_jobs()
-        if not cron_jobs:
-            return "No registered cron jobs found."
-        lines = [f"- {c['name']} [{c['schedule_spec']}] - Status: {c['status']} {'(Custom)' if c['is_custom'] else '(System)'}" for c in cron_jobs]
-        return f"=== Registered Cron Jobs ({len(cron_jobs)}) ===\n" + "\n".join(lines)
-
-
-toolkit_services = AIToolKitServices()
-for attr in dir(toolkit_services):
-    if not attr.startswith("_"):
-        globals()[attr] = getattr(toolkit_services, attr)
+for attr_name in list(globals().keys()):
+    if not attr_name.startswith("_") and attr_name != "register_system_tools" and attr_name != "ModularToolKit":
+        globals()[attr_name] = globals()[attr_name]
