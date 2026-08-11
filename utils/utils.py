@@ -188,22 +188,12 @@ def markdown_to_telegram_html(text: str) -> str:
     # 8. Bold text: **text**
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
 
-    # 9. Underline text: +text+
-    text = re.sub(r'\+(.*?)\+', r'<u>\1</u>', text, flags=re.DOTALL)
-
-    # 10. Italic text: __text__ or *text*
+    # 9. Italic text: __text__ or *text*
     text = re.sub(r'__(.*?)__', r'<i>\1</i>', text, flags=re.DOTALL)
     text = re.sub(r'(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
 
-    # 11. Strikethrough: ~~text~~
+    # 10. Strikethrough: ~~text~~
     text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
-
-
-    # 12. Highlighted / Marked text: ==text==
-    text = re.sub(r'==(.*?)==', r'<mark>\1</mark>', text, flags=re.DOTALL)
-
-    # 13. Superscript text: ^text^
-    text = re.sub(r'\^([^\^]+)\^', r'<sup>\1</sup>', text)
 
     return text
 
