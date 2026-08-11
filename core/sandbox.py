@@ -165,7 +165,7 @@ class AsyncSandbox:
             res = local_vars.get("result")
             if res is None:
                 return "Code executed successfully. The 'result' variable was not set."
-            return f"Code executed. Result of the 'result' variable:\n{str(res)[:3000]}"
+            return f"{str(res)}"
         except Exception as e:
             # VM state self-cleaning upon crash
             local_vars.clear()
