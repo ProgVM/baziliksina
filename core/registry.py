@@ -1,4 +1,4 @@
-# registry.py
+# core/registry.py
 import os
 import json
 import asyncio
@@ -126,17 +126,21 @@ registry = FunctionRegistry()
 
 def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> callable:
     """
-    Compiles Python code of a custom function from a text string and returns its callable object.
-    Provides the custom function with safe, isolated access to the bot core.
+    Compiles Python code of a custom function/command from a text string with top-level await support
+    and returns an asynchronous execution wrapper.
     """
-    import tools # Import tools locally to avoid circular imports
+    import tools
+    import ast
+    import types as py_types
 
     if namespace is None:
-        # Provide the custom code with direct access to all proxy objects and system libraries
         namespace = {
             "client": tools.client,
             "db": tools.db,
             "ai_manager": tools.ai_manager,
+            "permission_manager": getattr(tools, "permission_manager", None),
+            "service_manager": getattr(tools, "service_manager", None),
+            "command_manager": getattr(tools, "command_manager", None),
             "logger": logging.getLogger(f"CustomTool.{name}"),
             "httpx": httpx,
             "json": json,
@@ -144,17 +148,45 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
             "Path": Path,
             "urllib": urllib,
             "types": types,
-            "os": os
+            "os": os,
+            "result": None
         }
-    
-    # Safely compile and execute the function code within the namespace
-    exec(code_str, namespace, namespace)
-    func = namespace.get(name)
-    
-    if not func or not callable(func):
-        raise AttributeError(f"Custom tool code must contain a function named '{name}'!")
-        
-    return func
+
+    # Inject standard project modules and tools into the execution scope
+    from utils import get_all_project_modules
+    for k, v in get_all_project_modules().items():
+        if k not in namespace:
+            namespace[k] = v
+
+    for tool in registry.get_all_tools():
+        if tool.name not in namespace:
+            namespace[tool.name] = tool.callable
+
+    # Compile with top-level await support
+    compiled_code = compile(code_str, f"<custom_{name}>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+
+    async def _execution_wrapper(*args, **kwargs):
+        namespace["args"] = args
+        namespace["kwargs"] = kwargs
+        if kwargs:
+            for k, v in kwargs.items():
+                namespace[k] = v
+
+        coro_or_val = eval(compiled_code, namespace, namespace)
+        if isinstance(coro_or_val, py_types.CoroutineType):
+            await coro_or_val
+
+        # If a specific function matching 'name' was declared inside the script, execute it
+        func = namespace.get(name)
+        if func and callable(func) and func != _execution_wrapper:
+            if inspect.iscoroutinefunction(func):
+                return await func(*args, **kwargs)
+            else:
+                return func(*args, **kwargs)
+
+        return namespace.get("result")
+
+    return _execution_wrapper
 
 
 async def sync_custom_tools_with_db(db_manager):

@@ -1,3 +1,4 @@
+# database/db_manager.py
 import config
 import json
 import sqlite3

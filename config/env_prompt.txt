@@ -1,3 +1,4 @@
+# config/env_prompt.txt
 --- CURRENT ENVIRONMENT INFORMATION ---
 You are currently in and replying to the chat: ID {chat_id} (Title: '{chat_title}', Username: @{chat_username}).
 If you want to send a text message to this current Chat, simply return a standard text response (response.text).

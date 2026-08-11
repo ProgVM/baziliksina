@@ -1,3 +1,4 @@
+# config/feedback_prompt.txt
 [edit_notification]
 [System notification: Sender {sender_info} edited message {msg_id}]
 --- PREVIOUS STATE ---

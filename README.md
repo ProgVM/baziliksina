@@ -1,3 +1,4 @@
+# README.md
 # Baziliksina Userbot 🌸
 
 **Baziliksina** is an autonomous, highly modular AI-driven Telegram companion (Userbot) built on top of the MTProto-client **Telethon**. Powered by **Google Gemini API** models for deep reasoning and unified function calling, alongside the **Pollinations.ai** gateway for generative media synthesis.

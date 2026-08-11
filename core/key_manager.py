@@ -1,4 +1,4 @@
-# key_manager.py
+# core/key_manager.py
 import logging
 import config
 import json
