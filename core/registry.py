@@ -127,7 +127,7 @@ registry = FunctionRegistry()
 def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> callable:
     """
     Compiles Python code of a custom function/command from a text string with top-level await support
-    and returns an asynchronous execution wrapper.
+    and returns an asynchronous execution wrapper with auto-injected CLI argument aliases.
     """
     import tools
     import ast
@@ -152,7 +152,7 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
             "result": None
         }
 
-    # Inject standard project modules and tools into the execution scope
+    # Inject standard project modules and tools into execution scope
     from utils import get_all_project_modules
     for k, v in get_all_project_modules().items():
         if k not in namespace:
@@ -171,6 +171,16 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
         if kwargs:
             for k, v in kwargs.items():
                 namespace[k] = v
+
+        # Auto-inject convenient aliases for custom commands
+        cli_args_obj = kwargs.get("cli_args")
+        if cli_args_obj:
+            raw_tail = getattr(cli_args_obj, "raw_tail", "")
+            namespace["payload"] = raw_tail
+            namespace["text"] = raw_tail
+            namespace["args_str"] = raw_tail
+            namespace["positional"] = getattr(cli_args_obj, "positional", [])
+            namespace["flags"] = getattr(cli_args_obj, "flags", {})
 
         coro_or_val = eval(compiled_code, namespace, namespace)
         if isinstance(coro_or_val, py_types.CoroutineType):
