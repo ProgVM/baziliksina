@@ -189,7 +189,7 @@ class CommandManager:
         Pipes stdout/result from one stage as input/parameter to the next stage when '|' is used.
         Returns None for unrecognized commands to silently ignore external bot commands.
         """
-        stages = re.split(r'(\s*(?:&&|\|\||;|\|)\s*)', pipeline_text)
+        stages = re.split(r'(\s*(?:&&|\|\||\|)\s*|\s*;\s*(?=/))', pipeline_text)
         
         last_result = ""
         last_success = True
@@ -358,6 +358,19 @@ class CommandManager:
             return "=== User Commands ===\n" + "\n".join(user_cmds)
         elif query == "admin" and is_admin:
             return "=== Admin Commands ===\n" + "\n".join(admin_cmds)
+        elif query != "all":
+            clean_cmd = query.lstrip("/")
+            if clean_cmd in self._handlers:
+                handler = self._handlers[clean_cmd]
+                doc = getattr(handler, "__doc__", "No description available.")
+                return f"=== Help for /{clean_cmd} ===\n{doc}"
+
+            if self.db:
+                custom_cmd = await self.db.get_custom_command(clean_cmd)
+                if custom_cmd:
+                    return f"=== Help for /{clean_cmd} (Custom) ===\nCategory: {custom_cmd['category']}\nHelp: {custom_cmd['help_text']}"
+
+            return f"Command /{clean_cmd} not found in the help catalog."
         else:
             res = ["=== Baziliksina Commands Catalog ===", "\n--- User Commands ---"]
             res.extend(user_cmds)
