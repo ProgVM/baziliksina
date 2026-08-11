@@ -162,8 +162,16 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
         if tool.name not in namespace:
             namespace[tool.name] = tool.callable
 
-    # Compile with top-level await support
-    compiled_code = compile(code_str, f"<custom_{name}>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+    # Compile with top-level await support and auto-wrap if top-level return is used
+    try:
+        compiled_code = compile(code_str, f"<custom_{name}>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+    except SyntaxError as se:
+        if "return" in str(se):
+            indented = "\n".join("    " + line for line in code_str.splitlines())
+            wrapped_code = f"async def {name}(*args, **kwargs):\n{indented}"
+            compiled_code = compile(wrapped_code, f"<custom_{name}>", "exec")
+        else:
+            raise
 
     async def _execution_wrapper(*args, **kwargs):
         namespace["args"] = args
