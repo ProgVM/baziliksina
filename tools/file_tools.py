@@ -26,11 +26,20 @@ class AIToolKitFiles:
         except Exception as e:
             return f"Error saving file to local storage: {str(e)}"
 
-    async def save_file_from_telegram(self, message_id: int, filename: str, chat_id: Any = None, **kwargs) -> str:
-        """Downloads a media file or document from the specified Telegram message in the chosen chat."""
+    async def save_file_from_telegram(self, message_id: int, filename: str = None, element_indices: Any = "all", chat_id: Any = None, **kwargs) -> str:
+        """
+        Downloads media files from a Telegram message, album, poll, or rich message.
+        Supports selecting specific element index/indices (e.g. 0, [0, 2], or "all").
+
+        Args:
+            message_id: ID of the Telegram message.
+            filename: Optional target filename for saved file (if 1 item).
+            element_indices: "all", int (e.g. 0), or List[int] (e.g. [0, 2]) selecting specific media items.
+            chat_id: Target chat ID or username.
+        """
         if not tools.client:
             return "Error: Telethon client is not initialized."
-        
+
         if chat_id is None:
             try:
                 chat_id = tools.current_chat_id.get()
@@ -43,16 +52,77 @@ class AIToolKitFiles:
                 except ValueError: pass
 
             msg = await tools.client.get_messages(chat_id, ids=message_id)
-            if not msg or not msg.media:
-                return f"Error: Message with ID {message_id} not found or does not contain media."
-            
-            out_path = WORKSPACE_DIR / os.path.basename(filename)
-            path = await tools.client.download_media(msg, file=str(out_path))
-            if path:
-                return f"Success. File from message #{message_id} of chat {chat_id} saved under '{filename}'."
-            return "Error: Failed to download file."
+            if not msg:
+                return f"Error: Message with ID {message_id} not found."
+
+            media_candidates = []
+
+            if getattr(msg, "grouped_id", None) is not None:
+                album_msgs = await tools.client.get_messages(chat_id, limit=20, min_id=msg.id - 10, max_id=msg.id + 10)
+                for a_msg in album_msgs:
+                    if getattr(a_msg, "grouped_id", None) == msg.grouped_id and a_msg.media:
+                        media_candidates.append((a_msg.media, f"album_item_{a_msg.id}"))
+
+            elif msg.media and type(msg.media).__name__ == "MessageMediaPoll":
+                poll_obj = msg.media.poll
+                if getattr(msg.media, "attached_media", None):
+                    media_candidates.append((msg.media.attached_media, "poll_attached_media"))
+                if getattr(msg.media, "explanation_media", None):
+                    media_candidates.append((msg.media.explanation_media, "poll_explanation_media"))
+                if poll_obj and getattr(poll_obj, "media", None):
+                    media_candidates.append((poll_obj.media, "poll_main_media"))
+                if poll_obj and getattr(poll_obj, "answers", None):
+                    for idx, opt in enumerate(poll_obj.answers):
+                        if getattr(opt, "media", None):
+                            media_candidates.append((opt.media, f"poll_option_{idx+1}_media"))
+
+            elif msg.media and type(msg.media).__name__ == "MessageMediaWebPage":
+                webpage = msg.media.webpage
+                if type(webpage).__name__ == "WebPage":
+                    if getattr(webpage, "photo", None):
+                        from telethon.tl import types as tl_types
+                        media_candidates.append((tl_types.MessageMediaPhoto(photo=webpage.photo), "rich_webpage_photo"))
+                    if getattr(webpage, "document", None):
+                        from telethon.tl import types as tl_types
+                        media_candidates.append((tl_types.MessageMediaDocument(document=webpage.document), "rich_webpage_doc"))
+
+            elif msg.media:
+                media_candidates.append((msg.media, f"media_{msg.id}"))
+
+            if not media_candidates:
+                return f"Error: Message #{message_id} in chat {chat_id} does not contain any downloadable media files."
+
+            target_indices = []
+            if str(element_indices).strip().lower() in ["all", "*", "any", "none"]:
+                target_indices = list(range(len(media_candidates)))
+            elif isinstance(element_indices, int):
+                target_indices = [element_indices]
+            elif isinstance(element_indices, list):
+                target_indices = [int(i) for i in element_indices if str(i).isdigit()]
+            elif isinstance(element_indices, str) and "," in element_indices:
+                target_indices = [int(i.strip()) for i in element_indices.split(",") if i.strip().isdigit()]
+
+            valid_targets = [media_candidates[i] for i in target_indices if 0 <= i < len(media_candidates)]
+            if not valid_targets:
+                return f"Error: Specified element index {element_indices} is out of range. Available elements count: {len(media_candidates)}."
+
+            downloaded_paths = []
+            for idx, (target_media, default_label) in enumerate(valid_targets):
+                if filename and len(valid_targets) == 1:
+                    out_filename = filename
+                else:
+                    out_filename = f"{default_label}_{int(time.time())}_{idx}.bin"
+
+                out_path = WORKSPACE_DIR / os.path.basename(out_filename)
+                saved_path = await tools.client.download_media(target_media, file=str(out_path))
+                if saved_path:
+                    downloaded_paths.append(os.path.basename(saved_path))
+
+            if downloaded_paths:
+                return f"Success! Downloaded {len(downloaded_paths)} element(s) from message #{message_id}: {', '.join(downloaded_paths)}."
+            return "Error: Failed to download media elements."
         except Exception as e:
-            return f"Error downloading file from Telegram: {str(e)}"
+            return f"Error downloading media from Telegram: {str(e)}"
 
     def read_file_from_workspace(self, filename: str, read_as_hex: bool = False, **kwargs) -> str:
         """Reads and returns the content of the specified file from the local AI working directory."""

@@ -1,10 +1,79 @@
-# utils.py
+# utils/utils.py
 import json
 import logging
 from datetime import datetime, date
 from pathlib import Path
 
 logger = logging.getLogger("Utils")
+
+def split_message_chunks(text: str, max_length: int = 4000) -> list:
+    """
+    Splits a long message text into safe chunks under max_length characters,
+    preserving paragraph and line boundaries.
+    """
+    if not text or len(text) <= max_length:
+        return [text] if text else []
+
+    chunks = []
+    lines = text.split("\n")
+    current_chunk = []
+    current_length = 0
+
+    for line in lines:
+        line_len = len(line) + 1
+        if line_len > max_length:
+            words = line.split(" ")
+            for word in words:
+                word_len = len(word) + 1
+                if current_length + word_len > max_length:
+                    if current_chunk:
+                        chunks.append("\n".join(current_chunk))
+                        current_chunk = []
+                        current_length = 0
+                    while len(word) > max_length:
+                        chunks.append(word[:max_length])
+                        word = word[max_length:]
+                    if word:
+                        current_chunk.append(word)
+                        current_length = len(word)
+                else:
+                    if current_chunk and current_chunk[-1]:
+                        current_chunk[-1] += " " + word
+                    else:
+                        current_chunk.append(word)
+                    current_length += word_len
+        else:
+            if current_length + line_len > max_length:
+                chunks.append("\n".join(current_chunk))
+                current_chunk = [line]
+                current_length = line_len
+            else:
+                current_chunk.append(line)
+                current_length += line_len
+
+    if current_chunk:
+        chunks.append("\n".join(current_chunk))
+
+    return [c for c in chunks if c.strip()]
+
+
+async def send_message_safe(client, chat_entity, text: str, parse_mode="html", reply_to=None, **kwargs) -> list:
+    """
+    Safely sends a message of arbitrary length by automatically splitting
+    it into chunks under 4000 characters to prevent Telegram MessageTooLongError.
+    """
+    chunks = split_message_chunks(text, max_length=4000)
+    sent_messages = []
+    current_reply = reply_to
+
+    for chunk in chunks:
+        res = await client.send_message(chat_entity, chunk, parse_mode=parse_mode, reply_to=current_reply, **kwargs)
+        sent_messages.append(res)
+        if hasattr(res, "id"):
+            current_reply = res.id
+
+    return sent_messages
+
 
 def matches_filter(val: str, whitelist: list, blacklist: list, default_allow: bool = True) -> bool:
     """

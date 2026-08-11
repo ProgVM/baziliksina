@@ -1,4 +1,4 @@
-# parser.py
+# utils/parser.py
 import logging
 import config
 from telethon.tl import types as tl_types
@@ -11,7 +11,6 @@ from utils import safe_serialize, safe_deserialize
 logger = logging.getLogger("Parser")
 
 def parse_reply_markup(markup) -> str:
-    """Parses both inline and reply keyboard buttons to log them inside metadata."""
     if not markup:
         return ""
     
@@ -49,60 +48,202 @@ def parse_reply_markup(markup) -> str:
         return ""
         
     kind = "Inline buttons" if "inline" in markup_name.lower() or "callback" in str(buttons_text).lower() or "url" in str(buttons_text).lower() else "Reply Keyboard buttons"
-    return f"[{kind} in this message]:\\n" + "\\n".join(buttons_text)
+    return f"[{kind} in this message]:\n" + "\n".join(buttons_text)
 
 def get_phone_region(phone: str) -> str:
-    """Extracts country/region name from a phone prefix."""
     if not phone:
         return "Unknown"
     p = phone.strip("+")
-    if p.startswith("1"):
-        return "United States / Canada"
-    elif p.startswith("7"):
-        return "Russia / Kazakhstan"
-    elif p.startswith("380"):
-        return "Ukraine"
-    elif p.startswith("375"):
-        return "Belarus"
-    elif p.startswith("44"):
-        return "United Kingdom"
-    elif p.startswith("49"):
-        return "Germany"
-    elif p.startswith("33"):
-        return "France"
-    elif p.startswith("86"):
-        return "China"
-    elif p.startswith("91"):
-        return "India"
-    elif p.startswith("994"):
-        return "Azerbaijan"
-    elif p.startswith("996"):
-        return "Kyrgyzstan"
-    elif p.startswith("998"):
-        return "Uzbekistan"
+    
+    if p.startswith("888"):
+        return "Fragment Anonymous Number (+888)"
+        
+    prefixes = {
+        "1": "United States / Canada",
+        "7": "Russia / Kazakhstan",
+        "20": "Egypt",
+        "27": "South Africa",
+        "30": "Greece",
+        "31": "Netherlands",
+        "32": "Belgium",
+        "33": "France",
+        "34": "Spain",
+        "36": "Hungary",
+        "39": "Italy",
+        "40": "Romania",
+        "41": "Switzerland",
+        "43": "Austria",
+        "44": "United Kingdom",
+        "45": "Denmark",
+        "46": "Sweden",
+        "47": "Norway",
+        "48": "Poland",
+        "49": "Germany",
+        "51": "Peru",
+        "52": "Mexico",
+        "53": "Cuba",
+        "54": "Argentina",
+        "55": "Brazil",
+        "56": "Chile",
+        "57": "Colombia",
+        "60": "Malaysia",
+        "61": "Australia",
+        "62": "Indonesia",
+        "63": "Philippines",
+        "65": "Singapore",
+        "66": "Thailand",
+        "81": "Japan",
+        "82": "South Korea",
+        "84": "Vietnam",
+        "86": "China",
+        "90": "Turkey",
+        "91": "India",
+        "92": "Pakistan",
+        "93": "Afghanistan",
+        "94": "Sri Lanka",
+        "95": "Myanmar",
+        "98": "Iran",
+        "212": "Morocco",
+        "213": "Algeria",
+        "216": "Tunisia",
+        "234": "Nigeria",
+        "254": "Kenya",
+        "351": "Portugal",
+        "352": "Luxembourg",
+        "353": "Ireland",
+        "354": "Iceland",
+        "358": "Finland",
+        "370": "Lithuania",
+        "371": "Latvia",
+        "372": "Estonia",
+        "373": "Moldova",
+        "374": "Armenia",
+        "375": "Belarus",
+        "380": "Ukraine",
+        "381": "Serbia",
+        "385": "Croatia",
+        "386": "Slovenia",
+        "387": "Bosnia and Herzegovina",
+        "420": "Czech Republic",
+        "421": "Slovakia",
+        "852": "Hong Kong",
+        "853": "Macau",
+        "886": "Taiwan",
+        "961": "Lebanon",
+        "962": "Jordan",
+        "963": "Syria",
+        "964": "Iraq",
+        "965": "Kuwait",
+        "966": "Saudi Arabia",
+        "967": "Yemen",
+        "968": "Oman",
+        "971": "United Arab Emirates",
+        "972": "Israel",
+        "973": "Bahrain",
+        "974": "Qatar",
+        "992": "Tajikistan",
+        "993": "Turkmenistan",
+        "994": "Azerbaijan",
+        "995": "Georgia",
+        "996": "Kyrgyzstan",
+        "998": "Uzbekistan",
+    }
+    
+    for length in range(4, 0, -1):
+        sub = p[:length]
+        if sub in prefixes:
+            return prefixes[sub]
+            
     return "International Prefix"
+
 def get_media_type_description(message) -> str:
-    """
-    Analyzes the message media and returns a clean, plain English string 
-    representing the media type, matching native Telegram reply-header style.
-    Supports collaborative checklists / to-do lists.
-    """
     if not message.media:
         return None
         
     media_name = type(message.media).__name__
     
     if media_name == "MessageMediaPhoto":
-        # Check if the photo belongs to a grouped media album
         if getattr(message, "grouped_id", None) is not None:
             return "Album"
         return "Photo"
         
-    elif "ToDo" in media_name or "Todo" in media_name:
-        return "List"
+    elif media_name == "MessageMediaToDo":
+        todo = getattr(message.media, "todo", None)
+        title_text = todo.title.text if todo and hasattr(todo, "title") and hasattr(todo.title, "text") else "Checklist"
+        
+        completions_map = {}
+        completions_list = getattr(message.media, "completions", None) or []
+        for comp in completions_list:
+            i_id = getattr(comp, "item_id", None)
+            u_id = getattr(comp, "user_id", None)
+            if i_id is not None and u_id is not None:
+                completions_map.setdefault(i_id, []).append(str(u_id))
+                
+        items_info = []
+        if todo and hasattr(todo, "list") and todo.list:
+            for item in todo.list:
+                item_title = item.title.text if hasattr(item, "title") and hasattr(item.title, "text") else "Task"
+                completed_by_users = completions_map.get(item.id, [])
+                if getattr(item, "completed", False) or completed_by_users:
+                    users_str = f" by user(s): {', '.join(completed_by_users)}" if completed_by_users else ""
+                    mark_str = f"✓ Completed{users_str}"
+                else:
+                    mark_str = "✗ Pending"
+                items_info.append(f"  [{mark_str}] {item_title} (ID: {item.id})")
+        items_str = "\n".join(items_info)
+        return f"[Native Telegram Checklist: '{title_text}']\n{items_str}"
         
     elif media_name == "MessageMediaPoll":
-        return "Poll"
+        poll_obj = getattr(message.media, "poll", None)
+        results_obj = getattr(message.media, "results", None)
+        
+        question = getattr(poll_obj, "question", "") if poll_obj else ""
+        is_quiz = getattr(poll_obj, "quiz", False) if poll_obj else False
+        is_closed = getattr(poll_obj, "closed", False) if poll_obj else False
+        open_answers = getattr(poll_obj, "open_answers", False) if poll_obj else False
+        revoting_disabled = getattr(poll_obj, "revoting_disabled", False) if poll_obj else False
+        
+        total_voters = getattr(results_obj, "total_voters", 0) if results_obj else 0
+        voters_by_option = {}
+        chosen_options = set()
+        correct_options = set()
+        
+        if results_obj and hasattr(results_obj, "results") and results_obj.results:
+            for r_item in results_obj.results:
+                opt_key = getattr(r_item, "option", b"").decode("utf-8", errors="ignore")
+                v_count = getattr(r_item, "voters", 0)
+                voters_by_option[opt_key] = v_count
+                if getattr(r_item, "chosen", False):
+                    chosen_options.add(opt_key)
+                if getattr(r_item, "correct", False):
+                    correct_options.add(opt_key)
+                    
+        solution_text = getattr(results_obj, "solution", "") or getattr(message.media, "solution", "") if results_obj else ""
+        
+        answers_info = []
+        if poll_obj and hasattr(poll_obj, "answers") and poll_obj.answers:
+            for idx, ans in enumerate(poll_obj.answers):
+                ans_text = getattr(ans, "text", "")
+                opt_id = getattr(ans, "option", str(idx).encode("utf-8")).decode("utf-8", errors="ignore")
+                v_count = voters_by_option.get(opt_id, 0)
+                pct = f"({(v_count/total_voters*100):.1f}%)" if total_voters > 0 else "(0%)"
+                
+                status_tags = []
+                if opt_id in chosen_options:
+                    status_tags.append("Chosen by bot")
+                if opt_id in correct_options:
+                    status_tags.append("Correct answer")
+                tag_str = f" [{', '.join(status_tags)}]" if status_tags else ""
+                
+                answers_info.append(f"  - Option {idx+1}: '{ans_text}' -> Votes: {v_count} {pct}{tag_str}")
+                
+        answers_str = "\n".join(answers_info)
+        solution_str = f"\nQuiz Solution / Explanation: '{solution_text}'" if solution_text else ""
+        
+        attached_media = getattr(message.media, "attached_media", None)
+        has_media_str = f" | Attached Media: {type(attached_media).__name__}" if attached_media else ""
+        
+        return f"[Telegram Poll/Quiz: '{question}' | Total Voters: {total_voters} | Quiz: {is_quiz} | Closed: {is_closed} | Open Answers: {open_answers} | Revoting Disabled: {revoting_disabled}{has_media_str}]\n{answers_str}{solution_str}"
         
     elif media_name == "MessageMediaGift":
         return "Gift"
@@ -126,7 +267,6 @@ def get_media_type_description(message) -> str:
         is_video = False
         is_audio = False
         
-        # Scan attributes to distinguish various document subtypes
         for attr in getattr(doc, 'attributes', []):
             attr_name = type(attr).__name__
             if attr_name == "DocumentAttributeSticker":
@@ -163,22 +303,15 @@ def get_media_type_description(message) -> str:
             
     return "Media"
 
-
 async def parse_and_cache_user_metadata(client, db, user) -> dict:
-    """
-    Asynchronously requests full user information from Telegram, downloads the avatar
-    (including .mp4 video avatars) and saves it in the DB with all Premium attributes and business data.
-    """
     if not user:
         return {}
 
     user_id = str(user.id)
     logger.info(f"Collecting and caching full metadata of user ID {user_id}...")
 
-    # Check database cache first to prevent hammering Telegram API (FloodWait protection)
     try:
         from config import PROFILE_UPDATE_INTERVAL
-        import time
         from datetime import datetime, timezone
         cached = await db.get_user_meta(user_id)
         if cached:
@@ -297,12 +430,7 @@ async def parse_and_cache_user_metadata(client, db, user) -> dict:
     await db.save_user_meta(user_id, meta_dict)
     return meta_dict
 
-
 async def parse_and_cache_chat_metadata(client, db, chat) -> dict:
-    """
-    Asynchronously requests full user information from Telegram, downloads the avatar
-    (including .mp4 video avatars) and saves it in the DB with all Premium attributes and business data.
-    """
     if not chat:
         return {}
 
@@ -312,7 +440,6 @@ async def parse_and_cache_chat_metadata(client, db, chat) -> dict:
 
     logger.info(f"Collecting and caching metadata of chat/channel ID {chat_id}...")
 
-    # Check database cache first to prevent hammering Telegram API (FloodWait protection)
     try:
         from config import PROFILE_UPDATE_INTERVAL
         from datetime import datetime, timezone
@@ -388,9 +515,7 @@ async def parse_and_cache_chat_metadata(client, db, chat) -> dict:
     await db.save_chat_meta(chat_id, meta_dict)
     return meta_dict
 
-
 def parse_sender_info(sender, message) -> str:
-    """Extracts basic string metadata about the sender for the AI system prompt."""
     if not sender:
         return "Unknown sender"
     
@@ -434,17 +559,10 @@ def parse_sender_info(sender, message) -> str:
         
     return f"Entity {p_type} [ID: {getattr(sender, 'id', 'hidden')}]{badges_str}"
 
-
 async def parse_message_payload(client, db, message) -> str:
-    """
-    Recursively analyzes the message, extracts and caches premium emojis,
-    Star Gift animations, and structural attachment parameters, outputting complete raw metadata
-    directly into the history so the multimodal AI can track and reuse specific IDs.
-    """
     meta_parts = []
     text = message.text or ""
     
-    # Shield incoming user brackets and tags to prevent context spoofing and prompt injection
     try:
         me = await client.get_me()
         if message.sender_id != me.id and text:
@@ -460,7 +578,6 @@ async def parse_message_payload(client, db, message) -> str:
         "to_dict_raw": message.to_dict() if hasattr(message, "to_dict") else {}
     }
 
-    # 1. Parsing and caching Premium custom emojis in-place
     if message.entities:
         emoji_refs = []
         for ent in message.entities:
@@ -472,33 +589,32 @@ async def parse_message_payload(client, db, message) -> str:
         if emoji_refs:
             meta_parts.append("\n".join(emoji_refs))
 
-    
-    # 1.1 Parsing and extracting rich formatting entities
     if message.entities:
         formatting_refs = []
         for ent in message.entities:
             ent_type = type(ent).__name__
-            if ent_type in ["MessageEntitySubscript", "MessageEntitySuperscript", "MessageEntityMarked", "MessageEntityBlockquote", "MessageEntityStrike", "MessageEntityUnderline"]:
+            if ent_type in ["MessageEntityHeader", "MessageEntityTable", "MessageEntityBlockquote", "MessageEntitySubscript", "MessageEntitySuperscript", "MessageEntityMarked", "MessageEntityStrike", "MessageEntityUnderline"]:
                 offset = ent.offset
                 length = ent.length
                 plain_text = message.message or ""
                 try:
                     utf16_text = plain_text.encode('utf-16-le')
                     sliced = utf16_text[offset*2:(offset+length)*2].decode('utf-16-le')
-                    ref_str = f"[{ent_type.replace('MessageEntity', '')} text: '{sliced}']"
+                    kind = ent_type.replace('MessageEntity', '')
+                    if getattr(ent, "collapsed", False) or getattr(ent, "expandable", False):
+                        kind += " (Expandable/Collapsible)"
+                    ref_str = f"[{kind}: '{sliced}']"
                     formatting_refs.append(ref_str)
                 except Exception:
                     pass
         if formatting_refs:
             meta_parts.append("\n".join(formatting_refs))
             
-    # 1.2 Extract Reply or Inline Markup buttons if present (keyboard structures)
     if message.reply_markup:
         markup_text = parse_reply_markup(message.reply_markup)
         if markup_text:
             meta_parts.append(markup_text)
 
-    # 2. Parsing Star Gifts with animations
     if message.media and type(message.media).__name__ == "MessageMediaGift":
         gift = message.media
         gift_text = getattr(gift, "text", "") or ""
@@ -508,7 +624,15 @@ async def parse_message_payload(client, db, message) -> str:
         gift_ref = f"[Star Gift Received | ID: {gift_id or 'unknown'} | Sender: {sender_gift_id} | Text: '{gift_text}' | Animation path: '{local_gift_path or 'not downloaded'}']"
         meta_parts.append(gift_ref)
 
-    # 3. Extract complete raw MTProto parameters for attached media
+    if message.media and type(message.media).__name__ == "MessageMediaWebPage":
+        webpage = message.media.webpage
+        if type(webpage).__name__ == "WebPage":
+            wp_title = getattr(webpage, "title", "") or ""
+            wp_site = getattr(webpage, "site_name", "") or ""
+            wp_desc = getattr(webpage, "description", "") or ""
+            wp_url = getattr(webpage, "url", "") or ""
+            meta_parts.append(f"[WebPage Article Preview | Site: '{wp_site}' | Title: '{wp_title}' | URL: '{wp_url}' | Desc: '{wp_desc}']")
+
     media_desc = get_media_type_description(message)
     if media_desc:
         media_id = "unknown"
@@ -526,7 +650,6 @@ async def parse_message_payload(client, db, message) -> str:
             file_ref_hex = photo.file_reference.hex() if photo.file_reference else "none"
         meta_parts.append(f"[Attached Media - Type: {media_desc} | ID: {media_id} | Access Hash: {access_hash} | File Reference (Hex): {file_ref_hex}]")
 
-    # Save all visual/secondary message metadata in msgs_meta
     meta_text_block = "\n".join(meta_parts).strip()
     if meta_text_block:
         await db.save_msg_meta(chat_id, msg_id, meta_text=meta_text_block, raw_meta_dict=raw_meta_dict)
@@ -537,10 +660,6 @@ async def parse_message_payload(client, db, message) -> str:
     return text
 
 async def parse_reply_metadata(message, current_chat_id: str, client_instance, db_instance) -> str:
-    """
-    Resolves cross-chat replies and selected quote fragments, recursively traversing 
-    the reply chain up to the configured level to maintain the complete conversational context.
-    """
     if not message.reply_to:
         return ""
 

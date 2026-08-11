@@ -321,9 +321,9 @@ class CommandManager:
             _, _ = await self.ai_manager.executor.execute_response(msg_text, event.input_chat if event else None, target_reply_id, str(chat_id))
             return None
         elif self.client:
-            from utils import safe_telegram_html
+            from utils import safe_telegram_html, send_message_safe
             formatted = safe_telegram_html(msg_text)
-            await self.client.send_message(chat_id, formatted, parse_mode="html", reply_to=target_reply_id)
+            await send_message_safe(self.client, chat_id, formatted, parse_mode="html", reply_to=target_reply_id)
             return None
         return "Error: Client is not initialized."
 

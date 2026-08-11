@@ -57,7 +57,9 @@ class AIToolKitTelegram:
             return f"Message sent successfully with fallback quote. Message ID: {result.id}"
 
         if reply_to_msg_id and (not reply_to_chat_id or str(reply_to_chat_id) == str(chat_id)) and not quote_text:
-            result = await tools.client.send_message(chat_id, text, reply_to=int(reply_to_msg_id), **kwargs)
+            from utils import send_message_safe
+            sent_msgs = await send_message_safe(tools.client, chat_id, text, parse_mode=None, reply_to=int(reply_to_msg_id), **kwargs)
+            result = sent_msgs[-1] if sent_msgs else None
         else:
             from telethon.tl.functions.messages import SendMessageRequest
             from telethon.tl.types import InputReplyToMessage
@@ -359,8 +361,8 @@ class AIToolKitTelegram:
         except Exception as e:
             return f"Error clicking button: {str(e)}"
 
-    async def send_poll(self, question: str, options: List[str], chat_id: str = None, is_anonymous: bool = True, is_multiple_choice: bool = False, is_quiz: bool = False, correct_option_index: int = None, explanation: str = None, **kwargs) -> str:
-        """Sends a native Telegram poll or quiz to the specified chat."""
+    async def send_poll(self, question: str, options: List[str], chat_id: str = None, is_anonymous: bool = True, is_multiple_choice: bool = False, is_quiz: bool = False, correct_option_index: int = None, explanation: str = None, open_answers: bool = False, revoting_disabled: bool = False, **kwargs) -> str:
+        """Sends a native Telegram poll or quiz with advanced options."""
         if not tools.client:
             return "Error: Telethon client is not initialized."
         if chat_id is None:
@@ -388,6 +390,7 @@ class AIToolKitTelegram:
             correct_answers = []
             if is_quiz and correct_option_index is not None:
                 correct_answers.append(str(correct_option_index).encode('utf-8'))
+            
             poll_obj = types.Poll(
                 id=random.randint(1, 10**12),
                 question=question,
@@ -395,7 +398,9 @@ class AIToolKitTelegram:
                 closed=False,
                 public_voters=not is_anonymous,
                 multiple_choice=is_multiple_choice if not is_quiz else False,
-                quiz=is_quiz
+                quiz=is_quiz,
+                open_answers=open_answers,
+                revoting_disabled=revoting_disabled
             )
             media_poll = types.InputMediaPoll(
                 poll=poll_obj,
@@ -403,11 +408,15 @@ class AIToolKitTelegram:
                 explanation=explanation if is_quiz else None
             )
             result = await tools.client.send_file(chat_id, media_poll, **kwargs)
-            if tools.db:
-                poll_info_str = f"[Poll: '{question}' | Options: {', '.join(options)}]"
-                await tools.db.save_message(str(chat_id), "model", poll_info_str, msg_id=result.id)
-                tools.processed_msg_ids.add((int(chat_id), result.id))
-            return f"Success. Poll successfully sent. Message ID: {result.id}"
+            
+            msg_id = getattr(result, "id", None)
+            if tools.db and msg_id:
+                poll_info_str = f"[Sent Native Poll/Quiz: '{question}']\nOptions:\n" + "\n".join(f"  - {opt}" for opt in options)
+                if explanation:
+                    poll_info_str += f"\nExplanation: {explanation}"
+                await tools.db.save_message(str(chat_id), "model", poll_info_str, msg_id=msg_id)
+                tools.processed_msg_ids.add((int(chat_id), msg_id))
+            return f"Success. Poll successfully sent. Message ID: {msg_id or 'sent'}"
         except Exception as e:
             return f"Error sending Telegram poll: {str(e)}"
 
@@ -915,35 +924,43 @@ class AIToolKitTelegram:
         except Exception as e:
             return f"Error sending geolocation: {str(e)}"
 
-    async def send_premium_list(self, title: str, items: List[str], chat_id: str = None, **kwargs) -> str:
-        """Sends a beautifully formatted checklist / premium to-do list with custom checkboxes."""
-        if not tools.client: return "Error: Telethon client is not initialized."
+    async def send_premium_list(self, title: str, items: List[str], chat_id: str = None, others_can_append: bool = True, others_can_complete: bool = True, **kwargs) -> str:
+        """Sends a native Telegram Premium checklist using genuine MTProto InputMediaTodo."""
+        if not tools.client:
+            return "Error: Telethon client is not initialized."
         if chat_id is None:
             try: chat_id = tools.current_chat_id.get()
-            except LookupError: return "Error: Failed to determine target chat."
+            except LookupError: return "Error: Could not resolve target chat."
         if isinstance(chat_id, str):
             try: chat_id = int(chat_id)
             except ValueError: pass
         try:
-            if tools.ai_manager and hasattr(tools.ai_manager, "executor"):
-                title = await tools.ai_manager.executor.parse_execute_and_strip_tags(title, chat_id, None, str(chat_id))
-            body_parts = [f"<b>{title}</b>\n"]
-            for item in items:
-                if tools.ai_manager and hasattr(tools.ai_manager, "executor"):
-                    item = await tools.ai_manager.executor.parse_execute_and_strip_tags(item, chat_id, None, str(chat_id))
-                body_parts.append(f"☑️ {item}")
-            final_text = "\n".join(body_parts)
-            edit_message_id = kwargs.pop("edit_message_id", None)
-            if edit_message_id:
-                await tools.client.edit_message(chat_id, int(edit_message_id), final_text, parse_mode="html", **kwargs)
-                return "Success. Checklist edited."
-            result = await tools.client.send_message(chat_id, final_text, parse_mode="html", **kwargs)
-            if tools.db:
-                await tools.db.save_message(str(chat_id), "model", final_text, msg_id=result.id)
-                tools.processed_msg_ids.add((int(chat_id), result.id))
-            return f"Success. Checklist sent. Message ID: {result.id}"
+            from telethon.tl import types
+            todo_items = []
+            for idx, item_text in enumerate(items):
+                todo_items.append(types.TodoItem(
+                    id=idx + 1,
+                    title=types.TextWithEntities(text=item_text, entities=[])
+                ))
+            
+            todo_list = types.TodoList(
+                title=types.TextWithEntities(text=title, entities=[]),
+                list=todo_items,
+                others_can_append=others_can_append,
+                others_can_complete=others_can_complete
+            )
+            
+            media_todo = types.InputMediaTodo(todo=todo_list)
+            result = await tools.client.send_file(chat_id, media_todo, **kwargs)
+            
+            msg_id = getattr(result, "id", None)
+            if tools.db and msg_id:
+                full_save_text = f"[Sent Native Telegram Checklist: '{title}']\nItems:\n" + "\n".join(f"  - {item}" for item in items)
+                await tools.db.save_message(str(chat_id), "model", full_save_text, msg_id=msg_id)
+                tools.processed_msg_ids.add((int(chat_id), msg_id))
+            return f"Success! Native Telegram Premium checklist '{title}' sent with {len(items)} items. Message ID: {msg_id or 'sent'}"
         except Exception as e:
-            return f"Error sending list: {str(e)}"
+            return f"Error sending native checklist: {str(e)}"
 
     async def send_audio_music(self, filename: str, chat_id: str = None, caption: str = None, title: str = None, performer: str = None, **kwargs) -> str:
         """Sends an audio/music file with explicit track title and performer metadata."""
@@ -974,44 +991,24 @@ class AIToolKitTelegram:
             return f"Error sending audio: {str(e)}"
 
     async def send_rich_message(self, blocks_json: str, chat_id: str = None, reply_to_msg_id: int = None, **kwargs) -> str:
-        """
-        Sends a Telegram Rich Message (article/longread) with alternating blocks of styled text,
-        embedded photos/videos, interactive maps, collages, and collapsible details.
-
-        Args:
-            blocks_json: JSON array string of blocks. Supported block types:
-                - {"type": "paragraph", "text": "HTML text..."}
-                - {"type": "photo", "file": "photo.jpg", "caption": "..."}
-                - {"type": "video", "file": "video.mp4", "caption": "..."}
-                - {"type": "map", "latitude": 55.7558, "longitude": 37.6173, "caption": "..."}
-                - {"type": "collage", "files": ["pic1.jpg", "pic2.jpg"]}
-                - {"type": "details", "title": "Title", "content": "..."}
-            chat_id: Target chat ID or username.
-            reply_to_msg_id: Optional message ID to reply to.
-        """
+        """Sends a rich formatted article as a single structured Telegram post with HTML formatting, headers, tables, details, and media."""
         if not tools.client:
             return "Error: Telethon client is not initialized."
         if chat_id is None:
-            try:
-                chat_id = tools.current_chat_id.get()
-            except LookupError:
-                return "Error: Could not resolve target chat."
-
+            try: chat_id = tools.current_chat_id.get()
+            except LookupError: return "Error: Could not resolve target chat."
         if isinstance(chat_id, str):
-            try:
-                chat_id = int(chat_id)
-            except ValueError:
-                pass
+            try: chat_id = int(chat_id)
+            except ValueError: pass
 
         try:
             blocks = json.loads(blocks_json) if isinstance(blocks_json, str) else blocks_json
             if not isinstance(blocks, list):
                 return "Error: blocks_json must be a valid JSON array."
 
-            from utils import safe_telegram_html
-            from telethon.tl import types as tl_types
-
-            sent_message_ids = []
+            from utils import safe_telegram_html, send_message_safe
+            formatted_parts = []
+            media_files = []
 
             for block in blocks:
                 b_type = block.get("type", "").lower()
@@ -1019,9 +1016,12 @@ class AIToolKitTelegram:
                 if b_type == "paragraph":
                     text = block.get("text", "")
                     if text:
-                        formatted = safe_telegram_html(text)
-                        res = await tools.client.send_message(chat_id, formatted, parse_mode="html", reply_to=reply_to_msg_id)
-                        sent_message_ids.append(res.id)
+                        formatted_parts.append(safe_telegram_html(text))
+
+                elif b_type == "header":
+                    title = block.get("title", "")
+                    if title:
+                        formatted_parts.append(f"<b><u>{safe_telegram_html(title)}</u></b>")
 
                 elif b_type in ["photo", "video"]:
                     filename = block.get("file") or block.get("filename")
@@ -1029,40 +1029,38 @@ class AIToolKitTelegram:
                     if filename:
                         f_path = WORKSPACE_DIR / os.path.basename(filename)
                         if f_path.exists():
-                            res = await tools.client.send_file(chat_id, str(f_path.resolve()), caption=safe_telegram_html(caption), parse_mode="html", reply_to=reply_to_msg_id)
-                            sent_message_ids.append(res.id)
+                            media_files.append(str(f_path.resolve()))
+                    if caption:
+                        formatted_parts.append(f"<i>{safe_telegram_html(caption)}</i>")
 
                 elif b_type == "map":
-                    lat = float(block.get("latitude", 0))
-                    lon = float(block.get("longitude", 0))
+                    lat = block.get("latitude", "")
+                    lon = block.get("longitude", "")
                     caption = block.get("caption", "")
-                    media_geo = tl_types.InputMediaGeoPoint(geo_point=tl_types.InputGeoPoint(latitude=lat, longitude=lon))
-                    res = await tools.client.send_file(chat_id, media_geo, caption=safe_telegram_html(caption), parse_mode="html", reply_to=reply_to_msg_id)
-                    sent_message_ids.append(res.id)
-
-                elif b_type == "collage":
-                    files = block.get("files", [])
-                    resolved = [str((WORKSPACE_DIR / os.path.basename(f)).resolve()) for f in files if (WORKSPACE_DIR / os.path.basename(f)).exists()]
-                    if resolved:
-                        res = await tools.client.send_file(chat_id, resolved, reply_to=reply_to_msg_id)
-                        if isinstance(res, list):
-                            sent_message_ids.extend([r.id for r in res])
-                        else:
-                            sent_message_ids.append(res.id)
+                    map_link = f'<a href="https://maps.google.com/?q={lat},{lon}">📍 Map ({lat}, {lon})</a>'
+                    if caption:
+                        map_link += f" - {safe_telegram_html(caption)}"
+                    formatted_parts.append(map_link)
 
                 elif b_type == "details":
                     title = block.get("title", "Details")
                     content = block.get("content", "")
-                    formatted = f"<details><summary>{safe_telegram_html(title)}</summary>{safe_telegram_html(content)}</details>"
-                    res = await tools.client.send_message(chat_id, formatted, parse_mode="html", reply_to=reply_to_msg_id)
-                    sent_message_ids.append(res.id)
+                    formatted_parts.append(f"<details><summary>{safe_telegram_html(title)}</summary>{safe_telegram_html(content)}</details>")
 
-            if tools.db and sent_message_ids:
-                await tools.db.save_message(str(chat_id), "model", f"[Sent Rich Message: {len(blocks)} blocks]", msg_id=sent_message_ids[-1])
-                for m_id in sent_message_ids:
-                    tools.processed_msg_ids.add((int(chat_id), m_id))
+            combined_html = "\n\n".join(formatted_parts)
 
-            return f"Success. Rich message ({len(blocks)} blocks) sent to chat {chat_id}."
+            if media_files:
+                result = await tools.client.send_file(chat_id, media_files, caption=combined_html, parse_mode="html", reply_to=reply_to_msg_id, **kwargs)
+            else:
+                sent_msgs = await send_message_safe(tools.client, chat_id, combined_html, parse_mode="html", reply_to=reply_to_msg_id, **kwargs)
+                result = sent_msgs[-1] if sent_msgs else None
+
+            msg_id = getattr(result, "id", None) if result else None
+            if tools.db and msg_id:
+                await tools.db.save_message(str(chat_id), "model", combined_html, msg_id=msg_id)
+                tools.processed_msg_ids.add((int(chat_id), msg_id))
+
+            return f"Success. Rich message sent as a single structured post to chat {chat_id}."
         except Exception as e:
             return f"Error sending rich message: {str(e)}"
 

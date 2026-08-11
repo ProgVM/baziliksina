@@ -41,7 +41,9 @@ class RootTagBlockHandlers:
                 target_reply_id = int(reply_to_id) if reply_to_id else None
                 
             logger.info(f"Delivering text reply to msg #{target_reply_id} in chat {chat_id}: '{formatted_html[:60]}...'")
-            result = await client.send_message(chat_entity, formatted_html, reply_to=target_reply_id, parse_mode="html")
+            from utils import send_message_safe
+            sent_msgs = await send_message_safe(client, chat_entity, formatted_html, reply_to=target_reply_id, parse_mode="html")
+            result = sent_msgs[-1] if sent_msgs else None
             
             # Generate reply metadata for the bot's own message to preserve full context of her responses in database history
             reply_meta = ""
@@ -53,7 +55,9 @@ class RootTagBlockHandlers:
             
             full_saved_text = f"{reply_meta}{unescaped_text}".strip()
             await db.save_message(str(chat_id), "model", full_saved_text, msg_id=result.id)
-            tools.processed_msg_ids.add((int(chat_id), result.id))
+            for sm in sent_msgs:
+                if hasattr(sm, "id"):
+                    tools.processed_msg_ids.add((int(chat_id), sm.id))
         except Exception as tg_err:
             logger.error(f"Failed to deliver reply msg: {str(tg_err)}")
 
@@ -106,6 +110,100 @@ class RootTagBlockHandlers:
         reason = data.get("reason", "No reason provided")
         continue_loop = data.get("continue", False)
         tools.toolkit.no_op_ignore(reason, continue_loop=continue_loop)
+
+    async def header(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
+        """Sends a bold underlined header text block."""
+        title = data.get("text") or data.get("title") or ""
+        if title:
+            from utils import safe_telegram_html, send_message_safe
+            formatted = f"<b><u>{safe_telegram_html(title)}</u></b>"
+            await send_message_safe(client, chat_entity, formatted, parse_mode="html", reply_to=reply_to_id)
+
+    async def details(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
+        """Sends a collapsible details / expandable quote block."""
+        title = data.get("title") or data.get("summary") or "Details"
+        content = data.get("text") or data.get("content") or ""
+        if content:
+            from utils import safe_telegram_html, send_message_safe
+            formatted = f"<details><summary>{safe_telegram_html(title)}</summary>{safe_telegram_html(content)}</details>"
+            await send_message_safe(client, chat_entity, formatted, parse_mode="html", reply_to=reply_to_id)
+
+    async def map_location(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
+        """Sends an embedded map geolocation link block."""
+        lat = data.get("lat") or data.get("latitude") or "0"
+        lon = data.get("lon") or data.get("longitude") or "0"
+        caption = data.get("text") or data.get("caption") or ""
+        await tools.toolkit.send_geolocation(latitude=float(lat), longitude=float(lon), chat_id=chat_id, caption=caption, reply_to_msg_id=reply_to_id)
+
+    async def collage(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
+        """Sends a multi-photo/video collage album."""
+        files = data.get("files") or []
+        if isinstance(files, str):
+            files = [f.strip() for f in files.split(",") if f.strip()]
+        caption = data.get("text") or data.get("caption") or ""
+        if files:
+            await tools.toolkit.send_media_message(chat_id=chat_id, files=files, caption=caption, reply_to_msg_id=reply_to_id)
+
+    async def article(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
+        """
+        Parses an <article> XML container tag with child tags (<header>, <p>, <details>, <map>, <collage>) 
+        and sends it as a single Rich Message.
+        """
+        raw_inner = data.get("text", "")
+        if not raw_inner:
+            return
+
+        import re
+        blocks = []
+
+        child_regex = re.compile(
+            r'<([a-zA-Z0-9_]+)(?:\s+((?:"[^"]*"|\'[^\']*\'|[^>])*))?>(.*?)</\1>|<([a-zA-Z0-9_]+)\s+((?:"[^"]*"|\'[^\']*\'|[^>])*)\s*/>',
+            re.IGNORECASE | re.DOTALL
+        )
+
+        last_idx = 0
+        for match in child_regex.finditer(raw_inner):
+            start_pos, end_pos = match.span()
+            before_text = raw_inner[last_idx:start_pos].strip()
+            if before_text:
+                blocks.append({"type": "paragraph", "text": before_text})
+
+            tag_name = (match.group(1) or match.group(4)).lower()
+            attrs_str = match.group(2) or match.group(5) or ""
+            content = (match.group(3) or "").strip()
+
+            attrs = {}
+            attr_pattern = re.compile(r'([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', re.IGNORECASE)
+            for attr_match in attr_pattern.finditer(attrs_str):
+                k = attr_match.group(1)
+                v = attr_match.group(2) if attr_match.group(2) is not None else attr_match.group(3)
+                attrs[k] = v
+
+            if tag_name in ["header", "h1", "h2", "h3"]:
+                blocks.append({"type": "header", "title": content or attrs.get("title", "")})
+            elif tag_name in ["p", "paragraph"]:
+                blocks.append({"type": "paragraph", "text": content})
+            elif tag_name in ["details", "summary"]:
+                blocks.append({"type": "details", "title": attrs.get("title", "Details"), "content": content})
+            elif tag_name in ["map", "geo", "geolocation"]:
+                blocks.append({
+                    "type": "map",
+                    "latitude": attrs.get("lat") or attrs.get("latitude") or "0",
+                    "longitude": attrs.get("lon") or attrs.get("longitude") or "0",
+                    "caption": content or attrs.get("caption", "")
+                })
+            elif tag_name in ["collage", "album"]:
+                files_list = attrs.get("files", "").split(",") if attrs.get("files") else []
+                blocks.append({"type": "collage", "files": [f.strip() for f in files_list if f.strip()]})
+
+            last_idx = end_pos
+
+        after_text = raw_inner[last_idx:].strip()
+        if after_text:
+            blocks.append({"type": "paragraph", "text": after_text})
+
+        if blocks:
+            await tools.toolkit.send_rich_message(blocks_json=blocks, chat_id=chat_id, reply_to_msg_id=reply_to_id)
 
     async def tool(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
         """Executes a registered AI tool dynamically by name."""
@@ -233,7 +331,17 @@ ROOT_TAGS_BLOCKS = {
     "react": ("tag", handlers.react),
     "attach": ("tag", handlers.attach),
     "rich_message": ("tag", handlers.rich_message),
-    "article": ("tag", handlers.rich_message),
+    "article": ("tag", handlers.article),
+    "rich_post": ("tag", handlers.article),
+    "header": ("tag", handlers.header),
+    "h1": ("tag", handlers.header),
+    "h2": ("tag", handlers.header),
+    "details": ("tag", handlers.details),
+    "summary": ("tag", handlers.details),
+    "map": ("tag", handlers.map_location),
+    "geo": ("tag", handlers.map_location),
+    "collage": ("tag", handlers.collage),
+    "album": ("tag", handlers.collage),
     "edit": ("tag", handlers.edit),
     "delete": ("tag", handlers.delete),
     "pin": ("tag", handlers.pin),

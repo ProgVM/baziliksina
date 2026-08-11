@@ -1,4 +1,3 @@
-# core/bot.py
 import sys
 from pathlib import Path
 _root = Path(__file__).resolve().parent.parent
@@ -9,7 +8,7 @@ for sub in ["config", "core", "database", "services", "utils", "tools"]:
     if sub_path not in sys.path:
         sys.path.append(sub_path)
 
-# bot.py
+# core/bot.py
 import sys
 import json
 import os
@@ -427,7 +426,8 @@ async def on_new_message(event):
         logger.info(f"CLI Command detected in message #{msg_id} of chat {chat_id}: '{raw_payload[:60]}'")
         cmd_output = await command_manager.execute_pipeline(raw_payload, event.sender_id, chat_id, event)
         if cmd_output:
-            await client.send_message(input_chat_entity, cmd_output, reply_to=msg_id)
+            from utils import send_message_safe
+            await send_message_safe(client, input_chat_entity, cmd_output, reply_to=msg_id, parse_mode=None)
         
         if not getattr(config, "TRIGGER_ON_COMMANDS", False):
             return

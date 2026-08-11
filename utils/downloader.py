@@ -1,4 +1,4 @@
-# downloader.py
+# utils/downloader.py
 import os
 import json
 import logging
@@ -277,90 +277,92 @@ async def get_cached_gift_animation(client, gift_id: int) -> str:
 
 async def download_and_cache_media(client, message, is_private: bool, mentioned: bool) -> str:
     """
-        Universal extractor and downloader for regular attachments, voice messages, video notes, and files from polls.
-        Limits the maximum size to config.MAX_FILE_SIZE. Returns JSON with local path and type.
-        """
-    # Download media files from all messages for complete end-to-end context
-    if not message.media:
+    Universal extractor and downloader for regular attachments, voice messages, 
+    video notes, albums, polls, and rich webpage articles.
+    """
+    if not message.media and not getattr(message, "grouped_id", None):
         return None
 
-    target_media = message.media
-    media_name = type(target_media).__name__
+    downloaded_items = []
 
-    # Extracting files from polls
-    if media_name == "MessageMediaPoll":
-        poll_obj = target_media.poll
-        if getattr(poll_obj, "media", None):
-            target_media = poll_obj.media
-        elif getattr(poll_obj, "explanation_media", None):
-            target_media = poll_obj.explanation_media
+    async def process_single_media(target_media):
+        if not target_media:
+            return
+        
+        t_media_name = type(target_media).__name__
+        mime_type = "application/octet-stream"
+        file_size = 0
+
+        if t_media_name == "MessageMediaPhoto":
+            mime_type = "image/jpeg"
+            if getattr(target_media.photo, "sizes", None):
+                file_size = target_media.photo.sizes[-1].size if hasattr(target_media.photo.sizes[-1], "size") else 1024 * 1024
+        elif t_media_name == "MessageMediaDocument":
+            doc = target_media.document
+            file_size = getattr(doc, "size", 0)
+            mime_type = getattr(doc, "mime_type", "application/octet-stream") or "application/octet-stream"
         else:
-            for opt in getattr(poll_obj, "answers", []):
-                if getattr(opt, "media", None):
-                    target_media = opt.media
-                    break
+            return
 
-    file_size = 0
-    mime_type = "application/octet-stream"
-    t_media_name = type(target_media).__name__
+        if file_size > config.MAX_FILE_SIZE:
+            logger.warning(f"Attachment {t_media_name} skipped: size exceeds max file size limit.")
+            return
 
-    if t_media_name == "MessageMediaPhoto":
-        mime_type = "image/jpeg"
-        if getattr(target_media.photo, "sizes", None):
-            file_size = target_media.photo.sizes[-1].size if hasattr(target_media.photo.sizes[-1], "size") else 1024 * 1024
-    elif t_media_name == "MessageMediaDocument":
-        doc = target_media.document
-        file_size = doc.size
-        mime_type = doc.mime_type or "application/octet-stream"
-    else:
-        return None
-
-    # Evaluate limit parameters dynamically through the config proxy
-    if file_size > config.MAX_FILE_SIZE:
-        logger.warning(f"Attachment {t_media_name} skipped: size exceeds the allowed limit.")
-        return None
-
-    supported_mimes = [
-        "image/jpeg", "image/png", "image/webp", "image/gif",
-        "audio/ogg", "audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
-        "application/pdf", "text/plain", "video/mp4", "video/webm",
-        "application/x-tgsticker"
-    ]
-
-    if mime_type in supported_mimes or "image" in mime_type or "audio" in mime_type:
         try:
-            logger.info(f"Downloading attachment ({mime_type}, size: {file_size} bytes)...")
             path = await client.download_media(target_media, file=str(TEMP_MEDIA_DIR))
-            
             if path and check_and_clean_corrupted_file(path, mime_type):
-                logger.info(f"Media file successfully downloaded and saved: {path}")
-                
-                # If animated WebM is downloaded, automatically convert it to MP4
                 if "webm" in mime_type or path.endswith(".webm"):
                     mp4_path = await convert_webm_to_mp4(path)
                     if mp4_path:
                         path = mp4_path
-                        mime_type = "video/mp4" # Replace type for AI
-                
-                # If a .ogg voice message is downloaded, automatically convert it to MP3!
+                        mime_type = "video/mp4"
                 elif "ogg" in mime_type or path.endswith(".ogg"):
                     mp3_path = await convert_ogg_to_mp3(path)
                     if mp3_path:
                         path = mp3_path
                         mime_type = "audio/mpeg"
-                
-                # If an animated TGS sticker/gift is downloaded, automatically convert it to GIF!
                 elif "tgsticker" in mime_type or path.endswith(".tgs"):
                     gif_path = await convert_tgs_to_gif(path)
                     if gif_path:
                         path = gif_path
                         mime_type = "image/gif"
 
-                return json.dumps({
-                    "path": path,
-                    "mime_type": mime_type
-                })
+                downloaded_items.append({"path": path, "mime_type": mime_type})
         except Exception as e:
-            logger.error(f"Error downloading attachment: {str(e)}")
+            logger.error(f"Error downloading single media item: {str(e)}")
+
+    media_name = type(message.media).__name__ if message.media else ""
+
+    if media_name == "MessageMediaPoll":
+        poll_obj = message.media.poll
+        if getattr(message.media, "attached_media", None):
+            await process_single_media(message.media.attached_media)
+        if getattr(message.media, "explanation_media", None):
+            await process_single_media(message.media.explanation_media)
+        if poll_obj and getattr(poll_obj, "media", None):
+            await process_single_media(poll_obj.media)
+        if poll_obj and getattr(poll_obj, "answers", None):
+            for opt in poll_obj.answers:
+                if getattr(opt, "media", None):
+                    await process_single_media(opt.media)
+
+    elif media_name == "MessageMediaWebPage":
+        webpage = message.media.webpage
+        if type(webpage).__name__ == "WebPage":
+            if getattr(webpage, "photo", None):
+                from telethon.tl import types as tl_types
+                await process_single_media(tl_types.MessageMediaPhoto(photo=webpage.photo))
+            if getattr(webpage, "document", None):
+                from telethon.tl import types as tl_types
+                await process_single_media(tl_types.MessageMediaDocument(document=webpage.document))
+
+    elif message.media:
+        await process_single_media(message.media)
+
+    if not downloaded_items:
+        return None
+
+    if len(downloaded_items) == 1:
+        return json.dumps(downloaded_items[0])
     
-    return None
+    return json.dumps({"items": downloaded_items})

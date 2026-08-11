@@ -1,4 +1,4 @@
-# proxy_manager.py
+# utils/proxy_manager.py
 import os
 import logging
 import urllib.parse
