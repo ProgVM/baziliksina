@@ -290,7 +290,7 @@ class CommandManager:
             status += " Uncommitted output purged."
         return status
 
-    async def _cmd_send(self, args: CLIArgs, user_id: int, chat_id: int, event) -> str:
+    async def _cmd_send(self, args: CLIArgs, user_id: int, chat_id: int, event) -> Optional[str]:
         """Instant Send command (/send). Cancels active generation and starts fresh query."""
         drop_previous = args.has_flag("drop-previous", "d")
         await self.cancel_generation(chat_id, purge=drop_previous)
@@ -302,7 +302,7 @@ class CommandManager:
         if self.ai_manager:
             trigger_id = getattr(event.message, "id", None) if event else None
             asyncio.create_task(self.ai_manager.handle_query(str(chat_id), event.input_chat if event else None, trigger_msg_id=trigger_id))
-            return "Previous task reset. Immediate AI generation initiated..."
+            return None
 
         return "Error: AI Manager is not bound."
 

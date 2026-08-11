@@ -335,17 +335,6 @@ async def on_new_message(event):
     input_chat_entity = await event.get_input_chat()
     entity_cache[chat_id] = input_chat_entity
 
-    # Check for Command Execution in text or media caption
-    raw_payload = event.message.message or ""
-    if raw_payload.strip().startswith("/"):
-        logger.info(f"CLI Command detected in message #{msg_id} of chat {chat_id}: '{raw_payload[:60]}'")
-        cmd_output = await command_manager.execute_pipeline(raw_payload, event.sender_id, chat_id, event)
-        if cmd_output:
-            await client.send_message(input_chat_entity, cmd_output, reply_to=msg_id)
-        
-        if not getattr(config, "TRIGGER_ON_COMMANDS", False):
-            return
-
     if not await should_process_message_event(event, me, "save", db):
         return
 
@@ -431,6 +420,17 @@ async def on_new_message(event):
 
     logger.info(f"Message {msg_id} saved to chat history {chat_id}.")
     await db.save_message(str(chat_id), "user", text, media_info, msg_id)
+
+    # Check for Command Execution in text or media caption
+    raw_payload = event.message.message or ""
+    if raw_payload.strip().startswith("/"):
+        logger.info(f"CLI Command detected in message #{msg_id} of chat {chat_id}: '{raw_payload[:60]}'")
+        cmd_output = await command_manager.execute_pipeline(raw_payload, event.sender_id, chat_id, event)
+        if cmd_output:
+            await client.send_message(input_chat_entity, cmd_output, reply_to=msg_id)
+        
+        if not getattr(config, "TRIGGER_ON_COMMANDS", False):
+            return
 
     if await check_and_run_triggers(chat_id, text, input_chat_entity, event):
         return
