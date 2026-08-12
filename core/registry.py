@@ -195,12 +195,11 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
         func = namespace.get(name)
         if func and callable(func) and func != _execution_wrapper:
             sig = inspect.signature(func)
-            has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
-
+            
             system_names = {
                 "client", "db", "ai_manager", "permission_manager", "service_manager",
                 "command_manager", "logger", "httpx", "json", "asyncio", "Path",
-                "urllib", "types", "os", "cli_args", "event"
+                "urllib", "types", "os", "cli_args", "event", "user_id", "chat_id"
             }
 
             available_args = {}
@@ -213,37 +212,38 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
             elif args:
                 positional_items = list(args)
 
-            final_args = []
-            final_kwargs = {}
+            cli_flags = getattr(cli_args_obj, "flags", {}) if cli_args_obj else {}
 
-            pos_idx = 0
+            bound_args = {}
+            pos_args = []
+
             for p_name, p_param in sig.parameters.items():
                 if p_param.kind == inspect.Parameter.VAR_POSITIONAL:
-                    final_args.extend(positional_items[pos_idx:])
-                    pos_idx = len(positional_items)
+                    pos_args.extend(positional_items)
+                    positional_items.clear()
                 elif p_param.kind == inspect.Parameter.VAR_KEYWORD:
-                    pass
-                elif p_param.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD):
-                    if p_name in system_names and p_name in available_args:
-                        final_kwargs[p_name] = available_args[p_name]
-                    elif pos_idx < len(positional_items):
-                        final_args.append(positional_items[pos_idx])
-                        pos_idx += 1
+                    for k, v in available_args.items():
+                        if k not in bound_args:
+                            bound_args[k] = v
+                elif p_param.kind == inspect.Parameter.POSITIONAL_ONLY:
+                    if positional_items:
+                        pos_args.append(positional_items.pop(0))
                     elif p_name in available_args:
-                        final_kwargs[p_name] = available_args[p_name]
-                elif p_param.kind == inspect.Parameter.KEYWORD_ONLY:
-                    if p_name in available_args:
-                        final_kwargs[p_name] = available_args[p_name]
-
-            if has_var_kw:
-                for k, v in available_args.items():
-                    if k not in final_kwargs and k not in sig.parameters:
-                        final_kwargs[k] = v
+                        pos_args.append(available_args[p_name])
+                else:
+                    if p_name in system_names and p_name in available_args:
+                        bound_args[p_name] = available_args[p_name]
+                    elif p_name in cli_flags:
+                        bound_args[p_name] = cli_flags[p_name]
+                    elif positional_items:
+                        bound_args[p_name] = positional_items.pop(0)
+                    elif p_name in available_args:
+                        bound_args[p_name] = available_args[p_name]
 
             if inspect.iscoroutinefunction(func):
-                return await func(*final_args, **final_kwargs)
+                return await func(*pos_args, **bound_args)
             else:
-                return func(*final_args, **final_kwargs)
+                return func(*pos_args, **bound_args)
 
         return namespace.get("result")
 
