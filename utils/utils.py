@@ -85,6 +85,11 @@ def matches_filter(val: str, whitelist: list, blacklist: list, default_allow: bo
     if not val_str:
         return default_allow
 
+    if isinstance(whitelist, str):
+        whitelist = [p.strip() for p in whitelist.split(",") if p.strip()]
+    if isinstance(blacklist, str):
+        blacklist = [p.strip() for p in blacklist.split(",") if p.strip()]
+
     w_list = [str(w).strip().lower() for w in whitelist if str(w).strip()] if whitelist else []
     b_list = [str(b).strip().lower() for b in blacklist if str(b).strip()] if blacklist else []
 
@@ -429,6 +434,11 @@ def matches_advanced_filter(message_or_event, me, whitelist: list, blacklist: li
             return r in [sender_username, chat_username]
         try: return bool(re.search(rule_item, text_content, re.IGNORECASE))
         except Exception: return r in text_content.lower()
+
+    if isinstance(whitelist, str):
+        whitelist = [p.strip() for p in whitelist.split(",") if p.strip()]
+    if isinstance(blacklist, str):
+        blacklist = [p.strip() for p in blacklist.split(",") if p.strip()]
 
     w_list = [str(w).strip() for w in whitelist if str(w).strip()] if whitelist else []
     b_list = [str(b).strip() for b in blacklist if str(b).strip()] if blacklist else []
