@@ -133,6 +133,7 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
     import ast
     import inspect
     import types as py_types
+    import config
 
     if namespace is None:
         namespace = {
@@ -150,6 +151,8 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
             "urllib": urllib,
             "types": types,
             "os": os,
+            "config": config,
+            "WORKSPACE_DIR": config.WORKSPACE_DIR,
             "result": None
         }
 
@@ -205,7 +208,7 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
                 "client", "db", "ai_manager", "permission_manager", "service_manager",
                 "command_manager", "logger", "httpx", "json", "asyncio", "Path",
                 "urllib", "types", "os", "cli_args", "event", "msg", "message",
-                "user_id", "chat_id", "me"
+                "user_id", "chat_id", "me", "config", "WORKSPACE_DIR"
             }
 
             available_args = {}
