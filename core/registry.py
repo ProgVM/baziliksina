@@ -179,6 +179,11 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
             for k, v in kwargs.items():
                 namespace[k] = v
 
+        event_obj = kwargs.get("event") or namespace.get("event")
+        msg_obj = getattr(event_obj, "message", None) if event_obj else None
+        namespace["msg"] = msg_obj or event_obj
+        namespace["message"] = msg_obj or event_obj
+
         cli_args_obj = kwargs.get("cli_args")
         if cli_args_obj:
             raw_tail = getattr(cli_args_obj, "raw_tail", "")
@@ -199,7 +204,8 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
             system_names = {
                 "client", "db", "ai_manager", "permission_manager", "service_manager",
                 "command_manager", "logger", "httpx", "json", "asyncio", "Path",
-                "urllib", "types", "os", "cli_args", "event", "user_id", "chat_id"
+                "urllib", "types", "os", "cli_args", "event", "msg", "message",
+                "user_id", "chat_id", "me"
             }
 
             available_args = {}
