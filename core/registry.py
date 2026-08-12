@@ -131,6 +131,7 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
     """
     import tools
     import ast
+    import inspect
     import types as py_types
 
     if namespace is None:
@@ -152,7 +153,6 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
             "result": None
         }
 
-    # Inject standard project modules and tools into execution scope
     from utils import get_all_project_modules
     for k, v in get_all_project_modules().items():
         if k not in namespace:
@@ -162,7 +162,6 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
         if tool.name not in namespace:
             namespace[tool.name] = tool.callable
 
-    # Compile with top-level await support and auto-wrap if top-level return is used
     try:
         compiled_code = compile(code_str, f"<custom_{name}>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
     except SyntaxError as se:
@@ -180,7 +179,6 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
             for k, v in kwargs.items():
                 namespace[k] = v
 
-        # Auto-inject convenient aliases for custom commands
         cli_args_obj = kwargs.get("cli_args")
         if cli_args_obj:
             raw_tail = getattr(cli_args_obj, "raw_tail", "")
@@ -194,13 +192,29 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
         if isinstance(coro_or_val, py_types.CoroutineType):
             await coro_or_val
 
-        # If a specific function matching 'name' was declared inside the script, execute it
         func = namespace.get(name)
         if func and callable(func) and func != _execution_wrapper:
+            sig = inspect.signature(func)
+            has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+
+            call_args = list(args)
+            if not call_args and cli_args_obj and hasattr(cli_args_obj, "positional") and cli_args_obj.positional:
+                call_args = list(cli_args_obj.positional)
+
+            call_kwargs = {}
+            for k, v in kwargs.items():
+                if has_var_kw or k in sig.parameters:
+                    call_kwargs[k] = v
+
+            for p_name, p_param in sig.parameters.items():
+                if p_name not in call_kwargs and p_param.kind not in [inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD]:
+                    if p_name in namespace and namespace[p_name] is not None:
+                        call_kwargs[p_name] = namespace[p_name]
+
             if inspect.iscoroutinefunction(func):
-                return await func(*args, **kwargs)
+                return await func(*call_args, **call_kwargs)
             else:
-                return func(*args, **kwargs)
+                return func(*call_args, **call_kwargs)
 
         return namespace.get("result")
 
