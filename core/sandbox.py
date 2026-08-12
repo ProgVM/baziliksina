@@ -8,13 +8,9 @@ import re
 from pathlib import Path
 import config
 from registry import registry
+from utils import matches_filter
 
 logger = logging.getLogger("Sandbox")
-
-FORBIDDEN_PYTHON_REGEX = re.compile(
-    r"\b(os\.system|os\.popen|subprocess|shutil\.rmtree|eval|exec)\b", 
-    re.IGNORECASE
-)
 
 class SandboxedClient:
     """A secure Telethon proxy client that isolates file operations inside the sandbox."""
@@ -68,7 +64,6 @@ class SandboxedConfig:
     def __getattr__(self, name):
         if name.startswith("_"):
             raise AttributeError("Access to private attributes is blocked inside the sandbox.")
-        from utils import matches_filter
         import config
         whitelist = getattr(config, "SANDBOX_CONFIG_WHITELIST", [])
         blacklist = getattr(config, "SANDBOX_CONFIG_BLACKLIST", [])
@@ -99,11 +94,9 @@ class AsyncSandbox:
             raise PermissionError("Security error: Attempted to access a directory outside the AI sandbox.")
         
         filename = os.path.basename(resolved_path)
-        from utils import matches_filter
 
-        # Load configurations dynamically from the config module proxy
-        allowed_list = [f.strip() for f in config.SANDBOX_ALLOWED_FILES.split(",") if f.strip()] if isinstance(config.SANDBOX_ALLOWED_FILES, str) else config.SANDBOX_ALLOWED_FILES
-        blocked_list = [f.strip() for f in config.SANDBOX_BLOCKED_FILES.split(",") if f.strip()] if isinstance(config.SANDBOX_BLOCKED_FILES, str) else config.SANDBOX_BLOCKED_FILES
+        allowed_list = [f.strip() for f in config.SANDBOX_ALLOWED_FILES.split(",")] if isinstance(config.SANDBOX_ALLOWED_FILES, str) else config.SANDBOX_ALLOWED_FILES
+        blocked_list = [f.strip() for f in config.SANDBOX_BLOCKED_FILES.split(",")] if isinstance(config.SANDBOX_BLOCKED_FILES, str) else config.SANDBOX_BLOCKED_FILES
 
         if not matches_filter(filename, allowed_list, blocked_list):
             raise PermissionError("Security error: Access to this file is blocked by sandbox policy.")
@@ -112,20 +105,20 @@ class AsyncSandbox:
 
     async def execute(self, code_string: str) -> str:
         """Executes asynchronous Python code in a fully isolated context."""
-        if FORBIDDEN_PYTHON_REGEX.search(code_string):
+        whitelist = getattr(config, "SANDBOX_PYTHON_WHITELIST", [])
+        blacklist = getattr(config, "SANDBOX_PYTHON_BLACKLIST", [])
+        if not matches_filter(code_string, whitelist, blacklist):
             return "Security error: This Python code is blocked by the sandbox policy."
 
         import asyncio
         import telethon
         
-        # Resolve own profile dynamically for the VM context
         if self.me is None and self.client:
             try:
-                self.me = await self.client.get_me()
+                self.me = await client.get_me()
             except Exception:
                 pass
 
-        # Set up the secure environment variables of the virtual machine (VM)
         local_vars = {
             "client": SandboxedClient(self.client, self.workspace),
             "db": self.db,
@@ -142,20 +135,18 @@ class AsyncSandbox:
             "config": SandboxedConfig(config),
         }
 
-        # Dynamically inject all project modules to keep sandbox dependencies fully synchronized
         from utils import get_all_project_modules
         for k, v in get_all_project_modules().items():
             if k not in local_vars:
                 local_vars[k] = v
 
-        # Dynamically inject all registered system and custom tools directly as VM functions
         for tool in registry.get_all_tools():
-            local_vars[tool.name] = tool.callable
+            if tool.name not in local_vars:
+                local_vars[tool.name] = tool.callable
 
         try:
             import ast
             import types
-            # Compile code directly as a module with top-level await support (resolves local scope trap)
             compiled_sandbox = compile(code_string, "<sandbox_vm>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
             
             res_val = eval(compiled_sandbox, local_vars, local_vars)
@@ -167,6 +158,5 @@ class AsyncSandbox:
                 return "Code executed successfully. The 'result' variable was not set."
             return f"{str(res)}"
         except Exception as e:
-            # VM state self-cleaning upon crash
             local_vars.clear()
             return f"Error executing Python code: {str(e)}"
