@@ -170,7 +170,7 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
     except SyntaxError as se:
         if "return" in str(se):
             indented = "\n".join("    " + line for line in code_str.splitlines())
-            wrapped_code = f"async def {name}(*args, **kwargs):\n{indented}"
+            wrapped_code = "async def " + name + "(*args, **kwargs):\n" + indented
             compiled_code = compile(wrapped_code, f"<custom_{name}>", "exec")
         else:
             raise
