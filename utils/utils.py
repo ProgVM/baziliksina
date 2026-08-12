@@ -85,42 +85,41 @@ def matches_filter(val: str, whitelist: list, blacklist: list, default_allow: bo
     if not val_str:
         return default_allow
 
-    # Normalize lists and strip whitespace
     w_list = [str(w).strip().lower() for w in whitelist if str(w).strip()] if whitelist else []
     b_list = [str(b).strip().lower() for b in blacklist if str(b).strip()] if blacklist else []
 
     if not w_list and not b_list:
         return True
 
-    # 1. Evaluate Blacklist first (if set)
     if b_list:
         if any(b in ["all", "any", "*"] for b in b_list):
-            return False  # Everything is blocked
+            return False
             
         b_active = [b for b in b_list if b not in ["none", "nothing", "empty", "null"]]
         if b_active:
             for pattern in b_active:
                 try:
-                    if re.search(pattern, val_str, re.IGNORECASE):
+                    pattern_regex = r"\b" + re.escape(pattern) + r"\b"
+                    if re.search(pattern_regex, val_str, re.IGNORECASE):
                         return False
                 except Exception:
                     if pattern in val_str.lower():
                         return False
 
-    # 2. Evaluate Whitelist
     if w_list:
         if any(w in ["all", "any", "*"] for w in w_list):
-            return True  # Everything is allowed
+            return True
             
         if all(w in ["none", "nothing", "empty", "null"] for w in w_list):
-            return False  # Block everything
+            return False
             
         w_active = [w for w in w_list if w not in ["none", "nothing", "empty", "null"]]
         if w_active:
             matched = False
             for pattern in w_active:
                 try:
-                    if re.search(pattern, val_str, re.IGNORECASE):
+                    pattern_regex = r"\b" + re.escape(pattern) + r"\b"
+                    if re.search(pattern_regex, val_str, re.IGNORECASE):
                         matched = True
                         break
                 except Exception:
