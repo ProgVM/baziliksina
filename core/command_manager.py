@@ -345,7 +345,7 @@ class CommandManager:
             "/message [text_with_xml_tags] — Execute XML action tags and deliver text",
             "/shell [command] — Execute bash/shell command in sandbox",
             "/telegram [method] [args_json] — Execute Telethon or raw TL action",
-            "/run [code] — Execute Python script in Sandbox VM",
+            "/run [code/file.py] — Execute Python script or attached .py file",
             "/sql [query] — Execute raw SQL query",
             "/request [method] [url] [json_data] — Send HTTP request",
             "/log [get/set] [lines/category/level] — Read or adjust log settings",
@@ -516,12 +516,38 @@ class CommandManager:
         return await execute_telegram_action(method_name=method, args_json=args_json)
 
     async def _cmd_run(self, args: CLIArgs, user_id: int, chat_id: int, event) -> str:
-        """Python execution command (/run)."""
+        """Python execution command (/run). Supports direct code, attached .py file, or workspace file name."""
         if not await permission_manager.has_permission(user_id, required_rank=RankLevel.ADMIN):
             return "Error: Permission denied."
         code_str = args.raw_tail
-        if not code_str:
-            return "Usage: /run [python code]"
+
+        # 1. Check if a document/file was attached to the message
+        msg = getattr(event, "message", None) if event else None
+        if msg and msg.media and hasattr(msg.media, "document") and msg.media.document:
+            try:
+                from tools import save_file_from_telegram
+                dl_res = await save_file_from_telegram(message_id=msg.id, filename="run_attached.py", chat_id=chat_id)
+                if "Success" in dl_res:
+                    attached_path = config.WORKSPACE_DIR / "run_attached.py"
+                    if attached_path.exists():
+                        with open(attached_path, "r", encoding="utf-8", errors="ignore") as f:
+                            code_str = f.read()
+            except Exception as dl_err:
+                logger.error(f"Error reading attached code file in /run: {str(dl_err)}")
+
+        # 2. Check if raw_tail is a local workspace filename (e.g. /run script.py)
+        if code_str and "\n" not in code_str.strip() and code_str.strip().endswith((".py", ".txt")):
+            target_file = config.WORKSPACE_DIR / os.path.basename(code_str.strip())
+            if target_file.exists():
+                try:
+                    with open(target_file, "r", encoding="utf-8", errors="ignore") as f:
+                        code_str = f.read()
+                except Exception as read_err:
+                    return f"Error reading file '{target_file.name}': {str(read_err)}"
+
+        if not code_str or not code_str.strip():
+            return "Usage: /run [python code] OR attach a .py file with caption /run OR /run [filename.py]"
+
         from tools import execute_python_code
         return await execute_python_code(code=code_str)
 
