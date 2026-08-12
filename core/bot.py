@@ -67,6 +67,19 @@ pending_buffers = {}
 last_profile_updates = {}
 last_chat_updates = {}
 
+split_command_buffers = {}
+
+def has_unclosed_syntax(text: str) -> bool:
+    """Checks if code or text has unclosed triple-quotes or unclosed brackets."""
+    single_triple = text.count("'''")
+    double_triple = text.count('"""')
+    if single_triple % 2 != 0 or double_triple % 2 != 0:
+        return True
+    open_parens = text.count("(") - text.count(")")
+    open_brackets = text.count("[") - text.count("]")
+    open_braces = text.count("{") - text.count("}")
+    return open_parens > 0 or open_brackets > 0 or open_braces > 0
+
 async def upload_media_to_google_background(media_info_str):
     if not media_info_str:
         return
@@ -334,6 +347,32 @@ async def on_new_message(event):
     input_chat_entity = await event.get_input_chat()
     entity_cache[chat_id] = input_chat_entity
 
+    buffer_key = (chat_id, event.sender_id)
+
+    # 1. Check if incoming message is a continuation of a split command
+    if buffer_key in split_command_buffers:
+        buf = split_command_buffers[buffer_key]
+        if buf.get("task") and not buf["task"].done():
+            buf["task"].cancel()
+
+        buf["payload"] += "\n" + (event.message.message or "")
+        logger.info(f"Stitched continuation message for split command in chat {chat_id}. Total length: {len(buf['payload'])} chars.")
+
+        async def _wait_and_execute(key):
+            await asyncio.sleep(1.2)
+            data = split_command_buffers.pop(key, None)
+            if data:
+                full_cmd = data["payload"]
+                first_id = data["msg_id"]
+                logger.info(f"Executing fully stitched split CLI Command in chat {chat_id}: '{full_cmd[:60]}...'")
+                cmd_output = await command_manager.execute_pipeline(full_cmd, event.sender_id, chat_id, event)
+                if cmd_output:
+                    from utils import send_message_safe
+                    await send_message_safe(client, input_chat_entity, cmd_output, reply_to=first_id, parse_mode=None)
+
+        buf["task"] = asyncio.create_task(_wait_and_execute(buffer_key))
+        return
+
     if not await should_process_message_event(event, me, "save", db):
         return
 
@@ -423,6 +462,29 @@ async def on_new_message(event):
     # Check for Command Execution in text or media caption
     raw_payload = event.message.message or ""
     if raw_payload.strip().startswith("/"):
+        if has_unclosed_syntax(raw_payload) or len(raw_payload) > 3500:
+            logger.info(f"Detected unclosed syntax or long command in message #{msg_id}. Buffering for split continuation...")
+            
+            async def _wait_and_execute_initial(key):
+                await asyncio.sleep(1.2)
+                data = split_command_buffers.pop(key, None)
+                if data:
+                    full_cmd = data["payload"]
+                    first_id = data["msg_id"]
+                    logger.info(f"Executing buffered CLI Command in chat {chat_id}: '{full_cmd[:60]}...'")
+                    cmd_output = await command_manager.execute_pipeline(full_cmd, event.sender_id, chat_id, event)
+                    if cmd_output:
+                        from utils import send_message_safe
+                        await send_message_safe(client, input_chat_entity, cmd_output, reply_to=first_id, parse_mode=None)
+
+            task = asyncio.create_task(_wait_and_execute_initial(buffer_key))
+            split_command_buffers[buffer_key] = {
+                "payload": raw_payload,
+                "msg_id": msg_id,
+                "task": task
+            }
+            return
+
         logger.info(f"CLI Command detected in message #{msg_id} of chat {chat_id}: '{raw_payload[:60]}'")
         cmd_output = await command_manager.execute_pipeline(raw_payload, event.sender_id, chat_id, event)
         if cmd_output:
