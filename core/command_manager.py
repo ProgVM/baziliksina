@@ -189,7 +189,7 @@ class CommandManager:
         Pipes stdout/result from one stage as input/parameter to the next stage when '|' is used.
         Returns None for unrecognized commands to silently ignore external bot commands.
         """
-        stages = re.split(r'(\s*(?:&&|\|\||\|)\s*|\s*;\s*(?=/))', pipeline_text)
+        stages = re.split(r'(\s*(?:&&|\|\||\||;)\s*(?=/))', pipeline_text)
         
         last_result = ""
         last_success = True
