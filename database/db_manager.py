@@ -507,6 +507,24 @@ class DBManager:
         await self.db.execute("DELETE FROM messages WHERE id < ?", (min_id_to_keep,))
         await self.db.commit()
 
+    async def clear_chat_history(self, chat_id: str):
+        chat_id = normalize_chat_id(chat_id)
+        await self.db.execute("DELETE FROM messages WHERE chat_id = ?", (str(chat_id),))
+        await self.db.execute("DELETE FROM msgs_meta WHERE chat_id = ?", (str(chat_id),))
+        await self.db.execute("DELETE FROM summaries WHERE chat_id = ?", (str(chat_id),))
+        await self.db.commit()
+
+    async def delete_single_message(self, chat_id: str, msg_id: int) -> bool:
+        chat_id = normalize_chat_id(chat_id)
+        async with self.db.execute("SELECT 1 FROM messages WHERE chat_id = ? AND msg_id = ?", (str(chat_id), int(msg_id))) as cursor:
+            exists = await cursor.fetchone()
+        if not exists:
+            return False
+        await self.db.execute("DELETE FROM messages WHERE chat_id = ? AND msg_id = ?", (str(chat_id), int(msg_id)))
+        await self.db.execute("DELETE FROM msgs_meta WHERE chat_id = ? AND msg_id = ?", (str(chat_id), int(msg_id)))
+        await self.db.commit()
+        return True
+
     async def update_summary(self, chat_id: str, summary_text: str):
         await self.db.execute(
             "INSERT INTO summaries (chat_id, summary) VALUES ('global', ?) "

@@ -108,7 +108,7 @@ class CommandManager:
         self.db = db_manager
         self.client = client_instance
         self.ai_manager = ai_manager_instance
-        self._active_tasks: Dict[int, asyncio.Task] = {} # {chat_id: active_generation_task}
+        self._active_tasks: Dict[int, Dict[str, Any]] = {}
         self._handlers: Dict[str, Callable] = {}
         self._register_builtin_handlers()
 
@@ -118,18 +118,41 @@ class CommandManager:
         self.client = client_instance
         self.ai_manager = ai_manager_instance
 
-    def register_generation_task(self, chat_id: int, task: asyncio.Task):
-        """Tracks active AI generation task for cancellation via /stop or /send."""
-        self._active_tasks[int(chat_id)] = task
+    def register_generation_task(self, chat_id: int, task: asyncio.Task, user_id: int = None):
+        """Tracks active AI generation task and its triggering user_id for cancellation rules."""
+        self._active_tasks[int(chat_id)] = {
+            "task": task,
+            "user_id": user_id
+        }
 
     def unregister_generation_task(self, chat_id: int):
         """Unregisters active AI generation task upon completion."""
         self._active_tasks.pop(int(chat_id), None)
 
-    async def cancel_generation(self, chat_id: int, purge: bool = False) -> bool:
-        """Cancels active AI generation task for a chat and optionally purges uncommitted output."""
+    async def cancel_generation(self, chat_id: int, user_id: int = None, purge: bool = False, force: bool = False) -> Tuple[bool, str]:
+        """Cancels active AI generation task with granular ownership & permission checks."""
         cid = int(chat_id)
-        task = self._active_tasks.get(cid)
+        task_data = self._active_tasks.get(cid)
+        if not task_data:
+            return False, "No active AI generation running for this chat."
+
+        task_user_id = task_data.get("user_id")
+        task = task_data.get("task")
+
+        if user_id and not force and task_user_id and int(user_id) != int(task_user_id):
+            is_bot_admin = await permission_manager.has_permission(user_id, required_rank=RankLevel.ADMIN)
+            is_chat_admin = False
+            try:
+                if self.client:
+                    perm = await self.client.get_permissions(cid, user_id)
+                    if getattr(perm, "is_admin", False) or getattr(perm, "is_creator", False):
+                        is_chat_admin = True
+            except Exception:
+                pass
+
+            if not is_bot_admin and not is_chat_admin:
+                return False, "Permission denied: You can only stop your own generation or must be a chat/bot admin."
+
         canceled = False
         if task and not task.done():
             task.cancel()
@@ -152,7 +175,7 @@ class CommandManager:
             except Exception as e:
                 logger.error(f"Error purging uncommitted message for chat {cid}: {str(e)}")
 
-        return canceled
+        return canceled, "Active AI generation stopped."
 
     def _register_builtin_handlers(self):
         """Registers all built-in command handlers."""
@@ -161,6 +184,10 @@ class CommandManager:
         self._handlers["zapoi"] = self._cmd_stop
         self._handlers["unzapoi"] = self._cmd_stop
         self._handlers["send"] = self._cmd_send
+        self._handlers["clear"] = self._cmd_clear
+        self._handlers["delmsg"] = self._cmd_delmsg
+        self._handlers["deletemsg"] = self._cmd_delmsg
+        self._handlers["editmsg"] = self._cmd_editmsg
         self._handlers["admin"] = self._cmd_admin
         self._handlers["config"] = self._cmd_config
         self._handlers["prompt"] = self._cmd_prompt
@@ -261,7 +288,6 @@ class CommandManager:
             except Exception as e:
                 return f"Error executing custom command /{cmd_name}: {str(e)}"
 
-        # Silently ignore commands intended for other Telegram bots
         return None
 
     # --- USER COMMAND HANDLERS ---
@@ -284,16 +310,18 @@ class CommandManager:
     async def _cmd_stop(self, args: CLIArgs, user_id: int, chat_id: int, event) -> str:
         """Stop Generation command (/stop). Stops active AI generation task."""
         purge = args.has_flag("purge", "p")
-        canceled = await self.cancel_generation(chat_id, purge=purge)
-        status = "Active AI generation stopped." if canceled else "No active AI generation running for this chat."
-        if purge:
-            status += " Uncommitted output purged."
-        return status
+        success, msg = await self.cancel_generation(chat_id, user_id=user_id, purge=purge)
+        if success and purge:
+            msg += " Uncommitted output purged."
+        return msg
 
     async def _cmd_send(self, args: CLIArgs, user_id: int, chat_id: int, event) -> Optional[str]:
         """Instant Send command (/send). Cancels active generation and starts fresh query."""
         drop_previous = args.has_flag("drop-previous", "d")
-        await self.cancel_generation(chat_id, purge=drop_previous)
+        
+        success, msg = await self.cancel_generation(chat_id, user_id=user_id, purge=drop_previous)
+        if not success and "Permission denied" in msg:
+            return f"Error: {msg}"
 
         msg_text = args.raw_tail
         for f in ["--drop-previous", "-d"]:
@@ -305,6 +333,165 @@ class CommandManager:
             return None
 
         return "Error: AI Manager is not bound."
+
+    async def _cmd_clear(self, args: CLIArgs, user_id: int, chat_id: int, event) -> str:
+        """Clear chat context history (/clear [chat_id/@username])."""
+        target_chat = str(chat_id)
+        if args.positional:
+            target_chat = args.positional[0]
+
+        is_bot_admin = await permission_manager.has_permission(user_id, required_rank=RankLevel.ADMIN)
+        
+        if target_chat != str(chat_id) and not is_bot_admin:
+            try:
+                if self.client:
+                    perm = await self.client.get_permissions(target_chat, user_id)
+                    if not getattr(perm, "participant", False) and not getattr(perm, "is_admin", False) and not getattr(perm, "is_creator", False):
+                        return f"Permission denied: You are not a participant in chat {target_chat}."
+            except Exception as e:
+                return f"Permission denied: Unable to verify membership in chat {target_chat}: {str(e)}"
+
+        if self.db:
+            await self.db.clear_chat_history(target_chat)
+            return f"Context history for chat {target_chat} cleared successfully."
+
+        return "Error: Database is not initialized."
+
+    async def _cmd_delmsg(self, args: CLIArgs, user_id: int, chat_id: int, event) -> str:
+        """Delete message from context history (/delmsg [msg_id] [chat_id])."""
+        target_msg_id = None
+        target_chat_id = str(chat_id)
+
+        if event and event.message and event.message.is_reply:
+            target_msg_id = event.message.reply_to.reply_to_msg_id
+            if args.positional:
+                target_chat_id = args.positional[0]
+        elif args.positional:
+            try:
+                target_msg_id = int(args.positional[0])
+                if len(args.positional) > 1:
+                    target_chat_id = args.positional[1]
+            except ValueError:
+                return "Error: Invalid message ID specified."
+
+        if not target_msg_id:
+            return "Usage: Reply to a message with /delmsg or specify /delmsg [msg_id] [chat_id]"
+
+        is_bot_admin = await permission_manager.has_permission(user_id, required_rank=RankLevel.ADMIN)
+
+        if self.db:
+            async with self.db.db.execute(
+                "SELECT role, text FROM messages WHERE chat_id = ? AND msg_id = ? LIMIT 1",
+                (target_chat_id, target_msg_id)
+            ) as cursor:
+                row = await cursor.fetchone()
+
+            if not row:
+                return f"Error: Message #{target_msg_id} not found in database history for chat {target_chat_id}."
+
+            msg_role, msg_text = row
+            msg_meta = await self.db.get_msg_meta(target_chat_id, target_msg_id)
+
+            is_own_content = False
+
+            if msg_role == "user":
+                if msg_meta and msg_meta.get("raw_meta"):
+                    sender_data = msg_meta["raw_meta"].get("to_dict_raw", {})
+                    from_id = str(sender_data.get("from_id", {}).get("user_id", "")) or str(sender_data.get("from_id", ""))
+                    if from_id == str(user_id):
+                        is_own_content = True
+            elif msg_role == "model":
+                if msg_meta and msg_meta.get("meta_text"):
+                    meta_text = msg_meta["meta_text"]
+                    if f"[ID: {user_id}]" in meta_text or f"user_id={user_id}" in meta_text:
+                        is_own_content = True
+
+            if not is_own_content and not is_bot_admin:
+                is_chat_admin = False
+                try:
+                    if self.client:
+                        perm = await self.client.get_permissions(target_chat_id, user_id)
+                        if getattr(perm, "is_admin", False) or getattr(perm, "is_creator", False):
+                            is_chat_admin = True
+                except Exception:
+                    pass
+
+                if not is_chat_admin:
+                    return "Permission denied: You can only delete your own content or must be a chat/bot admin."
+
+            deleted = await self.db.delete_single_message(target_chat_id, target_msg_id)
+            if deleted:
+                return f"Message #{target_msg_id} deleted from context history for chat {target_chat_id}."
+            return f"Error deleting message #{target_msg_id}."
+
+        return "Error: Database is not initialized."
+
+    async def _cmd_editmsg(self, args: CLIArgs, user_id: int, chat_id: int, event) -> str:
+        """Edit message in context history (/editmsg [msg_id] <new_text>)."""
+        target_msg_id = None
+        target_chat_id = str(chat_id)
+        new_text = ""
+
+        if event and event.message and event.message.is_reply:
+            target_msg_id = event.message.reply_to.reply_to_msg_id
+            new_text = args.raw_tail
+        elif args.positional:
+            try:
+                target_msg_id = int(args.positional[0])
+                parts = args.raw_tail.split(maxsplit=1)
+                new_text = parts[1] if len(parts) > 1 else ""
+            except ValueError:
+                return "Error: Invalid message ID specified."
+
+        if not target_msg_id or not new_text:
+            return "Usage: Reply to a message with /editmsg <new_text> or specify /editmsg [msg_id] <new_text>"
+
+        is_bot_admin = await permission_manager.has_permission(user_id, required_rank=RankLevel.ADMIN)
+
+        if self.db:
+            async with self.db.db.execute(
+                "SELECT role, text FROM messages WHERE chat_id = ? AND msg_id = ? LIMIT 1",
+                (target_chat_id, target_msg_id)
+            ) as cursor:
+                row = await cursor.fetchone()
+
+            if not row:
+                return f"Error: Message #{target_msg_id} not found in database history for chat {target_chat_id}."
+
+            msg_role, orig_text = row
+            msg_meta = await self.db.get_msg_meta(target_chat_id, target_msg_id)
+
+            is_own_content = False
+
+            if msg_role == "user":
+                if msg_meta and msg_meta.get("raw_meta"):
+                    sender_data = msg_meta["raw_meta"].get("to_dict_raw", {})
+                    from_id = str(sender_data.get("from_id", {}).get("user_id", "")) or str(sender_data.get("from_id", ""))
+                    if from_id == str(user_id):
+                        is_own_content = True
+            elif msg_role == "model":
+                if msg_meta and msg_meta.get("meta_text"):
+                    meta_text = msg_meta["meta_text"]
+                    if f"[ID: {user_id}]" in meta_text or f"user_id={user_id}" in meta_text:
+                        is_own_content = True
+
+            if not is_own_content and not is_bot_admin:
+                is_chat_admin = False
+                try:
+                    if self.client:
+                        perm = await self.client.get_permissions(target_chat_id, user_id)
+                        if getattr(perm, "is_admin", False) or getattr(perm, "is_creator", False):
+                            is_chat_admin = True
+                except Exception:
+                    pass
+
+                if not is_chat_admin:
+                    return "Permission denied: You can only edit your own content or must be a chat/bot admin."
+
+            await self.db.update_message_text(target_chat_id, target_msg_id, new_text)
+            return f"Message #{target_msg_id} text in context updated for chat {target_chat_id}."
+
+        return "Error: Database is not initialized."
 
     async def _cmd_message(self, args: CLIArgs, user_id: int, chat_id: int, event) -> Optional[str]:
         """Message command (/message or /msg). Delivers text with optional embedded XML tags."""
@@ -335,6 +522,9 @@ class CommandManager:
             "/q [--no-save/-n] [text] — Send message without triggering AI response",
             "/stop [--purge/-p] — Stop active AI generation in current chat",
             "/send [--drop-previous/-d] [text] — Instant query to AI, resetting previous task",
+            "/clear [chat_id/@username] — Clear chat context history",
+            "/delmsg [msg_id] [chat_id] — Delete message from context history",
+            "/editmsg [msg_id] <new_text> — Edit message text in context history",
             "/help [all/user/admin/command/category] — Display help catalog"
         ]
 
@@ -523,7 +713,6 @@ class CommandManager:
 
         msg = getattr(event, "message", None) if event else None
 
-        # 1. Determine target message containing document (either same message or replied-to message)
         target_msg_with_file = None
         if msg and msg.media and hasattr(msg.media, "document") and msg.media.document:
             target_msg_with_file = msg
@@ -535,7 +724,6 @@ class CommandManager:
             except Exception as r_err:
                 logger.error(f"Error fetching reply message in /run: {str(r_err)}")
 
-        # 2. Download and read attached code file if target message exists
         if target_msg_with_file:
             try:
                 from tools import save_file_from_telegram
@@ -548,7 +736,6 @@ class CommandManager:
             except Exception as dl_err:
                 logger.error(f"Error reading attached code file in /run: {str(dl_err)}")
 
-        # 3. Check if raw_tail is a local workspace filename (e.g. /run script.py)
         if code_str and "\n" not in code_str.strip() and code_str.strip().endswith((".py", ".txt")):
             target_file = config.WORKSPACE_DIR / os.path.basename(code_str.strip())
             if target_file.exists():
