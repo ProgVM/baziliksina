@@ -108,6 +108,9 @@ temp_media/
 # Local config override
 config/config.json
 
+# Local prompts
+config/*_local.txt
+
 # =====================================================================
 # Patches and Diffs
 # =====================================================================
