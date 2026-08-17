@@ -221,6 +221,15 @@ def markdown_to_telegram_html(text: str) -> str:
 
     import re
 
+    # 0. Protect existing <code> and <pre> blocks from being mangled by markdown regexes
+    placeholders = {}
+    def _save_block(m):
+        key = f"__HTML_PRE_CODE_{len(placeholders)}__"
+        placeholders[key] = m.group(0)
+        return key
+
+    text = re.sub(r'<(pre|code)\b[^>]*>.*?</\1>', _save_block, text, flags=re.DOTALL | re.IGNORECASE)
+
     # 1. Code blocks with optional language specifier: ```python\ncode```
     def _repl_code_block(m):
         lang = m.group(1).strip() if m.group(1) else ""
@@ -261,12 +270,16 @@ def markdown_to_telegram_html(text: str) -> str:
     # 8. Bold text: **text**
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
 
-    # 9. Italic text: __text__ or *text*
+    # 9. Italic text: __text__ or *text* (word-boundary safe to avoid eating math multiplication '*')
     text = re.sub(r'__(.*?)__', r'<i>\1</i>', text, flags=re.DOTALL)
-    text = re.sub(r'(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)', r'<i>\1</i>', text, flags=re.DOTALL)
+    text = re.sub(r'(?<![\w*])\*([^\s*](?:.*?[^\s*])?)\*(?![\w*])', r'<i>\1</i>', text)
 
     # 10. Strikethrough: ~~text~~
     text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
+
+    # Restore protected <code> and <pre> tags
+    for k, v in placeholders.items():
+        text = text.replace(k, v)
 
     return text
 
@@ -493,14 +506,13 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
         m_type_raw = get_media_type_description(event.message) or "text"
         m_type_lower = m_type_raw.lower()
         
-        # Normalize media types for seamless config filtering
         if "voice" in m_type_lower:
             m_type_norm = "voice"
         elif "video note" in m_type_lower or m_type_lower == "video note":
             m_type_norm = "video"
-        elif "file" in m_type_lower or m_type_lower == "document":
+        elif "file" in m_type_lower or "document" in m_type_lower:
             m_type_norm = "document"
-        elif "todo" in m_type_lower or m_type_lower == "list":
+        elif "todo" in m_type_lower or "list" in m_type_lower:
             m_type_norm = "list"
         else:
             m_type_norm = m_type_lower
@@ -567,7 +579,6 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
         is_group = event.is_group or (event.is_channel and getattr(event.chat, 'megagroup', False))
         is_channel = event.is_channel and not getattr(event.chat, 'megagroup', False)
 
-        # Match AI_RESPONSE_MODE
         if config.AI_RESPONSE_MODE == "private_only" and not is_private:
             logger.info(f"[Message {event.message.id}] Skipping trigger: Private-only mode, but chat is not private.")
             return False
@@ -578,7 +589,6 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
             logger.info(f"[Message {event.message.id}] Skipping trigger: Channel-only mode, but chat is not a channel.")
             return False
 
-        # Match AI_RESPONSE_TRIGGERS
         if is_private:
             triggered = True
         else:
@@ -627,7 +637,6 @@ def should_process_reaction_event(emoji_or_id: str, actor_id: int, bot_id: int, 
     import config
     is_outgoing = actor_id == bot_id
 
-    # 1. Base Save / Trigger Flags
     if is_outgoing:
         if is_add and not config.SAVE_OUTGOING_REACTION_ADD: return False
         if not is_add and not config.SAVE_OUTGOING_REACTION_REMOVE: return False
@@ -635,7 +644,6 @@ def should_process_reaction_event(emoji_or_id: str, actor_id: int, bot_id: int, 
         if is_add and not config.SAVE_INCOMING_REACTION_ADD: return False
         if not is_add and not config.SAVE_INCOMING_REACTION_REMOVE: return False
 
-    # 2. Match Reaction Whitelist / Blacklist
     if config.REACTION_BLACKLIST and emoji_or_id in config.REACTION_BLACKLIST: return False
     if config.REACTION_WHITELIST and emoji_or_id not in config.REACTION_WHITELIST: return False
 
@@ -670,7 +678,6 @@ def get_all_project_modules() -> dict:
     modules = {}
     base_dir = Path(__file__).resolve().parent.parent
     
-    # Scan directories in project root, excluding standard caches, git files, and virtual environments
     subdirs = [p for p in base_dir.iterdir() if p.is_dir() and not p.name.startswith((".", "_")) and p.name not in ["bot_workspace", "emoji_cache", "avatar_cache", "gift_cache", "temp_media", "venv"]]
     
     for sub_path in subdirs:
