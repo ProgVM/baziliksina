@@ -221,14 +221,14 @@ def markdown_to_telegram_html(text: str) -> str:
 
     import re
 
-    # 0. Protect existing <code> and <pre> blocks from being mangled by markdown regexes
+    # 0. Protect existing HTML tags from being altered by markdown regexes
     placeholders = {}
     def _save_block(m):
-        key = f"__HTML_PRE_CODE_{len(placeholders)}__"
+        key = f"\x00HTMLTAG{len(placeholders)}\x00"
         placeholders[key] = m.group(0)
         return key
 
-    text = re.sub(r'<(pre|code)\b[^>]*>.*?</\1>', _save_block, text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<(pre|code|blockquote|tg-spoiler|tg-emoji|a|details|summary)\b[^>]*>.*?</\1>', _save_block, text, flags=re.DOTALL | re.IGNORECASE)
 
     # 1. Code blocks with optional language specifier: ```python\ncode```
     def _repl_code_block(m):
@@ -270,14 +270,15 @@ def markdown_to_telegram_html(text: str) -> str:
     # 8. Bold text: **text**
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
 
-    # 9. Italic text: __text__ or *text* (word-boundary safe to avoid eating math multiplication '*')
-    text = re.sub(r'__(.*?)__', r'<i>\1</i>', text, flags=re.DOTALL)
+    # 9. Italic text: __text__ or *text* (word-boundary safe to avoid eating math multiplication '*' or underscores)
+    text = re.sub(r'(?<!\w)__([^\s_](?:.*?[^\s_])?)__(?!\w)', r'<i>\1</i>', text, flags=re.DOTALL)
     text = re.sub(r'(?<![\w*])\*([^\s*](?:.*?[^\s*])?)\*(?![\w*])', r'<i>\1</i>', text)
+    text = re.sub(r'(?<!\w)_([^\s_](?:.*?[^\s_])?)_(?!\w)', r'<i>\1</i>', text)
 
     # 10. Strikethrough: ~~text~~
     text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
 
-    # Restore protected <code> and <pre> tags
+    # Restore protected HTML tags
     for k, v in placeholders.items():
         text = text.replace(k, v)
 
