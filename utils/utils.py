@@ -81,7 +81,6 @@ def matches_filter(val: str, whitelist: list, blacklist: list, default_allow: bo
     Universal checker for whitelists and blacklists supporting wildcards/keywords.
     Keywords: 'all', 'any', '*', 'none', 'nothing', 'empty', 'null'.
     """
-    import re
     val_str = str(val).strip()
     if not val_str:
         return default_allow
@@ -137,6 +136,7 @@ def matches_filter(val: str, whitelist: list, blacklist: list, default_allow: bo
 
     return True
 
+
 class TelegramJSONEncoder(json.JSONEncoder):
     """A custom JSON encoder that converts any Telegram data types into a serializable format."""
     def default(self, obj):
@@ -179,9 +179,9 @@ def safe_deserialize(json_str: str) -> dict:
 
 def sanitize_filename(name: str) -> str:
     """Sanitizes a string for use as a safe filename on disk."""
-    import re
     cleaned = re.sub(r'[\\/*?:"<>|]', "", name)
     return cleaned.replace(" ", "_")[:100]
+
 
 async def wait_for_google_file_active(gemini_client, file_name: str, timeout_seconds: int = None) -> bool:
     """
@@ -189,7 +189,6 @@ async def wait_for_google_file_active(gemini_client, file_name: str, timeout_sec
     transitions from 'PROCESSING' to 'ACTIVE' status. Returns True if successful.
     """
     import asyncio
-    import logging
     from config import GOOGLE_UPLOAD_TIMEOUT
     
     if timeout_seconds is None:
@@ -220,8 +219,7 @@ def markdown_to_telegram_html(text: str) -> str:
     if not text:
         return text
 
-    import re
-
+    # 0. Protect existing HTML tags from being altered by markdown regexes
     placeholders = {}
     def _save_block(m):
         key = f"\x00HTMLTAG{len(placeholders)}\x00"
@@ -270,7 +268,7 @@ def markdown_to_telegram_html(text: str) -> str:
     # 8. Bold text: **text**
     text = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', text, flags=re.DOTALL)
 
-    # 9. Italic text: __text__ or *text*
+    # 9. Italic text: __text__ or *text* (word-boundary safe to avoid eating math multiplication '*' or underscores)
     text = re.sub(r'(?<!\w)__([^\s_](?:.*?[^\s_])?)__(?!\w)', r'<i>\1</i>', text, flags=re.DOTALL)
     text = re.sub(r'(?<![\w*])\*([^\s*](?:.*?[^\s*])?)\*(?![\w*])', r'<i>\1</i>', text)
     text = re.sub(r'(?<!\w)_([^\s_](?:.*?[^\s_])?)_(?!\w)', r'<i>\1</i>', text)
@@ -278,6 +276,7 @@ def markdown_to_telegram_html(text: str) -> str:
     # 10. Strikethrough: ~~text~~
     text = re.sub(r'~~(.*?)~~', r'<s>\1</s>', text, flags=re.DOTALL)
 
+    # Restore protected HTML tags
     for k, v in placeholders.items():
         text = text.replace(k, v)
 
@@ -288,16 +287,16 @@ def safe_telegram_html(text: str) -> str:
     """
     Safely converts Markdown syntax to Telegram HTML tags and sanitizes HTML entities,
     preserving all rich text elements supported by Telegram (bold, italic, underline,
-    strikethrough, spoiler, tg-emoji, code, pre, blockquote, details, sub, sup, mark).
-    Supports hyphenated tags (tg-emoji, tg-spoiler) and avoids double-escaping HTML entities.
+    strikethrough, spoiler, tg-emoji, emoji, code, pre, blockquote, details, sub, sup, mark).
+    Supports hyphenated tags (tg-emoji, tg-spoiler) and avoids double-escaping valid HTML entities.
     """
     if not text:
         return text
 
-    import re
-
+    # First convert Markdown to valid Telegram HTML tags
     text = markdown_to_telegram_html(text)
 
+    # Supported Telegram HTML tags catalog
     allowed_tags = {
         'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 
         'span', 'tg-spoiler', 'a', 'tg-emoji', 'emoji', 'code', 'pre', 'blockquote',
@@ -308,6 +307,7 @@ def safe_telegram_html(text: str) -> str:
     tag_pattern = re.compile(r'<(/?)(\b[a-zA-Z0-9_-]+)([^>]*)>')
     
     def escape_text_chunk(s: str) -> str:
+        # Escape & only if not already a valid HTML entity
         s = re.sub(r'&(?!(?:[a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);)', '&amp;', s)
         s = s.replace('<', '&lt;').replace('>', '&gt;')
         return s
@@ -336,10 +336,12 @@ def safe_telegram_html(text: str) -> str:
 
 
 def matches_advanced_filter(message_or_event, me, whitelist: list, blacklist: list, is_trigger_fired: bool = False, default_allow: bool = True) -> bool:
-    import re
+    """
+    An advanced, unified filter evaluation engine that processes structured prefix rules
+    (peer:, type:, trigger:, user:, chat:, text:, caption:) and standard text regex matches.
+    """
     from parser import get_media_type_description
     from telethon.tl import types as tl_types
-    import config
 
     msg = message_or_event.message if hasattr(message_or_event, "message") else message_or_event
     if not msg:
@@ -348,22 +350,31 @@ def matches_advanced_filter(message_or_event, me, whitelist: list, blacklist: li
     if msg.sender_id == me.id and not whitelist and not blacklist:
         return default_allow
 
+    # 1. Resolve text and caption states
     text_content = msg.message or ""
     is_caption = msg.media is not None
     
+    # 2. Extract message type
     m_type = (get_media_type_description(msg) or "text").lower()
-    if "voice" in m_type: m_type_norm = "voice"
-    elif "video note" in m_type: m_type_norm = "video"
-    elif "file" in m_type or "document" in m_type: m_type_norm = "document"
-    elif "todo" in m_type or "list" in m_type: m_type_norm = "list"
-    else: m_type_norm = m_type
+    if "voice" in m_type:
+        m_type_norm = "voice"
+    elif "video note" in m_type:
+        m_type_norm = "video"
+    elif "file" in m_type or "document" in m_type:
+        m_type_norm = "document"
+    elif "todo" in m_type or "list" in m_type:
+        m_type_norm = "list"
+    else:
+        m_type_norm = m_type
 
+    # 3. Standardize peer type
     is_private = getattr(message_or_event, 'is_private', False) or (msg.is_private if hasattr(msg, 'is_private') else isinstance(msg.peer_id, tl_types.PeerUser))
     is_group = getattr(message_or_event, 'is_group', False) or (msg.is_group if hasattr(msg, 'is_group') else isinstance(msg.peer_id, tl_types.PeerChat))
     is_channel = getattr(message_or_event, 'is_channel', False) or (msg.is_channel if hasattr(msg, 'is_channel') else isinstance(msg.peer_id, tl_types.PeerChannel))
     
     peer_type = "private" if is_private else ("group" if is_group else "channel")
 
+    # 4. Resolve sender and chat IDs/usernames
     sender_id = str(msg.sender_id) if msg.sender_id else ""
     chat_id = str(msg.chat_id) if msg.chat_id else ""
     
@@ -374,6 +385,7 @@ def matches_advanced_filter(message_or_event, me, whitelist: list, blacklist: li
     if hasattr(message_or_event, "chat") and message_or_event.chat and getattr(message_or_event.chat, "username", None):
         chat_username = f"@{message_or_event.chat.username.lower()}"
 
+    # 5. Standardize trigger details
     trigger_state = "trigger:none"
     if is_trigger_fired:
         trigger_state = "trigger:all"
@@ -383,22 +395,32 @@ def matches_advanced_filter(message_or_event, me, whitelist: list, blacklist: li
         last_name_val = (me.last_name or "").lower()
         full_name_val = f"{first_name_val} {last_name_val}".strip()
         
-        if first_name_val and first_name_val in t_lower: trigger_state = "trigger:first_name"
-        elif last_name_val and last_name_val in t_lower: trigger_state = "trigger:last_name"
-        elif full_name_val and full_name_val in t_lower: trigger_state = "trigger:full_name"
-        elif me.username and f"@{me.username.lower()}" in t_lower: trigger_state = "trigger:username"
-        elif getattr(message_or_event, "mentioned", False): trigger_state = "trigger:mentioned"
-        elif msg.is_reply: trigger_state = "trigger:reply_to_me"
+        if first_name_val and first_name_val in t_lower:
+            trigger_state = "trigger:first_name"
+        elif last_name_val and last_name_val in t_lower:
+            trigger_state = "trigger:last_name"
+        elif full_name_val and full_name_val in t_lower:
+            trigger_state = "trigger:full_name"
+        elif me.username and f"@{me.username.lower()}" in t_lower:
+            trigger_state = "trigger:username"
+        elif getattr(message_or_event, "mentioned", False):
+            trigger_state = "trigger:mentioned"
+        elif msg.is_reply:
+            trigger_state = "trigger:reply_to_me"
 
     def matches_rule(rule_item: str) -> bool:
         r = rule_item.strip().lower()
-        if not r: return False
-        if r in ["all", "any", "*"]: return True
-        if r == "none": return False
+        if not r:
+            return False
+        if r in ["all", "any", "*"]:
+            return True
+        if r == "none":
+            return False
         if r.startswith("peer:"):
             p_val = r.split(":", 1)[1]
             return peer_type == p_val or (p_val == "group" and is_group) or (p_val == "channel" and is_channel) or (p_val == "private" and is_private)
-        if r.startswith("type:"): return m_type_norm == r.split(":", 1)[1]
+        if r.startswith("type:"):
+            return m_type_norm == r.split(":", 1)[1]
         if r.startswith("user:") or r.startswith("sender:"):
             u_val = r.split(":", 1)[1]
             return sender_id == u_val or (sender_username and u_val == sender_username)
@@ -409,7 +431,8 @@ def matches_advanced_filter(message_or_event, me, whitelist: list, blacklist: li
             t_val = r.split(":", 1)[1]
             if t_val == "all": return is_trigger_fired
             if t_val == "none": return not is_trigger_fired
-            if t_val in ["name", "first_name"] and trigger_state in ["trigger:name", "trigger:first_name"]: return True
+            if t_val in ["name", "first_name"] and trigger_state in ["trigger:name", "trigger:first_name"]:
+                return True
             return trigger_state == f"trigger:{t_val}"
         if r.startswith("text:"):
             t_val = r.split(":", 1)[1]
@@ -421,29 +444,39 @@ def matches_advanced_filter(message_or_event, me, whitelist: list, blacklist: li
             if not is_caption: return False
             try: return bool(re.search(c_val, text_content, re.IGNORECASE))
             except Exception: return c_val in text_content.lower()
-        if r.replace("-", "").isdigit(): return r in [sender_id, chat_id]
-        if r.startswith("@"): return r in [sender_username, chat_username]
+        if r.replace("-", "").isdigit():
+            return r in [sender_id, chat_id]
+        if r.startswith("@"):
+            return r in [sender_username, chat_username]
         try: return bool(re.search(rule_item, text_content, re.IGNORECASE))
         except Exception: return r in text_content.lower()
 
-    if isinstance(whitelist, str): whitelist = [p.strip() for p in whitelist.split(",") if p.strip()]
-    if isinstance(blacklist, str): blacklist = [p.strip() for p in blacklist.split(",") if p.strip()]
+    if isinstance(whitelist, str):
+        whitelist = [p.strip() for p in whitelist.split(",") if p.strip()]
+    if isinstance(blacklist, str):
+        blacklist = [p.strip() for p in blacklist.split(",") if p.strip()]
 
     w_list = [str(w).strip() for w in whitelist if str(w).strip()] if whitelist else []
     b_list = [str(b).strip() for b in blacklist if str(b).strip()] if blacklist else []
 
     if b_list:
         for b_rule in b_list:
-            if matches_rule(b_rule): return False
+            if matches_rule(b_rule):
+                return False
 
     if w_list:
         for w_rule in w_list:
-            if matches_rule(w_rule): return True
+            if matches_rule(w_rule):
+                return True
         return False
     return default_allow
 
+
 async def should_process_message_event(event, me, action_type="save", db=None) -> bool:
-    import re
+    """
+    Evaluates whether an incoming or outgoing message event should be processed
+    (either 'save' to DB or 'generate' / trigger AI response) based on config.
+    """
     import config
     from parser import get_media_type_description
 
@@ -452,34 +485,58 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
 
     is_outgoing = event.sender_id == me.id
 
+    # 1. Base Save / Trigger Flags Checks
     if action_type == "save":
         if is_outgoing:
-            if not config.SAVE_OUTGOING_NEW_MESSAGES: return False
+            if not config.SAVE_OUTGOING_NEW_MESSAGES:
+                logger.info(f"[Message {event.message.id}] Skipping save: SAVE_OUTGOING_NEW_MESSAGES is disabled.")
+                return False
         else:
-            if not config.SAVE_INCOMING_MESSAGES: return False
+            if not config.SAVE_INCOMING_MESSAGES:
+                logger.info(f"[Message {event.message.id}] Skipping save: SAVE_INCOMING_MESSAGES is disabled.")
+                return False
     elif action_type == "trigger":
         if is_outgoing:
-            if not config.TRIGGER_ON_OUTGOING_NEW_MESSAGES: return False
+            if not config.TRIGGER_ON_OUTGOING_NEW_MESSAGES:
+                logger.info(f"[Message {event.message.id}] Skipping trigger: TRIGGER_ON_OUTGOING_NEW_MESSAGES is disabled.")
+                return False
         else:
-            if not config.TRIGGER_ON_INCOMING: return False
+            if not config.TRIGGER_ON_INCOMING:
+                logger.info(f"[Message {event.message.id}] Skipping trigger: TRIGGER_ON_INCOMING is disabled.")
+                return False
 
+        # 2. Check Allowed Message Types
         m_type_raw = get_media_type_description(event.message) or "text"
         m_type_lower = m_type_raw.lower()
         
-        if "voice" in m_type_lower: m_type_norm = "voice"
-        elif "video note" in m_type_lower or m_type_lower == "video note": m_type_norm = "video"
-        elif "file" in m_type_lower or "document" in m_type_lower: m_type_norm = "document"
-        elif "todo" in m_type_lower or "list" in m_type_lower: m_type_norm = "list"
-        else: m_type_norm = m_type_lower
+        if "voice" in m_type_lower:
+            m_type_norm = "voice"
+        elif "video note" in m_type_lower or m_type_lower == "video note":
+            m_type_norm = "video"
+        elif "file" in m_type_lower or "document" in m_type_lower:
+            m_type_norm = "document"
+        elif "todo" in m_type_lower or "list" in m_type_lower:
+            m_type_norm = "list"
+        else:
+            m_type_norm = m_type_lower
 
         allowed_types_lower = [t.lower().strip() for t in config.ALLOWED_MESSAGE_TYPES]
-        if m_type_norm not in allowed_types_lower: return False
+        if m_type_norm not in allowed_types_lower:
+            logger.info(f"[Message {event.message.id}] Skipping: Media type '{m_type_raw}' (normalized to '{m_type_norm}') is not allowed in ALLOWED_MESSAGE_TYPES.")
+            return False
 
+    # 3. Check Chat Whitelist / Blacklist Restrictions
     chat_id = int(event.chat_id)
-    if config.CHAT_BLACKLIST and chat_id in config.CHAT_BLACKLIST: return False
-    if config.CHAT_WHITELIST and chat_id not in config.CHAT_WHITELIST: return False
+    if config.CHAT_BLACKLIST and chat_id in config.CHAT_BLACKLIST:
+        logger.info(f"[Message {event.message.id}] Skipping: Chat {chat_id} is in CHAT_BLACKLIST.")
+        return False
+    if config.CHAT_WHITELIST and chat_id not in config.CHAT_WHITELIST:
+        logger.info(f"[Message {event.message.id}] Skipping: Chat {chat_id} is not in CHAT_WHITELIST.")
+        return False
 
+    # 4. Check Message Whitelist / Blacklist
     text_content = event.message.message or ""
+
     is_triggered = False
     text_lower = text_content.lower()
     first_name_val = (me.first_name or "").lower()
@@ -490,17 +547,24 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
     if is_private:
         is_triggered = True
     else:
-        if first_name_val and first_name_val in text_lower: is_triggered = True
-        elif last_name_val and last_name_val in text_lower: is_triggered = True
-        elif full_name_val and full_name_val in text_lower: is_triggered = True
-        elif me.username and f"@{me.username.lower()}" in text_lower: is_triggered = True
-        elif getattr(event, "mentioned", False): is_triggered = True
-        elif event.message.is_reply: is_triggered = True
+        if first_name_val and first_name_val in text_lower:
+            is_triggered = True
+        elif last_name_val and last_name_val in text_lower:
+            is_triggered = True
+        elif full_name_val and full_name_val in text_lower:
+            is_triggered = True
+        elif me.username and f"@{me.username.lower()}" in text_lower:
+            is_triggered = True
+        elif getattr(event, "mentioned", False):
+            is_triggered = True
+        elif event.message.is_reply:
+            is_triggered = True
 
     whitelist = config.MSG_SAVE_WHITELIST if action_type == "save" else config.MSG_GEN_WHITELIST
     blacklist = config.MSG_SAVE_BLACKLIST if action_type == "save" else config.MSG_GEN_BLACKLIST
 
     if not matches_advanced_filter(event, me, whitelist, blacklist, is_trigger_fired=is_triggered, default_allow=True):
+        logger.info(f"[Message {event.message.id}] Skipping: Message text matches blacklist or doesn't match whitelist.")
         return False
 
     if event.message.media:
@@ -510,15 +574,23 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
         elif hasattr(event.message.media, "photo") and event.message.media.photo:
             file_id = str(event.message.media.photo.id)
         if not matches_filter(file_id, config.INCOMING_FILE_WHITELIST, config.INCOMING_FILE_BLACKLIST):
+            logger.info(f"[Message {event.message.id}] Skipping: File attachment ID {file_id} matches blacklist or doesn't match whitelist.")
             return False
 
+    # 5. Additional Generation Triggers check
     if action_type == "trigger" and not is_outgoing:
         is_group = event.is_group or (event.is_channel and getattr(event.chat, 'megagroup', False))
         is_channel = event.is_channel and not getattr(event.chat, 'megagroup', False)
 
-        if config.AI_RESPONSE_MODE == "private_only" and not is_private: return False
-        elif config.AI_RESPONSE_MODE == "group_only" and not is_group: return False
-        elif config.AI_RESPONSE_MODE == "channel_only" and not is_channel: return False
+        if config.AI_RESPONSE_MODE == "private_only" and not is_private:
+            logger.info(f"[Message {event.message.id}] Skipping trigger: Private-only mode, but chat is not private.")
+            return False
+        elif config.AI_RESPONSE_MODE == "group_only" and not is_group:
+            logger.info(f"[Message {event.message.id}] Skipping trigger: Group-only mode, but chat is not a group.")
+            return False
+        elif config.AI_RESPONSE_MODE == "channel_only" and not is_channel:
+            logger.info(f"[Message {event.message.id}] Skipping trigger: Channel-only mode, but chat is not a channel.")
+            return False
 
         if is_private:
             triggered = True
@@ -526,15 +598,21 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
             triggered = False
             has_name_trigger = False
             if "name" in config.AI_RESPONSE_TRIGGERS or "first_name" in config.AI_RESPONSE_TRIGGERS:
-                if first_name_val and first_name_val in text_lower: has_name_trigger = True
+                if first_name_val and first_name_val in text_lower:
+                    has_name_trigger = True
             if "last_name" in config.AI_RESPONSE_TRIGGERS:
-                if last_name_val and last_name_val in text_lower: has_name_trigger = True
+                if last_name_val and last_name_val in text_lower:
+                    has_name_trigger = True
             if "full_name" in config.AI_RESPONSE_TRIGGERS:
-                if full_name_val and full_name_val in text_lower: has_name_trigger = True
-            if has_name_trigger: triggered = True
+                if full_name_val and full_name_val in text_lower:
+                    has_name_trigger = True
+            if has_name_trigger:
+                triggered = True
             if "username" in config.AI_RESPONSE_TRIGGERS and me.username:
-                if f"@{me.username.lower()}" in text_lower: triggered = True
-            if "mentioned" in config.AI_RESPONSE_TRIGGERS and event.mentioned: triggered = True
+                if f"@{me.username.lower()}" in text_lower:
+                    triggered = True
+            if "mentioned" in config.AI_RESPONSE_TRIGGERS and event.mentioned:
+                triggered = True
             if "reply_to_me" in config.AI_RESPONSE_TRIGGERS and event.message.is_reply:
                 if event.message.reply_to and db:
                     reply_to_msg_id = event.message.reply_to.reply_to_msg_id
@@ -543,14 +621,22 @@ async def should_process_message_event(event, me, action_type="save", db=None) -
                         (str(event.chat_id), reply_to_msg_id)
                     ) as cursor:
                         row = await cursor.fetchone()
-                    if row and row[0] == "model": triggered = True
-                else: triggered = True
-            if config.AI_RESPONSE_TRIGGERS and not triggered: return False
+                    if row and row[0] == "model":
+                        triggered = True
+                else:
+                    triggered = True
+            if config.AI_RESPONSE_TRIGGERS and not triggered:
+                logger.info(f"[Message {event.message.id}] Skipping trigger: Message did not fire any of the active triggers: {config.AI_RESPONSE_TRIGGERS}")
+                return False
 
     return True
 
 
 def should_process_reaction_event(emoji_or_id: str, actor_id: int, bot_id: int, is_add: bool) -> bool:
+    """
+    Evaluates whether a reaction update event should be logged or triggered
+    based on active whitelists, blacklists, and save/trigger settings.
+    """
     import config
     is_outgoing = actor_id == bot_id
 
@@ -566,10 +652,12 @@ def should_process_reaction_event(emoji_or_id: str, actor_id: int, bot_id: int, 
 
     return True
 
+
 def load_feedback_template(section_name: str, default_text: str) -> str:
+    """
+    Loads a specific notification section from config/feedback_prompt.txt dynamically.
+    """
     import config
-    from pathlib import Path
-    import re
     path = config.BASE_DIR / "config" / "feedback_prompt.txt"
     if not path.exists():
         return default_text
@@ -583,13 +671,15 @@ def load_feedback_template(section_name: str, default_text: str) -> str:
         pass
     return default_text
 
+
 def get_all_project_modules() -> dict:
+    """Dynamically traverses the project root directory and registers all available Python modules in execution sandboxes."""
     import sys
     import importlib
-    from pathlib import Path
     
     modules = {}
     base_dir = Path(__file__).resolve().parent.parent
+    
     subdirs = [p for p in base_dir.iterdir() if p.is_dir() and not p.name.startswith((".", "_")) and p.name not in ["bot_workspace", "emoji_cache", "avatar_cache", "gift_cache", "temp_media", "venv"]]
     
     for sub_path in subdirs:
@@ -607,6 +697,7 @@ def get_all_project_modules() -> dict:
             except Exception:
                 pass
     return modules
+
 
 async def should_send_read_acknowledge(message_or_event, me, db=None, is_trigger_fired: bool = False) -> bool:
     import config

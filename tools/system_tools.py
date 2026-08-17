@@ -20,6 +20,7 @@ import tools
 
 logger = logging.getLogger("Tools.System")
 
+
 async def rotate_tor_ip() -> bool:
     """Asynchronously connects to local Tor and sends a NEWNYM signal."""
     try:
@@ -42,6 +43,7 @@ async def rotate_tor_ip() -> bool:
     except Exception as e:
         logger.warning(f"Failed to send Tor rotation signal: {str(e)}")
     return False
+
 
 async def call_pollinations_api(url: str, params: dict, timeout: float) -> httpx.Response:
     """Universal asynchronous method for executing requests to the Pollinations API."""
@@ -108,6 +110,7 @@ async def call_pollinations_api(url: str, params: dict, timeout: float) -> httpx
             tor_rotated_last_turn = False
             await asyncio.sleep(1.0)
 
+
 class AIToolKitSystem:
     async def execute_python_code(self, code: str, **kwargs) -> str:
         """Executes asynchronous Python code in a safe isolated sandbox VM and returns the result."""
@@ -127,8 +130,9 @@ class AIToolKitSystem:
         logger.info(f"Dialogue ignored. Reason: {reason} | Continue loop: {continue_loop}")
         return f"Dialogue successfully ignored. Reason: {reason} | Continue loop: {continue_loop}"
 
-    # Alias for no_op_ignore
+    # Aliases for no_op_ignore
     ignore_this_eblan = no_op_ignore
+    idi_nahuy = no_op_ignore
 
     async def execute_sql_query(self, sql: str, **kwargs) -> str:
         """Executes a raw SQL query on the configured local SQLite database."""
@@ -479,6 +483,7 @@ class AIToolKitSystem:
             return f"Success. Custom tool '{name}' completely deleted."
         except Exception as e:
             return f"Error: {str(e)}"
+
 
 # Export methods to module level
 toolkit_sys = AIToolKitSystem()

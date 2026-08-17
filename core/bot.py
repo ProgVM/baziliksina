@@ -5,6 +5,17 @@ import os
 import time
 import asyncio
 import logging
+from pathlib import Path
+
+# Add project root and all logical subdirectories to sys.path
+_root = Path(__file__).resolve().parent.parent
+if str(_root) not in sys.path:
+    sys.path.insert(0, str(_root))
+for sub in ["config", "core", "database", "services", "utils", "tools"]:
+    sub_path = str(_root / sub)
+    if sub_path not in sys.path:
+        sys.path.append(sub_path)
+
 from telethon import TelegramClient, events
 from telethon.tl import types as tl_types
 
@@ -59,6 +70,7 @@ last_chat_updates = {}
 
 split_command_buffers = {}
 
+
 def has_unclosed_syntax(text: str) -> bool:
     """Checks if code or text has unclosed triple-quotes or unclosed brackets."""
     single_triple = text.count("'''")
@@ -70,7 +82,9 @@ def has_unclosed_syntax(text: str) -> bool:
     open_braces = text.count("{") - text.count("}")
     return open_parens > 0 or open_brackets > 0 or open_braces > 0
 
+
 async def upload_media_to_google_background(media_info_str):
+    """Background helper to upload downloaded media to Google Files API."""
     if not media_info_str:
         return
     try:
@@ -100,7 +114,9 @@ async def upload_media_to_google_background(media_info_str):
     except Exception as e:
         logger.error(f"Error in background media upload: {str(e)}")
 
+
 async def run_and_log_sandbox_code(chat_id: int, code: str, source_type: str = "trigger", event = None):
+    """Executes Python code from a trigger or timer in Sandbox VM and logs notification."""
     result = await tools.execute_python_code(code, chat_id=chat_id, event=event)
     logger.info(f"--- VM background code execution result ({source_type}) ---\n{result}\n--------------------------------------------")
     
@@ -111,7 +127,9 @@ async def run_and_log_sandbox_code(chat_id: int, code: str, source_type: str = "
     
     await db.save_message(str(chat_id), "user", notice_text)
 
+
 async def check_and_run_triggers(chat_id: int, text: str, input_chat_entity, event) -> bool:
+    """Checks active triggers in chat and starts execution if fired."""
     import re
     try:
         active_triggers = await db.get_active_triggers(str(chat_id))
@@ -161,7 +179,9 @@ async def check_and_run_triggers(chat_id: int, text: str, input_chat_entity, eve
         
     return False
 
+
 async def run_timers_loop():
+    """Background loop polling pending persistent timers from SQLite."""
     logger.info("Starting background service for persistent timers...")
     while True:
         try:
@@ -189,7 +209,9 @@ async def run_timers_loop():
             logger.error(f"Error in timers loop: {str(e)}")
         await asyncio.sleep(config.TIMERS_LOOP_INTERVAL)
 
+
 def schedule_debounce_query(chat_id, entity, trigger_msg_id=None):
+    """Schedules a debounced generation task for the given chat."""
     chat_id = int(chat_id)
     current_time_id = time.time()
     if chat_id not in message_buffers:
@@ -211,9 +233,11 @@ def schedule_debounce_query(chat_id, entity, trigger_msg_id=None):
 
     asyncio.create_task(wait_and_send_debounce(chat_id, current_time_id))
 
+
 async def run_pending_query_after_delay(cid, entity, trigger_msg_id):
     await asyncio.sleep(config.QUEUE_PROMOTION_DELAY)
     await run_pending_query(cid, entity, trigger_msg_id=trigger_msg_id)
+
 
 async def run_pending_query(cid, entity, trigger_msg_id=None):
     cid_int = int(cid)
@@ -231,6 +255,7 @@ async def run_pending_query(cid, entity, trigger_msg_id=None):
                 logger.info(f"Queued message #{queued_msg_id} was already processed (up to #{processed_id}). Skipping redundant queue run.")
             else:
                 asyncio.create_task(run_pending_query_after_delay(cid_int, p_data["entity"], queued_msg_id))
+
 
 @client.on(events.Raw(types=[tl_types.UpdateMessageReactions, tl_types.UpdateBotMessageReaction, tl_types.UpdateBotMessageReactions]))
 async def on_raw_reaction(event):
@@ -316,6 +341,7 @@ async def on_raw_reaction(event):
     except Exception as e:
         logger.error(f"Error saving updated reaction to DB: {str(e)}")
 
+
 @client.on(events.NewMessage)
 async def on_new_message(event):
     global me
@@ -363,7 +389,7 @@ async def on_new_message(event):
         buf["task"] = asyncio.create_task(_wait_and_execute(buffer_key))
         return
 
-    # 2. Check for CLI Commands Execution (Processed for both incoming and outgoing manual commands)
+    # 2. Prioritized CLI Command Execution (Works for incoming and manual outgoing messages)
     raw_payload = event.message.message or ""
     if raw_payload.strip().startswith("/"):
         if has_unclosed_syntax(raw_payload) or len(raw_payload) > 3500:
@@ -395,7 +421,7 @@ async def on_new_message(event):
             formatted = safe_telegram_html(cmd_output)
             await send_message_safe(client, input_chat_entity, formatted, reply_to=msg_id, parse_mode="html")
         
-        # Prevent AI generation when a command is executed
+        # Stop execution so command does not trigger conversational AI generation
         if not getattr(config, "TRIGGER_ON_COMMANDS", False):
             return
 
@@ -531,6 +557,7 @@ async def on_new_message(event):
 
     asyncio.create_task(wait_and_send(chat_id, current_trigger_id))
 
+
 @client.on(events.MessageEdited)
 async def on_message_edited(event):
     global me
@@ -563,6 +590,7 @@ async def on_message_edited(event):
 
     await db.update_message_text(str(chat_id), msg_id, new_text, media_info)
 
+
 @client.on(events.MessageDeleted)
 async def on_message_deleted(event):
     for msg_id in event.deleted_ids:
@@ -575,6 +603,7 @@ async def on_message_deleted(event):
                     await db.update_message_text(str(cid_int), msg_id, f"[Message deleted by user]: {orig_text}")
         except Exception as e:
             logger.error(f"Error handling message deletion: {str(e)}")
+
 
 async def main():
     global me
