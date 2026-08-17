@@ -363,6 +363,42 @@ async def on_new_message(event):
         buf["task"] = asyncio.create_task(_wait_and_execute(buffer_key))
         return
 
+    # 2. Check for CLI Commands Execution (Processed for both incoming and outgoing manual commands)
+    raw_payload = event.message.message or ""
+    if raw_payload.strip().startswith("/"):
+        if has_unclosed_syntax(raw_payload) or len(raw_payload) > 3500:
+            logger.info(f"Detected unclosed syntax or long command in message #{msg_id}. Buffering for split continuation...")
+            
+            async def _wait_and_execute_initial(key):
+                await asyncio.sleep(1.2)
+                data = split_command_buffers.pop(key, None)
+                if data:
+                    full_cmd = data["payload"]
+                    first_id = data["msg_id"]
+                    logger.info(f"Executing buffered CLI Command in chat {chat_id}: '{full_cmd[:60]}...'")
+                    cmd_output = await command_manager.execute_pipeline(full_cmd, event.sender_id, chat_id, event)
+                    if cmd_output:
+                        formatted = safe_telegram_html(cmd_output)
+                        await send_message_safe(client, input_chat_entity, formatted, reply_to=first_id, parse_mode="html")
+
+            task = asyncio.create_task(_wait_and_execute_initial(buffer_key))
+            split_command_buffers[buffer_key] = {
+                "payload": raw_payload,
+                "msg_id": msg_id,
+                "task": task
+            }
+            return
+
+        logger.info(f"CLI Command detected in message #{msg_id} of chat {chat_id}: '{raw_payload[:60]}'")
+        cmd_output = await command_manager.execute_pipeline(raw_payload, event.sender_id, chat_id, event)
+        if cmd_output:
+            formatted = safe_telegram_html(cmd_output)
+            await send_message_safe(client, input_chat_entity, formatted, reply_to=msg_id, parse_mode="html")
+        
+        # Prevent AI generation when a command is executed
+        if not getattr(config, "TRIGGER_ON_COMMANDS", False):
+            return
+
     if not await should_process_message_event(event, me, "save", db):
         return
 
@@ -448,41 +484,6 @@ async def on_new_message(event):
 
     logger.info(f"Message {msg_id} saved to chat history {chat_id}.")
     await db.save_message(str(chat_id), "user", text, media_info, msg_id)
-
-    # Check for Command Execution in text or media caption
-    raw_payload = event.message.message or ""
-    if raw_payload.strip().startswith("/"):
-        if has_unclosed_syntax(raw_payload) or len(raw_payload) > 3500:
-            logger.info(f"Detected unclosed syntax or long command in message #{msg_id}. Buffering for split continuation...")
-            
-            async def _wait_and_execute_initial(key):
-                await asyncio.sleep(1.2)
-                data = split_command_buffers.pop(key, None)
-                if data:
-                    full_cmd = data["payload"]
-                    first_id = data["msg_id"]
-                    logger.info(f"Executing buffered CLI Command in chat {chat_id}: '{full_cmd[:60]}...'")
-                    cmd_output = await command_manager.execute_pipeline(full_cmd, event.sender_id, chat_id, event)
-                    if cmd_output:
-                        formatted = safe_telegram_html(cmd_output)
-                        await send_message_safe(client, input_chat_entity, formatted, reply_to=first_id, parse_mode="html")
-
-            task = asyncio.create_task(_wait_and_execute_initial(buffer_key))
-            split_command_buffers[buffer_key] = {
-                "payload": raw_payload,
-                "msg_id": msg_id,
-                "task": task
-            }
-            return
-
-        logger.info(f"CLI Command detected in message #{msg_id} of chat {chat_id}: '{raw_payload[:60]}'")
-        cmd_output = await command_manager.execute_pipeline(raw_payload, event.sender_id, chat_id, event)
-        if cmd_output:
-            formatted = safe_telegram_html(cmd_output)
-            await send_message_safe(client, input_chat_entity, formatted, reply_to=msg_id, parse_mode="html")
-        
-        if not getattr(config, "TRIGGER_ON_COMMANDS", False):
-            return
 
     if await check_and_run_triggers(chat_id, text, input_chat_entity, event):
         return

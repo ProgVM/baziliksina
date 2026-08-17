@@ -1,6 +1,7 @@
 # utils/utils.py
 import json
 import logging
+import re
 from datetime import datetime, date
 from pathlib import Path
 
@@ -290,7 +291,11 @@ def safe_telegram_html(text: str) -> str:
     Safely converts Markdown syntax to Telegram HTML tags and sanitizes HTML entities,
     preserving all rich text elements supported by Telegram (bold, italic, underline,
     strikethrough, spoiler, tg-emoji, blockquote, expandable blockquote, details, sub, sup, mark).
+    Does NOT double-escape existing HTML entities like &lt;, &gt;, &amp;, &quot;.
     """
+    if not text:
+        return text
+
     import re
 
     # First convert Markdown to valid Telegram HTML tags
@@ -305,28 +310,31 @@ def safe_telegram_html(text: str) -> str:
     
     tag_pattern = re.compile(r'<(/?)(\w+)([^>]*)>')
     
+    def escape_text_chunk(s: str) -> str:
+        # Escape & only if not already a valid HTML entity
+        s = re.sub(r'&(?!(?:[a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);)', '&amp;', s)
+        s = s.replace('<', '&lt;').replace('>', '&gt;')
+        return s
+
     parts = []
     last_idx = 0
     
     for match in tag_pattern.finditer(text):
         start, end = match.span()
         before_text = text[last_idx:start]
-        before_escaped = before_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        parts.append(before_escaped)
+        parts.append(escape_text_chunk(before_text))
         
         tag_name = match.group(2).lower()
         
         if tag_name in allowed_tags:
             parts.append(match.group(0))
         else:
-            tag_escaped = match.group(0).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-            parts.append(tag_escaped)
+            parts.append(escape_text_chunk(match.group(0)))
             
         last_idx = end
         
     after_text = text[last_idx:]
-    after_escaped = after_text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    parts.append(after_escaped)
+    parts.append(escape_text_chunk(after_text))
     
     return ''.join(parts)
 
