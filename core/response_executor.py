@@ -9,7 +9,7 @@ import re
 from google.genai import types
 
 import config
-from registry import registry
+from registry import registry, tag_block_registry
 from utils import safe_telegram_html
 import tools
 
@@ -28,6 +28,13 @@ METADATA_CLEAN_PATTERNS = [
     re.compile(r'(?<!\\)\[Reply\s+Keyboard\s+buttons\s+[^\]]+\]:\s*[^\n]+\s*\n?', re.IGNORECASE),
     re.compile(r'(?<!\\)\[Attached\s+Media\s+-\s*[^\]]+\]\s*\n?', re.IGNORECASE)
 ]
+
+# Стандартные теги форматирования Telegram HTML, которые не должны перехватываться как экшен-теги
+HTML_FORMATTING_TAGS = {
+    "b", "strong", "i", "em", "u", "ins", "s", "strike", "del",
+    "tg-spoiler", "spoiler", "a", "tg-emoji", "emoji", "code", "pre",
+    "blockquote", "sub", "sup", "mark", "span", "time", "aside", "cite"
+}
 
 
 class AIResponseExecutor:
@@ -115,6 +122,9 @@ class AIResponseExecutor:
             universal_content_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)(?:\s+((?:"[^"]*"|\'[^\']*\'|[^>])*))?>(.*?)</\1>', re.IGNORECASE | re.DOTALL)
             for match in universal_content_regex.finditer(b_content):
                 tag_name = match.group(1).lower()
+                if tag_name in HTML_FORMATTING_TAGS:
+                    continue
+
                 attrs_str = match.group(2) or ""
                 content = match.group(3)
                 
@@ -126,7 +136,7 @@ class AIResponseExecutor:
                     val = attr_match.group(2) if attr_match.group(2) is not None else attr_match.group(3)
                     attrs[name] = val
                 if "id" in attrs and "msg_id" not in attrs:
-                    attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
+                    attrs["msg_id"] = int(attrs["id"]) if str(attrs["id"]).isdigit() else attrs["id"]
                 attrs["text"] = content.strip()
                 
                 if tag_name == "reply":
@@ -138,6 +148,9 @@ class AIResponseExecutor:
             universal_self_closing_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)\s+((?:"[^"]*"|\'[^\']*\'|[^>])*)\s*/>', re.IGNORECASE)
             for match in universal_self_closing_regex.finditer(b_content):
                 tag_name = match.group(1).lower()
+                if tag_name in HTML_FORMATTING_TAGS:
+                    continue
+
                 attrs_str = match.group(2) or ""
                 
                 # Safe quote-aware attribute parsing preventing JSON truncation
@@ -148,7 +161,7 @@ class AIResponseExecutor:
                     val = attr_match.group(2) if attr_match.group(2) is not None else attr_match.group(3)
                     attrs[name] = val
                 if "id" in attrs and "msg_id" not in attrs:
-                    attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
+                    attrs["msg_id"] = int(attrs["id"]) if str(attrs["id"]).isdigit() else attrs["id"]
                 if "files" in attrs:
                     attrs["files"] = [f.strip() for f in attrs["files"].split(",")]
                     
@@ -185,6 +198,7 @@ class AIResponseExecutor:
             after_seg_text = b_content[last_seg_idx:].strip()
             if after_seg_text:
                 segments.append(("text", after_seg_text))
+
             # Merge text segments into preceding reply segments (bracket compatibility)
             merged_segments = []
             current_rep_id = None
@@ -200,7 +214,9 @@ class AIResponseExecutor:
                     else:
                         merged_segments.append(("msg", {"text": s_data}))
                 elif s_type == "reply_msg":
+                    current_rep_id = s_data.get("msg_id")
                     merged_segments.append(("reply_msg", s_data))
+                    reply_consumed = True
                 else:
                     merged_segments.append((s_type, s_data))
             if current_rep_id is not None:
@@ -225,7 +241,6 @@ class AIResponseExecutor:
                     self.should_continue = True
                 
                 from utils import matches_filter
-                from registry import tag_block_registry
                 if not matches_filter(s_type, config.AI_TAG_WHITELIST, config.AI_TAG_BLACKLIST):
                     logger.warning(f"AI tag '{s_type}' is blocked by configuration. Skipping.")
                     return
@@ -305,7 +320,6 @@ class AIResponseExecutor:
             all_matches = []
             logger.info(f"Executing block container '{b_type}' parsed during text stripping. Content length: {len(b_content)}")
             
-            
             tag_regexes_compiled = [
                 (re.compile(config.RE_REPLY_TAG, re.IGNORECASE), "reply"),
                 (re.compile(config.RE_REACT_TAG, re.IGNORECASE), "react"),
@@ -336,10 +350,12 @@ class AIResponseExecutor:
             universal_content_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)(?:\s+((?:"[^"]*"|\'[^\']*\'|[^>])*))?>(.*?)</\1>', re.IGNORECASE | re.DOTALL)
             for match in universal_content_regex.finditer(b_content):
                 tag_name = match.group(1).lower()
+                if tag_name in HTML_FORMATTING_TAGS:
+                    continue
+
                 attrs_str = match.group(2) or ""
                 content = match.group(3)
                 
-                # Safe quote-aware attribute parsing preventing JSON truncation
                 attrs = {}
                 attr_pattern = re.compile(r'([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', re.IGNORECASE)
                 for attr_match in attr_pattern.finditer(attrs_str):
@@ -347,7 +363,7 @@ class AIResponseExecutor:
                     val = attr_match.group(2) if attr_match.group(2) is not None else attr_match.group(3)
                     attrs[name] = val
                 if "id" in attrs and "msg_id" not in attrs:
-                    attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
+                    attrs["msg_id"] = int(attrs["id"]) if str(attrs["id"]).isdigit() else attrs["id"]
                 attrs["text"] = content.strip()
                 
                 if tag_name == "reply":
@@ -359,9 +375,11 @@ class AIResponseExecutor:
             universal_self_closing_regex = re.compile(r'(?<!\\)<([a-zA-Z0-9_]+)\s+((?:"[^"]*"|\'[^\']*\'|[^>])*)\s*/>', re.IGNORECASE)
             for match in universal_self_closing_regex.finditer(b_content):
                 tag_name = match.group(1).lower()
+                if tag_name in HTML_FORMATTING_TAGS:
+                    continue
+
                 attrs_str = match.group(2) or ""
                 
-                # Safe quote-aware attribute parsing preventing JSON truncation
                 attrs = {}
                 attr_pattern = re.compile(r'([a-zA-Z0-9_-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')', re.IGNORECASE)
                 for attr_match in attr_pattern.finditer(attrs_str):
@@ -369,7 +387,7 @@ class AIResponseExecutor:
                     val = attr_match.group(2) if attr_match.group(2) is not None else attr_match.group(3)
                     attrs[name] = val
                 if "id" in attrs and "msg_id" not in attrs:
-                    attrs["msg_id"] = int(attrs["id"]) if attrs["id"].isdigit() else attrs["id"]
+                    attrs["msg_id"] = int(attrs["id"]) if str(attrs["id"]).isdigit() else attrs["id"]
                 if "files" in attrs:
                     attrs["files"] = [f.strip() for f in attrs["files"].split(",")]
                     
@@ -393,9 +411,8 @@ class AIResponseExecutor:
                 
                 if tag_should_continue:
                     self.should_continue = True
-                s_type, s_data = segment
+
                 from utils import matches_filter
-                from registry import tag_block_registry
                 if not matches_filter(s_type, config.AI_TAG_WHITELIST, config.AI_TAG_BLACKLIST):
                     return
                 handler_meta = tag_block_registry.get(s_type)
@@ -423,9 +440,8 @@ class AIResponseExecutor:
         # 4. Clean-strip all block wrappers and embedded tags from final string
         if not ranges_to_strip:
             clean_text = cleaned_text
-            # Universal robust regex tag stripper to clean any action or block tags instantly
             from registry import tag_block_registry
-            known_tags = [t.name for t in tag_block_registry.get_all()]
+            known_tags = [t.name for t in tag_block_registry.get_all() if t.name not in HTML_FORMATTING_TAGS]
             known_tags.extend(["reply_msg", "msg", "noop", "no_op_ignore", "python", "sql", "scrape", "deepsearch", "voice", "video"])
             tags_pattern = "|".join(re.escape(t) for t in sorted(list(set(known_tags)), key=len, reverse=True))
             tag_strip_regex = re.compile(f'</?(?:{tags_pattern})\\b[^>]*>', re.IGNORECASE)
@@ -443,7 +459,7 @@ class AIResponseExecutor:
         clean_parts.append(cleaned_text[last_idx:])
         final_stripped = "".join(clean_parts).strip()
         from registry import tag_block_registry
-        known_tags = [t.name for t in tag_block_registry.get_all()]
+        known_tags = [t.name for t in tag_block_registry.get_all() if t.name not in HTML_FORMATTING_TAGS]
         known_tags.extend(["reply_msg", "msg", "noop", "no_op_ignore", "python", "sql", "scrape", "deepsearch", "voice", "video"])
         tags_pattern = "|".join(re.escape(t) for t in sorted(list(set(known_tags)), key=len, reverse=True))
         tag_strip_regex = re.compile(f'</?(?:{tags_pattern})\\b[^>]*>', re.IGNORECASE)
