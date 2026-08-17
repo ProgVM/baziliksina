@@ -19,7 +19,6 @@ class RootTagBlockHandlers:
         """Sends a text message reply to a specific Telegram message."""
         raw_text = data.get("text", "")
         
-        # Strip any nested tag structures from the reply text recursively to avoid leaking tags in message bubbles
         if tools.ai_manager and hasattr(tools.ai_manager, "executor"):
             logger.info(f"Stripping nested XML/HTML tags and executing sub-actions for reply text: '{raw_text[:60]}...'")
             raw_text = await tools.ai_manager.executor.parse_execute_and_strip_tags(raw_text, chat_entity, reply_to_id, chat_id)
@@ -28,7 +27,6 @@ class RootTagBlockHandlers:
         unescaped_text = unescaped_text.replace(r'\<', '<').replace(r'\>', '>')
         formatted_html = safe_telegram_html(unescaped_text)
         
-        # Stop execution of empty replies (e.g. if the tag text only contained a nested media tag which got executed and stripped)
         if not formatted_html.strip():
             logger.info("Reply text is empty or fully stripped of action tags. Skipping sending empty text bubble.")
             return
@@ -45,7 +43,6 @@ class RootTagBlockHandlers:
             sent_msgs = await send_message_safe(client, chat_entity, formatted_html, reply_to=target_reply_id, parse_mode="html")
             result = sent_msgs[-1] if sent_msgs else None
             
-            # Generate reply metadata for the bot's own message to preserve full context of her responses in database history
             reply_meta = ""
             try:
                 from parser import parse_reply_metadata
@@ -145,17 +142,13 @@ class RootTagBlockHandlers:
             await tools.toolkit.send_media_message(chat_id=chat_id, files=files, caption=caption, reply_to_msg_id=reply_to_id)
 
     async def article(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """
-        Parses an <article> XML container tag with child tags (<header>, <p>, <details>, <map>, <collage>) 
-        and sends it as a single Rich Message.
-        """
+        """Parses an <article> XML container tag and sends it as a single Rich Message."""
         raw_inner = data.get("text", "")
         if not raw_inner:
             return
 
         import re
         blocks = []
-
         child_regex = re.compile(
             r'<([a-zA-Z0-9_]+)(?:\s+((?:"[^"]*"|\'[^\']*\'|[^>])*))?>(.*?)</\1>|<([a-zA-Z0-9_]+)\s+((?:"[^"]*"|\'[^\']*\'|[^>])*)\s*/>',
             re.IGNORECASE | re.DOTALL
@@ -238,90 +231,66 @@ class RootTagBlockHandlers:
                 logger.error(f"Error executing tool label {t_name}: {str(terr)}")
 
     async def mute(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """Mutes a user in the chat."""
         user_id = data.get("id") or data.get("user_id")
         duration = data.get("duration")
         if duration:
-            try:
-                duration = int(duration)
-            except (ValueError, TypeError):
-                duration = None
+            try: duration = int(duration)
+            except (ValueError, TypeError): duration = None
         if user_id:
             await tools.toolkit.mute_user(user_id=user_id, chat_id=chat_id, duration_seconds=duration)
 
     async def unmute(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """Lifts restrictions from a user."""
         user_id = data.get("id") or data.get("user_id")
         if user_id:
             await tools.toolkit.unrestrict_user(user_id=user_id, chat_id=chat_id)
 
     async def kick(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """Kicks a user from the chat."""
         user_id = data.get("id") or data.get("user_id")
         if user_id:
             await tools.toolkit.kick_user(user_id=user_id, chat_id=chat_id)
 
     async def ban(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """Bans a user in the chat."""
         user_id = data.get("id") or data.get("user_id")
         duration = data.get("duration")
         if duration:
-            try:
-                duration = int(duration)
-            except (ValueError, TypeError):
-                duration = None
+            try: duration = int(duration)
+            except (ValueError, TypeError): duration = None
         if user_id:
             await tools.toolkit.ban_user(user_id=user_id, chat_id=chat_id, duration_seconds=duration)
 
     async def unban(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """Unbans a user in the chat."""
         user_id = data.get("id") or data.get("user_id")
         if user_id:
             await tools.toolkit.unrestrict_user(user_id=user_id, chat_id=chat_id)
 
     async def search(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """Performs a web search and logs results to context."""
         query = data.get("query")
         if query:
             res = await tools.toolkit.internet_search(query=query)
             await db.save_message(str(chat_id), "user", f"[System: Search results for '{query}']: {res}")
 
     async def mediasearch(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """Performs a media search and logs results to context."""
         query = data.get("query")
         m_type = data.get("type", "image")
         limit_val = data.get("max_results") or data.get("limit")
         max_results = None
         if limit_val is not None:
-            try:
-                max_results = int(limit_val)
-            except ValueError:
-                pass
+            try: max_results = int(limit_val)
+            except ValueError: pass
         if query:
             res = await tools.toolkit.internet_media_search(query=query, media_type=m_type, max_results=max_results)
             await db.save_message(str(chat_id), "user", f"[System: Media search results for '{query}']: {res}")
 
     async def draw(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """Generates an image and logs results to context."""
         prompt = data.get("prompt")
         if prompt:
             res = await tools.toolkit.generate_image(prompt=prompt)
             await db.save_message(str(chat_id), "user", f"[System: Image generation results for '{prompt}']: {res}")
 
-    # Core blocks execution handlers (Stubs for structural metadata)
-    async def seq(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """Sequential Block Container."""
-        pass
+    async def seq(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs): pass
+    async def par(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs): pass
+    async def bg(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs): pass
 
-    async def par(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """Parallel Block Container."""
-        pass
-
-    async def bg(self, data: dict, chat_entity, reply_to_id: int, chat_id: str, client, db, **kwargs):
-        """Background Block Container."""
-        pass
-
-# Instantiate handlers
 handlers = RootTagBlockHandlers()
 
 ROOT_TAGS_BLOCKS = {
@@ -356,6 +325,8 @@ ROOT_TAGS_BLOCKS = {
     "draw": ("tag", handlers.draw),
     "noop": ("tag", handlers.noop),
     "no_op_ignore": ("tag", handlers.noop),
+    "idi_nahuy": ("tag", handlers.noop),
+    "ignore_this_eblan": ("tag", handlers.noop),
     "tool": ("tag", handlers.tool),
     "tool_name": ("tag", handlers.tool),
     "seq": ("block", handlers.seq),
@@ -370,17 +341,13 @@ def create_generic_tag_handler(tool_meta):
         call_args = {}
         sig = inspect.signature(tool_meta.callable)
         
-        # Map attributes dynamically to fit the target tool signature
         for param_name, param in sig.parameters.items():
             if param_name in data:
                 val = data[param_name]
-                # Auto-parse JSON strings back to native Dict/List formats
                 if isinstance(val, str) and ((val.startswith("{") and val.endswith("}")) or (val.startswith("[") and val.endswith("]"))):
                     try:
-                        import json
                         val = json.loads(val)
-                    except Exception:
-                        pass
+                    except Exception: pass
                 if param.annotation == int:
                     try: val = int(val)
                     except ValueError: pass
@@ -393,17 +360,12 @@ def create_generic_tag_handler(tool_meta):
             elif param_name == "chat_id":
                 call_args["chat_id"] = chat_id
             elif param_name in ["message_id", "msg_id"]:
-                if "msg_id" in data:
-                    call_args[param_name] = int(data["msg_id"])
-                elif "id" in data:
-                    call_args[param_name] = int(data["id"])
-                elif reply_to_id:
-                    call_args[param_name] = int(reply_to_id)
+                if "msg_id" in data: call_args[param_name] = int(data["msg_id"])
+                elif "id" in data: call_args[param_name] = int(data["id"])
+                elif reply_to_id: call_args[param_name] = int(reply_to_id)
             elif param_name == "user_id":
-                if "id" in data:
-                    call_args["user_id"] = data["id"]
-                elif "user_id" in data:
-                    call_args["user_id"] = data["user_id"]
+                if "id" in data: call_args["user_id"] = data["id"]
+                elif "user_id" in data: call_args["user_id"] = data["user_id"]
             elif param_name == "text" and "text" in data:
                 call_args["text"] = data["text"]
             elif param_name == "query" and "text" in data:
@@ -417,7 +379,6 @@ def create_generic_tag_handler(tool_meta):
             elif param_name == "filename" and "file" in data:
                 call_args["filename"] = data["file"]
                 
-        # Append residual attributes if tool allows arbitrary kwargs
         if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
             for k, v in data.items():
                 if k not in call_args and k not in ["text", "msg_id", "id"]:
@@ -450,7 +411,6 @@ def register_system_tags_blocks():
             is_custom=False
         )
         
-    # Dynamically register all tools as XML tags
     added_tags_count = 0
     aliases = {
         "python": "execute_python_code",
@@ -462,6 +422,8 @@ def register_system_tags_blocks():
         "draw": "generate_image",
         "voice": "generate_audio",
         "video": "generate_video",
+        "idi_nahuy": "no_op_ignore",
+        "ignore_this_eblan": "no_op_ignore",
     }
     
     for tool_meta in tool_registry.get_all_tools():
@@ -476,7 +438,6 @@ def register_system_tags_blocks():
             )
             added_tags_count += 1
             
-    # Register convenient shorthand tag aliases
     for alias_name, target_tool_name in aliases.items():
         target_tool = tool_registry.get(target_tool_name)
         if target_tool and alias_name not in tag_block_registry._registry:

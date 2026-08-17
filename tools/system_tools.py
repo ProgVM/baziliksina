@@ -127,6 +127,9 @@ class AIToolKitSystem:
         logger.info(f"Dialogue ignored. Reason: {reason} | Continue loop: {continue_loop}")
         return f"Dialogue successfully ignored. Reason: {reason} | Continue loop: {continue_loop}"
 
+    # Alias for no_op_ignore
+    ignore_this_eblan = no_op_ignore
+
     async def execute_sql_query(self, sql: str, **kwargs) -> str:
         """Executes a raw SQL query on the configured local SQLite database."""
         if not tools.db:
@@ -280,7 +283,7 @@ class AIToolKitSystem:
                         btn_desc = f"Button [{b_idx},{r_idx}] | Text: '{btn.text}'"
                         if hasattr(btn, 'data') and btn.data:
                             try: btn_desc += f" | callback_data: '{btn.data.decode('utf-8')}'"
-                            except Exception: btn_desc += f" | callback_hex: '{btn.data.hex()}'"
+                            except Exception: btn_desc += f" | callback_hex: '{btn.data.hex()}')"
                         elif hasattr(btn, 'url') and btn.url:
                              btn_desc += f" | URL: '{btn.url}'"
                         row_btns.append(btn_desc)

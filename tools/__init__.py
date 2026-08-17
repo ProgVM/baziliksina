@@ -123,6 +123,7 @@ ROOT_TOOL_CATEGORIES = {
     "get_tool_details": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
     "list_custom_tags_blocks": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
     "no_op_ignore": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
+    "ignore_this_eblan": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
     "run_sandboxed_command": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
     "update_account_info": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
     "upload_file_to_google": "Category 7: System Control and Integration (System Control, DB & Sandboxed VM)",
