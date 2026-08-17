@@ -501,7 +501,7 @@ class GeminiManager:
                                     thought_signature=orig_thought_sig
                                 )
                                 content_obj.parts.append(healed_part)
-                                if call["name"] == "no_op_ignore":
+                                if call["name"] in ["no_op_ignore", "ignore_this_eblan", "idi_nahuy", "noop"]:
                                     should_ignore = True
                             
                             logger.info(f"Auto-Heal Interceptor: successfully healed {len(healed_calls)} call(s) from text.")
