@@ -1,13 +1,3 @@
-import sys
-from pathlib import Path
-_root = Path(__file__).resolve().parent.parent
-if str(_root) not in sys.path:
-    sys.path.insert(0, str(_root))
-for sub in ["config", "core", "database", "services", "utils", "tools"]:
-    sub_path = str(_root / sub)
-    if sub_path not in sys.path:
-        sys.path.append(sub_path)
-
 # core/bot.py
 import sys
 import json
@@ -36,7 +26,7 @@ from proxy_manager import proxy_rotator
 from server.server import start_web_server, stop_web_server
 import services
 import tools
-from utils import should_process_message_event, should_process_reaction_event, load_feedback_template
+from utils import should_process_message_event, should_process_reaction_event, load_feedback_template, send_message_safe, safe_telegram_html
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("BazilikBot")
@@ -367,8 +357,8 @@ async def on_new_message(event):
                 logger.info(f"Executing fully stitched split CLI Command in chat {chat_id}: '{full_cmd[:60]}...'")
                 cmd_output = await command_manager.execute_pipeline(full_cmd, event.sender_id, chat_id, event)
                 if cmd_output:
-                    from utils import send_message_safe
-                    await send_message_safe(client, input_chat_entity, cmd_output, reply_to=first_id, parse_mode=None)
+                    formatted = safe_telegram_html(cmd_output)
+                    await send_message_safe(client, input_chat_entity, formatted, reply_to=first_id, parse_mode="html")
 
         buf["task"] = asyncio.create_task(_wait_and_execute(buffer_key))
         return
@@ -474,8 +464,8 @@ async def on_new_message(event):
                     logger.info(f"Executing buffered CLI Command in chat {chat_id}: '{full_cmd[:60]}...'")
                     cmd_output = await command_manager.execute_pipeline(full_cmd, event.sender_id, chat_id, event)
                     if cmd_output:
-                        from utils import send_message_safe
-                        await send_message_safe(client, input_chat_entity, cmd_output, reply_to=first_id, parse_mode=None)
+                        formatted = safe_telegram_html(cmd_output)
+                        await send_message_safe(client, input_chat_entity, formatted, reply_to=first_id, parse_mode="html")
 
             task = asyncio.create_task(_wait_and_execute_initial(buffer_key))
             split_command_buffers[buffer_key] = {
@@ -488,8 +478,8 @@ async def on_new_message(event):
         logger.info(f"CLI Command detected in message #{msg_id} of chat {chat_id}: '{raw_payload[:60]}'")
         cmd_output = await command_manager.execute_pipeline(raw_payload, event.sender_id, chat_id, event)
         if cmd_output:
-            from utils import send_message_safe
-            await send_message_safe(client, input_chat_entity, cmd_output, reply_to=msg_id, parse_mode=None)
+            formatted = safe_telegram_html(cmd_output)
+            await send_message_safe(client, input_chat_entity, formatted, reply_to=msg_id, parse_mode="html")
         
         if not getattr(config, "TRIGGER_ON_COMMANDS", False):
             return
@@ -560,7 +550,8 @@ async def on_message_edited(event):
     if raw_payload.strip().startswith("/"):
         cmd_output = await command_manager.execute_pipeline(raw_payload, event.sender_id, chat_id, event)
         if cmd_output:
-            await client.send_message(input_chat_entity, cmd_output, reply_to=msg_id)
+            formatted = safe_telegram_html(cmd_output)
+            await send_message_safe(client, input_chat_entity, formatted, reply_to=msg_id, parse_mode="html")
         if not getattr(config, "TRIGGER_ON_COMMANDS", False):
             return
 
