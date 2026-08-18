@@ -7,6 +7,9 @@ import asyncio
 import logging
 from pathlib import Path
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("BazilikBot")
+
 # Add project root and all logical subdirectories to sys.path
 _root = Path(__file__).resolve().parent.parent
 if str(_root) not in sys.path:
@@ -18,7 +21,6 @@ for sub in ["config", "core", "database", "services", "utils", "tools"]:
 
 from telethon import TelegramClient, events
 from telethon.tl import types as tl_types
-from telethon.network.connection import ConnectionTcpAbridged
 
 from config import (
     API_ID, API_HASH, SESSION_PATH, WORKSPACE_DIR, BOOTSTRAP_DATABASE, DEBOUNCE_DELAY, 
@@ -40,10 +42,12 @@ import services
 import tools
 from utils import should_process_message_event, should_process_reaction_event, load_feedback_template, send_message_safe, safe_telegram_html
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("BazilikBot")
-
+# Resolve Telethon proxy
 proxy_param = proxy_rotator.get_telethon_proxy()
+if proxy_param:
+    logger.info(f"TelegramClient will connect via SOCKS5 proxy: {proxy_param['addr']}:{proxy_param['port']}")
+else:
+    logger.warning("TelegramClient is starting WITHOUT proxy (direct connection). Set TELEGRAM_PROXIES in .env if your server is restricted.")
 
 db = DBManager()
 client = TelegramClient(
@@ -51,7 +55,6 @@ client = TelegramClient(
     API_ID, 
     API_HASH, 
     proxy=proxy_param,
-    connection=ConnectionTcpAbridged,
     connection_retries=TELEGRAM_CONNECTION_RETRIES,
     retry_delay=TELEGRAM_RETRY_DELAY,
     auto_reconnect=TELEGRAM_AUTO_RECONNECT,
@@ -86,7 +89,6 @@ def has_unclosed_syntax(text: str) -> bool:
 
 
 async def upload_media_to_google_background(media_info_str):
-    """Background helper to upload downloaded media to Google Files API."""
     if not media_info_str:
         return
     try:
@@ -118,7 +120,6 @@ async def upload_media_to_google_background(media_info_str):
 
 
 async def run_and_log_sandbox_code(chat_id: int, code: str, source_type: str = "trigger", event = None):
-    """Executes Python code from a trigger or timer in Sandbox VM and logs notification."""
     result = await tools.execute_python_code(code, chat_id=chat_id, event=event)
     logger.info(f"--- VM background code execution result ({source_type}) ---\n{result}\n--------------------------------------------")
     
@@ -131,7 +132,6 @@ async def run_and_log_sandbox_code(chat_id: int, code: str, source_type: str = "
 
 
 async def check_and_run_triggers(chat_id: int, text: str, input_chat_entity, event) -> bool:
-    """Checks active triggers in chat and starts execution if fired."""
     import re
     try:
         active_triggers = await db.get_active_triggers(str(chat_id))
@@ -183,7 +183,6 @@ async def check_and_run_triggers(chat_id: int, text: str, input_chat_entity, eve
 
 
 async def run_timers_loop():
-    """Background loop polling pending persistent timers from SQLite."""
     logger.info("Starting background service for persistent timers...")
     while True:
         try:
@@ -213,7 +212,6 @@ async def run_timers_loop():
 
 
 def schedule_debounce_query(chat_id, entity, trigger_msg_id=None):
-    """Schedules a debounced generation task for the given chat."""
     chat_id = int(chat_id)
     current_time_id = time.time()
     if chat_id not in message_buffers:
@@ -391,7 +389,7 @@ async def on_new_message(event):
         buf["task"] = asyncio.create_task(_wait_and_execute(buffer_key))
         return
 
-    # 2. Prioritized CLI Command Execution (Works for incoming and manual outgoing messages)
+    # 2. Prioritized CLI Command Execution (Processed for both incoming and manual outgoing messages)
     raw_payload = event.message.message or ""
     if raw_payload.strip().startswith("/"):
         if has_unclosed_syntax(raw_payload) or len(raw_payload) > 3500:
@@ -423,7 +421,6 @@ async def on_new_message(event):
             formatted = safe_telegram_html(cmd_output)
             await send_message_safe(client, input_chat_entity, formatted, reply_to=msg_id, parse_mode="html")
         
-        # Stop execution so command does not trigger conversational AI generation
         if not getattr(config, "TRIGGER_ON_COMMANDS", False):
             return
 
