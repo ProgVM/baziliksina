@@ -18,6 +18,7 @@ for sub in ["config", "core", "database", "services", "utils", "tools"]:
 
 from telethon import TelegramClient, events
 from telethon.tl import types as tl_types
+from telethon.network.connection import ConnectionTcpAbridged
 
 from config import (
     API_ID, API_HASH, SESSION_PATH, WORKSPACE_DIR, BOOTSTRAP_DATABASE, DEBOUNCE_DELAY, 
@@ -50,6 +51,7 @@ client = TelegramClient(
     API_ID, 
     API_HASH, 
     proxy=proxy_param,
+    connection=ConnectionTcpAbridged,
     connection_retries=TELEGRAM_CONNECTION_RETRIES,
     retry_delay=TELEGRAM_RETRY_DELAY,
     auto_reconnect=TELEGRAM_AUTO_RECONNECT,
