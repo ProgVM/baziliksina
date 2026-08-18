@@ -130,9 +130,13 @@ class AIToolKitSystem:
         logger.info(f"Dialogue ignored. Reason: {reason} | Continue loop: {continue_loop}")
         return f"Dialogue successfully ignored. Reason: {reason} | Continue loop: {continue_loop}"
 
-    # Aliases for no_op_ignore
-    ignore_this_eblan = no_op_ignore
-    idi_nahuy = no_op_ignore
+    def ignore_this_eblan(self, reason: str, continue_loop: bool = False, **kwargs) -> str:
+        """Finishes the current generation step immediately without sending any text messages to the chat (alias for no_op_ignore)."""
+        return self.no_op_ignore(reason, continue_loop=continue_loop, **kwargs)
+
+    def idi_nahuy(self, reason: str, continue_loop: bool = False, **kwargs) -> str:
+        """Finishes the current generation step immediately without sending any text messages to the chat (alias for no_op_ignore)."""
+        return self.no_op_ignore(reason, continue_loop=continue_loop, **kwargs)
 
     async def execute_sql_query(self, sql: str, **kwargs) -> str:
         """Executes a raw SQL query on the configured local SQLite database."""

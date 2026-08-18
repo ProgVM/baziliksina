@@ -163,8 +163,13 @@ class GeminiManager:
             types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=get_safety_threshold(config.SAFETY_DANGEROUS_CONTENT)),
         ]
 
+        # core/gemini_manager.py
+# (фрагмент внутри handle_query)
+
         # Filter allowed tools based on config matrix and Granular Permission Manager
         allowed_callables = []
+        seen_function_names = set()
+
         for tool in registry.get_all_tools():
             is_blocked = False
             
@@ -192,6 +197,29 @@ class GeminiManager:
 
             if not is_blocked:
                 func = tool.callable
+                
+                # Ensure unique function name for Gemini SDK declaration
+                func_name = getattr(func, "__name__", tool.name)
+                if func_name != tool.name:
+                    import functools
+                    if inspect.iscoroutinefunction(func):
+                        @functools.wraps(func)
+                        async def wrapped_async(*a, _fn=func, **kw):
+                            return await _fn(*a, **kw)
+                        wrapped_async.__name__ = tool.name
+                        func = wrapped_async
+                    else:
+                        @functools.wraps(func)
+                        def wrapped_sync(*a, _fn=func, **kw):
+                            return _fn(*a, **kw)
+                        wrapped_sync.__name__ = tool.name
+                        func = wrapped_sync
+
+                # Prevent duplicate function declarations in Gemini API payload
+                if func.__name__ in seen_function_names:
+                    continue
+                seen_function_names.add(func.__name__)
+
                 try:
                     sig = inspect.signature(func)
                     clean_params = []
