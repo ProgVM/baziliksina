@@ -6,7 +6,7 @@ import time
 import shutil
 import asyncio
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Union
 
 import config
 import tools
@@ -14,7 +14,6 @@ from utils import matches_filter
 
 logger = logging.getLogger("Tools.Sites")
 
-# Default values are retrieved dynamically from the central config module
 
 def check_site_command_allowed(command: str) -> bool:
     import re
@@ -31,70 +30,77 @@ def check_site_command_allowed(command: str) -> bool:
     blacklist = [b.strip() for b in config.SITE_COMMAND_BLACKLIST.split(",") if b.strip()] if isinstance(config.SITE_COMMAND_BLACKLIST, str) else config.SITE_COMMAND_BLACKLIST
     return matches_filter(command, whitelist, blacklist)
 
+
 class AIToolKitSites:
-    async def create_or_update_site(self, name: str, config_dict: Dict[str, Any], modules_list: List[Dict[str, Any]] = None, expires_in_seconds: int = None, **kwargs) -> str:
+    async def create_or_update_site(self, name: str, config_dict: str = "{}", modules_list: List[str] = None, expires_in_seconds: int = None, **kwargs) -> str:
         """
         Creates a new sandboxed website or modifies an existing site on the userbot web server.
         
         Args:
             name: Alphanumeric unique site identifier (e.g. 'my_api', 'landing_page').
-            config_dict: Security policy & isolation config. Keys:
-                - allowed_imports: List[str] of libraries site code can import (e.g. ['json', 'math']).
-                - allowed_globals: List[str] of variables exposed from host ('db' or 'client').
-                - allowed_ips: Comma-separated list of allowed client IPs or 'all'.
-                - allowed_methods: List[str] of allowed HTTP verbs (e.g. ['GET', 'POST']).
-                - max_request_size: Int limit in bytes (default 1MB).
-                - storage_limit_bytes: Int limit of dynamic folder size.
-                - timeout: Float execution script timeout in seconds.
-                - custom_headers: Dict[str, str] headers returned in every response.
-            modules_list: List of dicts representing site python code modules. Each dict must have:
-                - path: relative filename (e.g., 'index.py', 'api/user.py').
-                - code: python script content.
-                - description: description of the module.
+            config_dict: Security policy & isolation config JSON string or dict.
+            modules_list: List of module dictionaries or JSON strings representing site python code modules.
             expires_in_seconds: Optional lifetime in seconds after which the site is deleted automatically.
         """
         if not tools.db:
             return "Error: Database is not initialized."
             
-        # Clean site name to prevent path traversal
         clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
         if not clean_name or clean_name != name.lower():
             return "Error: Site name must contain only alphanumeric characters, underscores, and hyphens."
 
-        # Validate security limits and values
-        allowed_imports_raw = config_dict.get("allowed_imports", config.SITE_ALLOWED_IMPORTS_DEFAULT)
-        blocked_imports_raw = config_dict.get("blocked_imports", config.SITE_BLOCKED_IMPORTS_DEFAULT)
+        # Parse config_dict if passed as string
+        if isinstance(config_dict, str):
+            try:
+                cfg_obj = json.loads(config_dict) if config_dict.strip() else {}
+            except Exception:
+                cfg_obj = {}
+        else:
+            cfg_obj = dict(config_dict) if config_dict else {}
+
+        # Parse modules_list if elements are strings
+        mods_obj = []
+        if modules_list:
+            for item in modules_list:
+                if isinstance(item, str):
+                    try: mods_obj.append(json.loads(item))
+                    except Exception: pass
+                elif isinstance(item, dict):
+                    mods_obj.append(item)
+
+        if not mods_obj and "modules" in kwargs:
+            raw_m = kwargs["modules"]
+            if isinstance(raw_m, list):
+                mods_obj = raw_m
+
+        allowed_imports_raw = cfg_obj.get("allowed_imports", config.SITE_ALLOWED_IMPORTS_DEFAULT)
+        blocked_imports_raw = cfg_obj.get("blocked_imports", config.SITE_BLOCKED_IMPORTS_DEFAULT)
         
         allowed_imports = [imp.strip() for imp in allowed_imports_raw.split(",") if imp.strip()] if isinstance(allowed_imports_raw, str) else (allowed_imports_raw or [])
         blocked_imports = [imp.strip() for imp in blocked_imports_raw.split(",") if imp.strip()] if isinstance(blocked_imports_raw, str) else (blocked_imports_raw or [])
         
-        allowed_globals = config_dict.get("allowed_globals", [])
+        allowed_globals = cfg_obj.get("allowed_globals", [])
         
-        # Enforce blacklist of dangerous global models and imports on custom site engines
         for glob in allowed_globals:
             if glob in ["os", "sys", "subprocess", "shutil", "builtins"]:
                 return f"Security Policy Violation: Exposing global '{glob}' is strictly forbidden."
                 
-        # Validate whitelisted imports against server absolute sandbox policy
         from utils import matches_filter
         if isinstance(allowed_imports, list):
             for imp in allowed_imports:
                 if imp not in ["all", "any", "*"] and not matches_filter(imp, config.SANDBOX_PYTHON_WHITELIST, config.SANDBOX_PYTHON_BLACKLIST):
                     return f"Security Policy Violation: Importing module '{imp}' is blocked by server sandbox policy."
 
-        # Enforce storage limits
-        storage_limit = int(config_dict.get("storage_limit_bytes", config.SITE_STORAGE_LIMIT_DEFAULT))
+        storage_limit = int(cfg_obj.get("storage_limit_bytes", config.SITE_STORAGE_LIMIT_DEFAULT))
         if storage_limit > config.SITE_STORAGE_LIMIT_MAX:
             storage_limit = config.SITE_STORAGE_LIMIT_MAX
-            config_dict["storage_limit_bytes"] = storage_limit
+            cfg_obj["storage_limit_bytes"] = storage_limit
 
-        # Enforce script timeout boundaries
-        exec_timeout = float(config_dict.get("timeout", config.SITE_TIMEOUT_DEFAULT))
+        exec_timeout = float(cfg_obj.get("timeout", config.SITE_TIMEOUT_DEFAULT))
         if exec_timeout <= 0 or exec_timeout > config.SITE_TIMEOUT_MAX:
             exec_timeout = config.SITE_TIMEOUT_DEFAULT
-            config_dict["timeout"] = exec_timeout
+            cfg_obj["timeout"] = exec_timeout
 
-        # Setup safe transactional backup to support non-destructive updates
         site_dir = config.WORKSPACE_DIR / "sites" / clean_name
         backup_dir = config.WORKSPACE_DIR / "sites" / f"{clean_name}_backup_{int(time.time())}"
         has_backup = False
@@ -108,19 +114,16 @@ class AIToolKitSites:
                 
         site_dir.mkdir(parents=True, exist_ok=True)
 
-        if not modules_list:
-            # Create a default home page if no modules are specified
-            modules_list = [{
+        if not mods_obj:
+            mods_obj = [{
                 "path": "index.py",
                 "code": "response['body'] = '<h1>Welcome to Baziliksina dynamic site \'' + request['client_ip'] + '\'! 🌸</h1>'",
                 "description": "Default home page"
             }]
 
-        # Write each module file to the site isolated directory after verifying it
         total_code_size = 0
-        for mod in modules_list:
+        for mod in mods_obj:
             mod_path_str = mod.get("path", "").strip()
-            # Perform absolute physical path resolution and prefix checking to strictly prevent directory traversal
             resolved_mod_path = (site_dir / mod_path_str).resolve()
             if not str(resolved_mod_path).startswith(str(site_dir.resolve())):
                 if site_dir.exists():
@@ -130,11 +133,9 @@ class AIToolKitSites:
                 return f"Security Policy Violation: Invalid module path '{mod_path_str}' attempts to escape site boundary."
                 
             mod_code = mod.get("code", "")
-            # Safe normalization of double and single escaped newlines
             mod_code = mod_code.replace("\\\\r\\\\n", "\n").replace("\\\\n", "\n").replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n")
             total_code_size += len(mod_code)
             
-            # Verify Python code of module
             if not matches_filter(mod_code, config.SANDBOX_PYTHON_WHITELIST, config.SANDBOX_PYTHON_BLACKLIST):
                 if site_dir.exists():
                     shutil.rmtree(site_dir)
@@ -142,22 +143,21 @@ class AIToolKitSites:
                     shutil.move(str(backup_dir), str(site_dir))
                 return f"Security Policy Violation: Module '{mod_path_str}' code contains terms blocked by sandbox policy."
 
-            # Save file physically to sandbox
             out_file = resolved_mod_path
             out_file.parent.mkdir(parents=True, exist_ok=True)
             
             with open(out_file, "w", encoding="utf-8") as f:
                 f.write(mod_code)
 
-        # --- AUTOMATED DEVOPS DRY-RUN VALIDATION ---
+        # Automated DevOps dry-run validation
         test_module = None
-        for mod in modules_list:
+        for mod in mods_obj:
             m_path = mod.get("path", "")
             if m_path in ["index.py", "index"]:
                 test_module = mod
                 break
-        if not test_module and modules_list:
-            test_module = modules_list[0]
+        if not test_module and mods_obj:
+            test_module = mods_obj[0]
             
         if test_module:
             test_code = test_module.get("code", "")
@@ -183,63 +183,52 @@ class AIToolKitSites:
             }
             try:
                 import ast
-                import types
-                # Compile index module with top-level await during Automated DevOps dry-run validation
+                import types as py_types
                 compiled_test = compile(test_code, "<test_site>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
                 async def run_test():
                     res = eval(compiled_test, mock_local_vars, mock_local_vars)
-                    if isinstance(res, types.CoroutineType):
+                    if isinstance(res, py_types.CoroutineType):
                         await res
                 await asyncio.wait_for(run_test(), timeout=2.0)
-                # Dry-run execution of entrypoint handlers inside site validation step
                 entrypoint = None
-                for name in ["handle", "handler", "main", "index", "get", "post"]:
-                    if name in mock_local_vars and callable(mock_local_vars[name]):
-                        entrypoint = mock_local_vars[name]
+                for entry_name in ["handle", "handler", "main", "index", "get", "post"]:
+                    if entry_name in mock_local_vars and callable(mock_local_vars[entry_name]):
+                        entrypoint = mock_local_vars[entry_name]
                         break
                 if entrypoint:
-                    import inspect
                     if inspect.iscoroutinefunction(entrypoint):
                         await entrypoint(mock_local_vars["request"])
                     else:
                         entrypoint(mock_local_vars["request"])
             except Exception as test_err:
-                # Clean up the broken files
                 if site_dir.exists():
                     shutil.rmtree(site_dir)
-                # Rollback: Restore previous stable site directory if backup exists
                 if has_backup and backup_dir.exists():
                     shutil.move(str(backup_dir), str(site_dir))
                 import traceback
                 return f"Error: Site code dry-run failed with a runtime error! Transaction rolled back to the previous stable state.\nTraceback error details:\n{traceback.format_exc()}"
 
-        # Clean up backup directory upon successful validation
         if has_backup and backup_dir.exists():
             try:
                 shutil.rmtree(backup_dir)
             except Exception as clean_err:
                 logger.warning(f"Failed to remove backup folder '{backup_dir}': {str(clean_err)}")
 
-        # Apply disk limits check
-        # Calculate size of site directory
         total_size = sum(f.stat().st_size for f in site_dir.glob('**/*') if f.is_file())
         if total_size > storage_limit:
-            # Cleanup and revert
             shutil.rmtree(site_dir)
             if has_backup and backup_dir.exists():
                 shutil.move(str(backup_dir), str(site_dir))
             return f"Error: Site total directory size ({total_size} bytes) exceeds the specified storage limit ({storage_limit} bytes)."
 
-        # Determine expiration
         expires_at = None
         if expires_in_seconds:
             expires_at = int(time.time()) + int(expires_in_seconds)
 
-        # Save site schema to DB
         await tools.db.save_dynamic_site(
             name=clean_name,
-            config_dict=config_dict,
-            modules_list=modules_list,
+            config_dict=cfg_obj,
+            modules_list=mods_obj,
             expires_at=expires_at,
             status='active'
         )
@@ -256,13 +245,12 @@ class AIToolKitSites:
                 display_host = "127.0.0.1"
 
         web_link = f"http://{display_host}:{config.WEB_SERVER_PORT}/site/{clean_name}"
-        
         expires_str = f" Expires at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(expires_at))}." if expires_at else " Lifetime: Infinite."
         return (
             f"Success! Dynamic website '{clean_name}' successfully built and active!\n"
             f"- Path URL: {web_link}\n"
             f"- Local Sandbox Folder: bot_workspace/sites/{clean_name}/\n"
-            f"- Configured Modules count: {len(modules_list)}.\n"
+            f"- Configured Modules count: {len(mods_obj)}.\n"
             f"- Storage usage: {total_size} bytes (Limit: {storage_limit} bytes).\n"
             f"- API script timeout: {exec_timeout}s.{expires_str}"
         )
@@ -284,7 +272,6 @@ class AIToolKitSites:
             created_at = s["created_at"]
             expires_at = s["expires_at"]
             
-            # Calculate size
             site_dir = config.WORKSPACE_DIR / "sites" / name
             size_str = "0 bytes"
             if site_dir.exists():
@@ -319,14 +306,12 @@ class AIToolKitSites:
             f"- Expires At: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(site_data['expires_at'])) if site_data['expires_at'] else 'Infinite'}"
         ]
         
-        # Read files and actual disk size
         site_dir = config.WORKSPACE_DIR / "sites" / clean_name
         size_bytes = 0
         if site_dir.exists():
             size_bytes = sum(f.stat().st_size for f in site_dir.glob('**/*') if f.is_file())
         lines.append(f"- Folder disk size: {size_bytes} bytes")
         
-        # Read configuration parameters nicely
         try:
             cfg = json.loads(site_data["config_json"])
             lines.append("- Security Config & Policy:")
@@ -341,7 +326,6 @@ class AIToolKitSites:
         except Exception:
             lines.append(f"- Raw Config (JSON): {site_data['config_json']}")
             
-        # Display modules code
         try:
             modules = json.loads(site_data["modules_json"])
             lines.append(f"- Registered Modules ({len(modules)}):")
@@ -350,7 +334,6 @@ class AIToolKitSites:
                 lines.append(f"    Code:")
                 lines.append("    ```python")
                 code_lines = mod.get('code', '').splitlines()
-                # Print first 30 lines of module to avoid output truncation
                 lines.append("\n".join(f"    {l}" for l in code_lines[:30]))
                 if len(code_lines) > 30:
                     lines.append("    ... [code truncated]")
@@ -361,13 +344,7 @@ class AIToolKitSites:
         return "\n".join(lines)
 
     async def get_site_logs(self, name: str, limit: int = 100, **kwargs) -> str:
-        """
-        Retrieves recent console print outputs and runtime crash tracebacks of the chosen hosted dynamic site.
-        
-        Args:
-            name: The site name/id (e.g. 'my_api').
-            limit: Number of recent lines to read. Default is 100.
-        """
+        """Retrieves recent console print outputs and runtime crash tracebacks of the chosen hosted dynamic site."""
         if not tools.db:
             return "Error: Database is not initialized."
             
@@ -390,13 +367,7 @@ class AIToolKitSites:
             return f"Error reading logs for site '{clean_name}': {str(e)}"
 
     async def run_site_command(self, name: str, command: str, **kwargs) -> str:
-        """
-        Executes a shell command in the context of the site isolated folder directory.
-        
-        Args:
-            name: The dynamic site identifier.
-            command: The shell command to run (e.g., 'pip install colored' or 'ls -la').
-        """
+        """Executes a shell command in the context of the site isolated folder directory."""
         if not tools.db:
             return "Error: Database is not initialized."
         clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
@@ -416,14 +387,7 @@ class AIToolKitSites:
             return f"Error executing command: {str(e)}"
 
     async def execute_site_python_code(self, name: str, code: str, **kwargs) -> str:
-        """
-        Executes asynchronous Python code directly inside the isolated execution environment and workspace directory of a dynamic website.
-        This allows you to manage files, create nested directories, test APIs/index views, inspect variables, and debug runtime operations of your hosted site.
-        
-        Args:
-            name: Alphanumeric identifier of the target dynamic site.
-            code: Full asynchronous/synchronous Python source code to execute inside the site's sandbox.
-        """
+        """Executes asynchronous Python code directly inside the isolated execution environment and workspace directory of a dynamic website."""
         if not tools.db:
             return "Error: Database is not initialized."
             
@@ -432,7 +396,6 @@ class AIToolKitSites:
         if not site_data:
             return f"Error: Site '{clean_name}' does not exist on the server."
             
-        # Verify code against SITE_PYTHON filters
         from utils import matches_filter
         allowed_site_py = [i.strip() for i in config.SITE_PYTHON_WHITELIST.split(",") if i.strip()] if isinstance(config.SITE_PYTHON_WHITELIST, str) else config.SITE_PYTHON_WHITELIST
         blocked_site_py = [b.strip() for b in config.SITE_PYTHON_BLACKLIST.split(",") if b.strip()] if isinstance(config.SITE_PYTHON_BLACKLIST, str) else config.SITE_PYTHON_BLACKLIST
@@ -448,7 +411,6 @@ class AIToolKitSites:
         site_dir = config.WORKSPACE_DIR / "sites" / clean_name
         site_dir.mkdir(parents=True, exist_ok=True)
         
-        # Site-scoped open
         def safe_site_open(file, mode='r', *args, **kwargs):
             if not os.path.isabs(file):
                 file = site_dir / file
@@ -457,19 +419,17 @@ class AIToolKitSites:
                 raise PermissionError("Security Policy Error: Attempted to access a directory outside the site isolated workspace.")
             return open(resolved, mode, *args, **kwargs)
             
-        # Site-scoped safe import
         allowed_imports = site_config.get("allowed_imports", config.SITE_ALLOWED_IMPORTS_DEFAULT)
         blocked_imports = site_config.get("blocked_imports", config.SITE_BLOCKED_IMPORTS_DEFAULT)
         
-        def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
-            root_name = name.split(".")[0]
+        def safe_import(mod_name, globals=None, locals=None, fromlist=(), level=0):
+            root_name = mod_name.split(".")[0]
             if not matches_filter(root_name, allowed_imports, blocked_imports):
-                raise ImportError(f"Security Policy Error: Import of module '{name}' is restricted for this site.")
+                raise ImportError(f"Security Policy Error: Import of module '{mod_name}' is restricted for this site.")
             if not matches_filter(root_name, allowed_site_py, blocked_site_py):
-                raise ImportError(f"Security Policy Error: Import of module '{name}' is blocked by server policy.")
-            return __import__(name, globals, locals, fromlist, level)
+                raise ImportError(f"Security Policy Error: Import of module '{mod_name}' is blocked by server policy.")
+            return __import__(mod_name, globals, locals, fromlist, level)
             
-        # Site print logging to site.log
         printed_lines = []
         def site_print(*args):
             line = " ".join(str(a) for a in args)
@@ -482,7 +442,6 @@ class AIToolKitSites:
             except Exception:
                 pass
                 
-        # Mock/Initialize execution environment
         local_vars = {
             "__import__": safe_import,
             "open": safe_site_open,
@@ -508,13 +467,11 @@ class AIToolKitSites:
             "WORKSPACE_DIR": str(site_dir)
         }
         
-        # Inject standard modules dynamically
         from utils import get_all_project_modules
         for k, v in get_all_project_modules().items():
             if k not in local_vars:
                 local_vars[k] = v
                 
-        # Expose allowed globals
         allowed_globals = site_config.get("allowed_globals", [])
         if "db" in allowed_globals and tools.db:
             local_vars["db"] = tools.db
@@ -522,15 +479,14 @@ class AIToolKitSites:
             from sandbox import SandboxedClient
             local_vars["client"] = SandboxedClient(tools.client, site_dir)
             
-        # Execute code
         try:
             import ast
-            import types
+            import types as py_types
             compiled_sandbox = compile(code, f"<site_vm_{clean_name}>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
             
             async def run_sandbox():
                 res_val = eval(compiled_sandbox, local_vars, local_vars)
-                if isinstance(res_val, types.CoroutineType):
+                if isinstance(res_val, py_types.CoroutineType):
                     await res_val
                     
             timeout_val = float(site_config.get("timeout", config.SITE_TIMEOUT_DEFAULT))
@@ -561,7 +517,6 @@ class AIToolKitSites:
         clean_name = "".join(c for c in name if c.isalnum() or c in ["_", "-"]).strip().lower()
         deleted = await tools.db.delete_dynamic_site(clean_name)
         
-        # Physically remove directory from the workspace safely
         site_dir = config.WORKSPACE_DIR / "sites" / clean_name
         folder_removed = False
         if site_dir.exists():
@@ -575,7 +530,7 @@ class AIToolKitSites:
             return f"Success! Dynamic site '{clean_name}' completely deleted (Database records removed, physical files wiped)."
         return f"Error: Site '{clean_name}' does not exist on the server."
 
-# Export toolkit methods
+
 toolkit_sites = AIToolKitSites()
 for attr in dir(toolkit_sites):
     if not attr.startswith("_"):

@@ -4,7 +4,7 @@ import time
 import json
 import asyncio
 import logging
-from typing import List, Any
+from typing import List, Optional, Union
 import urllib.parse
 import httpx
 
@@ -26,15 +26,15 @@ class AIToolKitFiles:
         except Exception as e:
             return f"Error saving file to local storage: {str(e)}"
 
-    async def save_file_from_telegram(self, message_id: int, filename: str = None, element_indices: Any = "all", chat_id: Any = None, **kwargs) -> str:
+    async def save_file_from_telegram(self, message_id: int, filename: str = None, element_indices: str = "all", chat_id: str = None, **kwargs) -> str:
         """
         Downloads media files from a Telegram message, album, poll, or rich message.
-        Supports selecting specific element index/indices (e.g. 0, [0, 2], or "all").
+        Supports selecting specific element index/indices (e.g. '0', '0,2', or 'all').
 
         Args:
             message_id: ID of the Telegram message.
             filename: Optional target filename for saved file (if 1 item).
-            element_indices: "all", int (e.g. 0), or List[int] (e.g. [0, 2]) selecting specific media items.
+            element_indices: 'all', single index ('0'), or comma-separated indices ('0,2') selecting specific media items.
             chat_id: Target chat ID or username.
         """
         if not tools.client:
@@ -51,7 +51,7 @@ class AIToolKitFiles:
                 try: chat_id = int(chat_id)
                 except ValueError: pass
 
-            msg = await tools.client.get_messages(chat_id, ids=message_id)
+            msg = await tools.client.get_messages(chat_id, ids=int(message_id))
             if not msg:
                 return f"Error: Message with ID {message_id} not found."
 
@@ -93,14 +93,15 @@ class AIToolKitFiles:
                 return f"Error: Message #{message_id} in chat {chat_id} does not contain any downloadable media files."
 
             target_indices = []
-            if str(element_indices).strip().lower() in ["all", "*", "any", "none"]:
+            str_elem = str(element_indices).strip().lower()
+            if str_elem in ["all", "*", "any", "none"]:
                 target_indices = list(range(len(media_candidates)))
-            elif isinstance(element_indices, int):
-                target_indices = [element_indices]
+            elif str_elem.isdigit():
+                target_indices = [int(str_elem)]
+            elif "," in str_elem:
+                target_indices = [int(i.strip()) for i in str_elem.split(",") if i.strip().isdigit()]
             elif isinstance(element_indices, list):
                 target_indices = [int(i) for i in element_indices if str(i).isdigit()]
-            elif isinstance(element_indices, str) and "," in element_indices:
-                target_indices = [int(i.strip()) for i in element_indices.split(",") if i.strip().isdigit()]
 
             valid_targets = [media_candidates[i] for i in target_indices if 0 <= i < len(media_candidates)]
             if not valid_targets:
@@ -165,7 +166,7 @@ class AIToolKitFiles:
         except Exception as e:
             return f"Error deleting file: {str(e)}"
 
-    async def forward_messages(self, message_ids: List[int], from_chat_id: Any = None, to_chat_id: Any = None, custom_messages: List[str] = None, order: str = "after", **kwargs) -> str:
+    async def forward_messages(self, message_ids: List[int], from_chat_id: str = None, to_chat_id: str = None, custom_messages: List[str] = None, order: str = "after", **kwargs) -> str:
         """Forwards one or multiple messages cleanly from a source chat to a target chat."""
         if not tools.client:
             return "Error: Telethon client is not initialized."
@@ -213,7 +214,7 @@ class AIToolKitFiles:
         except Exception as e:
             return f"Error forwarding messages: {str(e)}"
 
-    async def send_uncompressed_file(self, filename: str, chat_id: Any = None, caption: str = None, **kwargs) -> str:
+    async def send_uncompressed_file(self, filename: str, chat_id: str = None, caption: str = None, **kwargs) -> str:
         """Sends any local file strictly as an uncompressed document to preserve full original quality."""
         if not tools.client:
             return "Error: Telethon client is not initialized."
@@ -311,7 +312,7 @@ class AIToolKitFiles:
         except Exception as e:
             return f"Critical error during direct file download: {str(e)}"
 
-# Export methods to module level
+
 toolkit_files = AIToolKitFiles()
 for attr in dir(toolkit_files):
     if not attr.startswith("_"):

@@ -80,6 +80,8 @@ baziliksina_session.session*
 
 # Local environment configuration file containing sensitive API keys
 .env
+.env.txt
+.env.bak
 
 # =====================================================================
 # Project Databases & WAL (SQLite Storage)

@@ -7,6 +7,7 @@ import hashlib
 import inspect
 import re
 import time
+from typing import List, Dict, Any, Optional, Union
 import config
 from google.genai import types
 from google.genai.errors import APIError
@@ -22,6 +23,38 @@ from command_manager import command_manager
 import tools
 
 logger = logging.getLogger("GeminiManager")
+
+
+def sanitize_type_annotation(anno: Any, default_val: Any = inspect.Parameter.empty) -> Any:
+    """Sanitizes Python type annotations so that google-genai produces 100% valid OpenAPI schemas."""
+    if anno is inspect.Parameter.empty or anno is Any or anno is object:
+        if isinstance(default_val, int) and not isinstance(default_val, bool):
+            return int
+        elif isinstance(default_val, float):
+            return float
+        elif isinstance(default_val, bool):
+            return bool
+        elif isinstance(default_val, list):
+            return List[str]
+        return str
+    if anno in (list, List):
+        return List[str]
+    if anno in (dict, Dict):
+        return str
+    if hasattr(anno, "__origin__"):
+        if anno.__origin__ is Union:
+            args = [a for a in anno.__args__ if a is not type(None)]
+            if len(args) == 1:
+                return Optional[sanitize_type_annotation(args[0], default_val)]
+            return str
+        elif anno.__origin__ in (list, List):
+            inner_args = getattr(anno, "__args__", ())
+            if not inner_args or inner_args[0] in (Any, object, dict, Dict):
+                return List[str]
+            return List[sanitize_type_annotation(inner_args[0])]
+        elif anno.__origin__ in (dict, Dict):
+            return str
+    return anno
 
 
 class GeminiManager:
@@ -132,6 +165,7 @@ class GeminiManager:
         env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}\nYour custom Member Tag / Custom Title in this chat: {custom_title_status}"
         dynamic_prompt = f"{system_prompt}\n\n{env_prompt}"
         logger.info(f"Full dynamic system_instruction passed to Gemini: {len(dynamic_prompt)} characters.")
+        
         if not chat_entity or isinstance(chat_entity, (int, str)):
             chat_entity = tools.entity_cache.get(cid_int)
 
@@ -146,6 +180,7 @@ class GeminiManager:
                     chat_entity = cid_int
 
         gemini_client = self.key_manager.get_client()
+
         def get_safety_threshold(threshold_str: str) -> types.HarmBlockThreshold:
             mapping = {
                 "block_none": types.HarmBlockThreshold.BLOCK_NONE,
@@ -162,9 +197,6 @@ class GeminiManager:
             types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=get_safety_threshold(config.SAFETY_SEXUALLY_EXPLICIT)),
             types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=get_safety_threshold(config.SAFETY_DANGEROUS_CONTENT)),
         ]
-
-        # core/gemini_manager.py
-# (фрагмент внутри handle_query)
 
         # Filter allowed tools based on config matrix and Granular Permission Manager
         allowed_callables = []
@@ -220,37 +252,45 @@ class GeminiManager:
                     continue
                 seen_function_names.add(func.__name__)
 
+                # Clean signature without breaking OpenAPI schemas (arrays have concrete item types, no raw *args/**kwargs)
                 try:
                     sig = inspect.signature(func)
                     clean_params = []
-                    has_kwargs = False
-                    has_args = False
+                    system_params = {'self', 'cls', 'client', 'db', 'ai_manager', 'permission_manager', 'service_manager', 'command_manager', 'logger', 'event', 'msg', 'message'}
+                    
+                    has_var_pos = False
                     for p in sig.parameters.values():
+                        if p.name in system_params:
+                            continue
+                        if p.kind == inspect.Parameter.VAR_POSITIONAL:
+                            has_var_pos = True
+                            continue
                         if p.kind == inspect.Parameter.VAR_KEYWORD:
-                            has_kwargs = True
-                        elif p.kind == inspect.Parameter.VAR_POSITIONAL:
-                            has_args = True
-                        elif p.kind != inspect.Parameter.VAR_POSITIONAL:
-                            clean_params.append(p)
-                    if has_args:
-                        args_param = inspect.Parameter(
+                            continue
+
+                        clean_anno = sanitize_type_annotation(p.annotation, p.default)
+                        clean_params.append(inspect.Parameter(
+                            name=p.name,
+                            kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            default=p.default,
+                            annotation=clean_anno
+                        ))
+
+                    # If function had *args, declare args: List[str] with valid OpenAPI items schema
+                    if has_var_pos and not any(p.name == "args" for p in clean_params):
+                        clean_params.append(inspect.Parameter(
                             name="args",
                             kind=inspect.Parameter.KEYWORD_ONLY,
                             default=None,
-                            annotation=list
-                        )
-                        clean_params.append(args_param)
-                    if has_kwargs:
-                        kwargs_param = inspect.Parameter(
-                            name="kwargs",
-                            kind=inspect.Parameter.KEYWORD_ONLY,
-                            default=None,
-                            annotation=dict
-                        )
-                        clean_params.append(kwargs_param)
+                            annotation=List[str]
+                        ))
+
                     func.__signature__ = sig.replace(parameters=clean_params)
-                except Exception:
-                    pass
+                    if tool.description:
+                        func.__doc__ = tool.description
+                except Exception as sig_err:
+                    logger.debug(f"Signature sanitization warning for tool '{tool.name}': {str(sig_err)}")
+
                 allowed_callables.append(func)
 
         config_obj = types.GenerateContentConfig(
@@ -306,15 +346,18 @@ class GeminiManager:
                 except APIError as e:
                     if e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
                         logger.warning("Gemini API 403 error caught during token counting. Healing context...")
-                        file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
-                        if not file_match:
-                            file_match = re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
-                        
+                        file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
                         if file_match:
                             file_id = file_match.group(1)
                             await self.context_mgr._heal_inaccessible_file(file_id, contents)
                             await asyncio.sleep(config.TIMEOUT_SLEEP)
                             continue
+                    elif e.code == 400:
+                        logger.warning(f"Gemini API 400 error caught during token counting: {str(e)}. Sanitizing context...")
+                        for c in contents:
+                            c.parts = [types.Part.from_text(text=p.text or "[System: Content]") for p in c.parts if getattr(p, "text", None)]
+                            if not c.parts:
+                                c.parts = [types.Part.from_text(text="[System: Context restored]")]
                     logger.error(f"Error counting tokens: {str(e)}")
                 except Exception as count_err:
                     logger.error(f"Error counting tokens: {str(count_err)}")
@@ -349,16 +392,27 @@ class GeminiManager:
                         continue
                     elif e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
                         logger.warning("Gemini API 403 error caught during generation. Healing context...")
-                        file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
-                        if not file_match:
-                            file_match = re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
-                        
+                        file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
                         if file_match:
                             file_id = file_match.group(1)
                             await self.context_mgr._heal_inaccessible_file(file_id, contents)
                             await asyncio.sleep(config.TIMEOUT_SLEEP)
                             continue
                         raise e
+                    elif e.code == 400:
+                        logger.error(f"Gemini API 400 INVALID_ARGUMENT error: {str(e)}. Self-healing context and retrying...")
+                        try:
+                            async with self.db.db.execute("SELECT id, text, raw_content_json FROM messages WHERE raw_content_json IS NOT NULL ORDER BY id DESC LIMIT 20") as cursor:
+                                db_rows = await cursor.fetchall()
+                            for r_id, db_text, db_raw_json in db_rows:
+                                if db_raw_json and ("function_call" in db_raw_json or "function_response" in db_raw_json or "file_data" in db_raw_json):
+                                    await self.db.db.execute("UPDATE messages SET raw_content_json = NULL WHERE id = ?", (r_id,))
+                            await self.db.db.commit()
+                            logger.info("Successfully sanitized recent messages table raw JSON payloads.")
+                        except Exception as repair_err:
+                            logger.error(f"Database auto-repair error: {str(repair_err)}")
+                        await asyncio.sleep(config.TIMEOUT_SLEEP)
+                        continue
                     elif e.code in [502, 503, 504]:
                         logger.warning(f"Gemini API transient error {e.code} received. Retrying in {config.API_ERROR_SLEEP}s...")
                         await asyncio.sleep(config.API_ERROR_SLEEP)
@@ -524,7 +578,7 @@ class GeminiManager:
                                     function_call=types.FunctionCall(
                                         id=f"heal_{call['name'][:4]}_{int(time.time())}",
                                         name=call["name"],
-                                        args=call["args"]
+                                        args=call["args"] if isinstance(call["args"], dict) else {}
                                     ),
                                     thought_signature=orig_thought_sig
                                 )
@@ -555,14 +609,14 @@ class GeminiManager:
                     
                     for call in function_calls_to_execute:
                         fn_name = call.name
-                        args = call.args
+                        args = call.args if isinstance(call.args, dict) else {}
                         result = None
                         
                         tool_meta = registry.get(fn_name)
                         if tool_meta:
                             try:
                                 logger.info(f"Tool call '{fn_name}' from registry...")
-                                call_args = args.copy() if args else {}
+                                call_args = args.copy() if isinstance(args, dict) else {}
                                 extra_args = call_args.pop("args", []) or []
                                 if "kwargs" in call_args and isinstance(call_args["kwargs"], dict):
                                     extra = call_args.pop("kwargs")
@@ -607,7 +661,10 @@ class GeminiManager:
                         else:
                             result = f"Error: Function '{fn_name}' is not registered."
 
-                        tool_responses.append(types.Part.from_function_response(name=fn_name, response={"result": result}))
+                        tool_responses.append(types.Part.from_function_response(
+                            name=fn_name,
+                            response={"result": result if result is not None else "Execution completed"}
+                        ))
                         
                         if result:
                             res_str = str(result)

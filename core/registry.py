@@ -6,6 +6,7 @@ import logging
 import inspect
 import urllib.parse
 from pathlib import Path
+from typing import List, Dict, Any, Optional
 import httpx
 from google.genai import types
 
@@ -30,7 +31,7 @@ class FunctionRegistry:
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
             cls._instance = super().__new__(cls)
-            cls._instance._registry = {} # {tool_name_str: ToolMetadata}
+            cls._instance._registry = {}
         return cls._instance
 
     def register(self, name: str, callable_func: callable, category: str, description: str = None, is_custom: bool = False, parameters_schema: dict = None):
@@ -81,11 +82,12 @@ class TagBlockMetadata:
     """Metadata class for storing complete information about registered tags, labels, and blocks."""
     def __init__(self, name: str, type_str: str, callable_func: callable, description: str = None, is_custom: bool = False, code: str = None):
         self.name = name
-        self.type = type_str  # 'tag' or 'block'
+        self.type = type_str
         self.callable = callable_func
         self.description = description or getattr(callable_func, "__doc__", "") or "No description."
         self.is_custom = is_custom
         self.code = code
+
 
 class TagBlockRegistry:
     """Thread-safe singleton registry of all available AI system/custom tags and blocks."""
@@ -94,7 +96,7 @@ class TagBlockRegistry:
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
             cls._instance = super().__new__(cls)
-            cls._instance._registry = {} # {name_str: TagBlockMetadata}
+            cls._instance._registry = {}
         return cls._instance
 
     def register(self, name: str, type_str: str, callable_func: callable, description: str = None, is_custom: bool = False, code: str = None):
@@ -118,16 +120,15 @@ class TagBlockRegistry:
         for name in custom_names:
             del self._registry[name]
 
-tag_block_registry = TagBlockRegistry()
 
-# Global registry singleton object
+tag_block_registry = TagBlockRegistry()
 registry = FunctionRegistry()
 
 
 def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> callable:
     """
     Compiles Python code of a custom function/command from a text string with top-level await support
-    and returns an asynchronous execution wrapper with auto-injected CLI argument aliases.
+    and returns an asynchronous execution wrapper with clean parameter introspection for Gemini API.
     """
     import tools
     import ast
@@ -148,7 +149,7 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
             "json": json,
             "asyncio": asyncio,
             "Path": Path,
-            "urllib": urllib,
+            "urllib": urllib.parse,
             "types": types,
             "os": os,
             "config": config,
@@ -176,86 +177,83 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
             raise
 
     async def _execution_wrapper(*args, **kwargs):
-        namespace["args"] = args
-        namespace["kwargs"] = kwargs
+        local_ns = dict(namespace)
+        local_ns["args"] = args
+        local_ns["kwargs"] = kwargs
         if kwargs:
-            for k, v in kwargs.items():
-                namespace[k] = v
+            local_ns.update(kwargs)
 
-        event_obj = kwargs.get("event") or namespace.get("event")
+        event_obj = kwargs.get("event") or local_ns.get("event")
         msg_obj = getattr(event_obj, "message", None) if event_obj else None
-        namespace["msg"] = msg_obj or event_obj
-        namespace["message"] = msg_obj or event_obj
+        local_ns["msg"] = msg_obj or event_obj
+        local_ns["message"] = msg_obj or event_obj
 
         cli_args_obj = kwargs.get("cli_args")
         if cli_args_obj:
             raw_tail = getattr(cli_args_obj, "raw_tail", "")
-            namespace["payload"] = raw_tail
-            namespace["text"] = raw_tail
-            namespace["args_str"] = raw_tail
-            namespace["positional"] = getattr(cli_args_obj, "positional", [])
-            namespace["flags"] = getattr(cli_args_obj, "flags", {})
+            local_ns["payload"] = raw_tail
+            local_ns["text"] = raw_tail
+            local_ns["args_str"] = raw_tail
+            local_ns["positional"] = getattr(cli_args_obj, "positional", [])
+            local_ns["flags"] = getattr(cli_args_obj, "flags", {})
 
-        coro_or_val = eval(compiled_code, namespace, namespace)
+        coro_or_val = eval(compiled_code, local_ns, local_ns)
         if isinstance(coro_or_val, py_types.CoroutineType):
             await coro_or_val
 
-        func = namespace.get(name)
+        func = local_ns.get(name)
         if func and callable(func) and func != _execution_wrapper:
-            sig = inspect.signature(func)
-            
-            system_names = {
-                "client", "db", "ai_manager", "permission_manager", "service_manager",
-                "command_manager", "logger", "httpx", "json", "asyncio", "Path",
-                "urllib", "types", "os", "cli_args", "event", "msg", "message",
-                "user_id", "chat_id", "me", "config", "WORKSPACE_DIR"
-            }
+            try:
+                sig = inspect.signature(func)
+            except Exception:
+                sig = None
 
-            available_args = {}
-            available_args.update(namespace)
-            available_args.update(kwargs)
+            if sig:
+                system_names = {
+                    "client", "db", "ai_manager", "permission_manager", "service_manager",
+                    "command_manager", "logger", "httpx", "json", "asyncio", "Path",
+                    "urllib", "types", "os", "cli_args", "event", "msg", "message",
+                    "user_id", "chat_id", "me", "config", "WORKSPACE_DIR"
+                }
 
-            positional_items = []
-            if cli_args_obj and hasattr(cli_args_obj, "positional") and cli_args_obj.positional:
-                positional_items = list(cli_args_obj.positional)
-            elif args:
-                positional_items = list(args)
+                bound_args = {}
+                pos_args = []
+                positional_items = list(getattr(cli_args_obj, "positional", [])) if cli_args_obj else list(args)
+                cli_flags = getattr(cli_args_obj, "flags", {}) if cli_args_obj else {}
 
-            cli_flags = getattr(cli_args_obj, "flags", {}) if cli_args_obj else {}
+                for p_name, p_param in sig.parameters.items():
+                    if p_param.kind == inspect.Parameter.VAR_POSITIONAL:
+                        pos_args.extend(positional_items)
+                        positional_items.clear()
+                    elif p_param.kind == inspect.Parameter.VAR_KEYWORD:
+                        for k, v in local_ns.items():
+                            if k not in bound_args:
+                                bound_args[k] = v
+                    elif p_param.kind == inspect.Parameter.POSITIONAL_ONLY:
+                        if positional_items:
+                            pos_args.append(positional_items.pop(0))
+                        elif p_name in local_ns:
+                            pos_args.append(local_ns[p_name])
+                    else:
+                        if p_name in system_names and p_name in local_ns:
+                            bound_args[p_name] = local_ns[p_name]
+                        elif p_name in cli_flags:
+                            bound_args[p_name] = cli_flags[p_name]
+                        elif p_name in kwargs:
+                            bound_args[p_name] = kwargs[p_name]
+                        elif positional_items:
+                            bound_args[p_name] = positional_items.pop(0)
+                        elif p_name in local_ns:
+                            bound_args[p_name] = local_ns[p_name]
 
-            bound_args = {}
-            pos_args = []
-
-            for p_name, p_param in sig.parameters.items():
-                if p_param.kind == inspect.Parameter.VAR_POSITIONAL:
-                    pos_args.extend(positional_items)
-                    positional_items.clear()
-                elif p_param.kind == inspect.Parameter.VAR_KEYWORD:
-                    for k, v in available_args.items():
-                        if k not in bound_args:
-                            bound_args[k] = v
-                elif p_param.kind == inspect.Parameter.POSITIONAL_ONLY:
-                    if positional_items:
-                        pos_args.append(positional_items.pop(0))
-                    elif p_name in available_args:
-                        pos_args.append(available_args[p_name])
+                if inspect.iscoroutinefunction(func):
+                    return await func(*pos_args, **bound_args)
                 else:
-                    if p_name in system_names and p_name in available_args:
-                        bound_args[p_name] = available_args[p_name]
-                    elif p_name in cli_flags:
-                        bound_args[p_name] = cli_flags[p_name]
-                    elif positional_items:
-                        bound_args[p_name] = positional_items.pop(0)
-                    elif p_name in available_args:
-                        bound_args[p_name] = available_args[p_name]
+                    return func(*pos_args, **bound_args)
 
-            if inspect.iscoroutinefunction(func):
-                return await func(*pos_args, **bound_args)
-            else:
-                return func(*pos_args, **bound_args)
+        return local_ns.get("result")
 
-        return namespace.get("result")
-
+    _execution_wrapper.__name__ = name
     return _execution_wrapper
 
 
@@ -265,8 +263,6 @@ async def sync_custom_tools_with_db(db_manager):
     compiles their code on the fly, and registers them in the active FunctionRegistry.
     """
     logger.info("Starting synchronization of custom tools with the database...")
-    
-    # First, clear old custom tools to avoid duplicates during recompilation
     registry.clear_custom_tools()
     
     try:
@@ -280,10 +276,8 @@ async def sync_custom_tools_with_db(db_manager):
                 desc = tool_data["description"]
                 code = tool_data["code"]
                 
-                # Compile the function code from the string
                 compiled_func = compile_custom_tool(name, code)
                 
-                # Register in the global singleton
                 registry.register(
                     name=name,
                     callable_func=compiled_func,
@@ -298,6 +292,7 @@ async def sync_custom_tools_with_db(db_manager):
         logger.info(f"Synchronization complete. Successfully compiled and added tools: {success_count}/{len(custom_tools_list)}")
     except Exception as db_err:
         logger.error(f"Error reading custom tools from the SQLite database: {str(db_err)}")
+
 
 async def sync_custom_tags_blocks_with_db(db_manager):
     """

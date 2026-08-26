@@ -46,7 +46,7 @@ class AIContextManager:
 
         contents = []
         for content_obj, _ in history_raw:
-            text_parts = [p.text for p in (content_obj.parts or []) if p.text]
+            text_parts = [p.text for p in (content_obj.parts or []) if p.text and p.text.strip()]
             if text_parts:
                 contents.append(types.Content(
                     role=content_obj.role,
@@ -148,7 +148,7 @@ class AIContextManager:
                             for p in data_obj["parts"]:
                                 is_offending = False
                                 if isinstance(p, dict):
-                                    if p.get("file_data") and "[File inaccessible" in str(p.get("file_data")):
+                                    if p.get("file_data") and (file_id in str(p.get("file_data")) or "[File inaccessible" in str(p.get("file_data"))):
                                         is_offending = True
                                     elif p.get("inline_data") and "[File inaccessible" in str(p.get("inline_data")):
                                         is_offending = True
@@ -204,9 +204,9 @@ class AIContextManager:
     async def get_aligned_history(self, chat_id: str, gemini_client, max_db_id: int = None) -> list:
         """
         Retrieves history from SQLite, applies context management strategies (summarize/trim/hybrid/none),
-        evaluates explicit file attachment rules, aligns turn roles, and prepares Gemini API contents payload.
+        evaluates explicit file attachment rules, strictly aligns and validates turn roles & function calling pairs,
+        and prepares a 100% valid Gemini API contents payload.
         """
-        # Read strategy configurations dynamically from config
         text_mode = getattr(config, "CONTEXT_MANAGEMENT_MODE", "summarize").lower()
         file_mode = getattr(config, "FILE_CONTEXT_MODE", "trim").lower()
         auto_attach = getattr(config, "AUTO_ATTACH_FILES_TO_CONTEXT", False)
@@ -320,11 +320,9 @@ class AIContextManager:
                                     media_count += 1
                                     continue
                         elif file_mode == "summarize":
-                            # Generate/Retrieve lightweight text summary instead of heavy binary bytes
                             summary_text = await self.generate_media_summary(gemini_client, m_path, m_type)
                             content_obj.parts.append(types.Part.from_text(text=summary_text))
                         else:
-                            # File logged as metadata reference only (AUTO_ATTACH_FILES_TO_CONTEXT=False)
                             content_obj.parts.append(
                                 types.Part.from_text(text=f"[Attached File Metadata: {os.path.basename(m_path)} ({m_type}) - Call tool to inspect if needed]")
                             )
@@ -344,42 +342,86 @@ class AIContextManager:
                     if curr_media > trim_count:
                         content.parts = [p for p in content.parts if not (hasattr(p, "file_data") or hasattr(p, "inline_data"))]
 
-        # Chronologically align raw contents and manage role turns
-        aligned = []
-        skip_indices = set()
-        
-        for i, content in enumerate(contents_raw):
-            if i in skip_indices:
-                continue
-                
-            has_fc = any(part.function_call for part in (content.parts or []))
-            if content.role == "model" and has_fc:
-                aligned.append(content)
-                for j in range(i + 1, len(contents_raw)):
-                    if j in skip_indices:
-                        continue
-                    sub_content = contents_raw[j]
-                    has_fr = any(part.function_response for part in (sub_content.parts or []))
-                    if sub_content.role == "user" and has_fr:
-                        aligned.append(sub_content)
-                        skip_indices.add(j)
-                        break
-            elif content.role == "user" and any(part.function_response for part in (content.parts or [])):
-                continue
-            else:
-                aligned.append(content)
+        # Step 1: Clean out empty Part items and empty Content turns
+        valid_contents = []
+        for c in contents_raw:
+            valid_parts = []
+            for p in (c.parts or []):
+                has_fc = getattr(p, "function_call", None) is not None
+                has_fr = getattr(p, "function_response", None) is not None
+                has_file = getattr(p, "file_data", None) is not None
+                has_inline = getattr(p, "inline_data", None) is not None
+                has_text = p.text is not None and len(str(p.text).strip()) > 0
 
-        # Apply Text Trimming Strategy if CONTEXT_MANAGEMENT_MODE="trim"
+                if has_fc or has_fr or has_file or has_inline or has_text:
+                    valid_parts.append(p)
+
+            if valid_parts:
+                c.parts = valid_parts
+                valid_contents.append(c)
+
+        # Step 2: Ensure strict Function Call -> Function Response alignment
+        paired_contents = []
+        idx = 0
+        while idx < len(valid_contents):
+            c = valid_contents[idx]
+            has_fc = any(getattr(p, "function_call", None) is not None for p in c.parts)
+            has_fr = any(getattr(p, "function_response", None) is not None for p in c.parts)
+
+            if c.role == "model" and has_fc:
+                if idx + 1 < len(valid_contents) and valid_contents[idx + 1].role == "user":
+                    next_c = valid_contents[idx + 1]
+                    next_has_fr = any(getattr(p, "function_response", None) is not None for p in next_c.parts)
+                    if next_has_fr:
+                        paired_contents.append(c)
+                        paired_contents.append(next_c)
+                        idx += 2
+                        continue
+
+                # Orphaned function call without following response: sanitize to text
+                new_parts = []
+                for p in c.parts:
+                    if getattr(p, "function_call", None):
+                        fc = p.function_call
+                        fc_name = getattr(fc, "name", "tool")
+                        new_parts.append(types.Part.from_text(text=f"[Called tool '{fc_name}']"))
+                    else:
+                        new_parts.append(p)
+                c.parts = new_parts
+                paired_contents.append(c)
+                idx += 1
+
+            elif c.role == "user" and has_fr:
+                # Orphaned function response without preceding call: sanitize to text
+                new_parts = []
+                for p in c.parts:
+                    if getattr(p, "function_response", None):
+                        fr = p.function_response
+                        fr_name = getattr(fr, "name", "tool")
+                        new_parts.append(types.Part.from_text(text=f"[Tool '{fr_name}' result completed]"))
+                    else:
+                        new_parts.append(p)
+                c.parts = new_parts
+                paired_contents.append(c)
+                idx += 1
+            else:
+                paired_contents.append(c)
+                idx += 1
+
+        # Step 3: Apply Text Trimming Strategy if CONTEXT_MANAGEMENT_MODE="trim"
         if text_mode == "trim":
             trim_count = getattr(config, "CONTEXT_TRIM_COUNT", 20)
-            if len(aligned) > trim_count:
-                aligned = aligned[-trim_count:]
+            if len(paired_contents) > trim_count:
+                paired_contents = paired_contents[-trim_count:]
 
-        # Guard against Gemini API 400 error: 'Requests ending with a model turn are not supported'
-        while aligned and aligned[-1].role == "model":
-            aligned.pop()
+        # Step 4: Ensure history starts with 'user' and ends with 'user'
+        if paired_contents and paired_contents[0].role == "model":
+            paired_contents.insert(0, types.Content(role="user", parts=[types.Part.from_text(text="[System: Context initialized]")]))
 
-        if not aligned:
-            aligned.append(types.Content(role="user", parts=[types.Part.from_text(text="[System: Continue context]")]))
+        while paired_contents and paired_contents[-1].role == "model":
+            paired_contents.pop()
 
-        return aligned
+        if not paired_contents:
+            paired_contents.append(types.Content(role="user", parts=[types.Part.from_text(text="[System: Continue context]")]))
+
+        return paired_contents
