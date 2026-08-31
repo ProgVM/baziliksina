@@ -42,24 +42,42 @@ import services
 import tools
 from utils import should_process_message_event, should_process_reaction_event, load_feedback_template, send_message_safe, safe_telegram_html
 
-# Resolve Telethon proxy
-proxy_param = proxy_rotator.get_telethon_proxy()
+# Resolve Telethon proxy (SOCKS5 / HTTP / MTProto Proxy)
+proxy_param, connection_class = proxy_rotator.get_telethon_proxy_settings()
 if proxy_param:
-    logger.info(f"TelegramClient will connect via SOCKS5 proxy: {proxy_param['addr']}:{proxy_param['port']}")
+    if connection_class:
+        logger.info(f"TelegramClient will connect via MTProto Proxy: {proxy_param[0]}:{proxy_param[1]}")
+    else:
+        logger.info(f"TelegramClient will connect via SOCKS/HTTP proxy: {proxy_param.get('addr')}:{proxy_param.get('port')}")
 else:
     logger.warning("TelegramClient is starting WITHOUT proxy (direct connection). Set TELEGRAM_PROXIES in .env if your server is restricted.")
 
 db = DBManager()
-client = TelegramClient(
-    SESSION_PATH, 
-    API_ID, 
-    API_HASH, 
-    proxy=proxy_param,
-    connection_retries=TELEGRAM_CONNECTION_RETRIES,
-    retry_delay=TELEGRAM_RETRY_DELAY,
-    auto_reconnect=TELEGRAM_AUTO_RECONNECT,
-    timeout=TELEGRAM_TIMEOUT
-)
+
+if connection_class:
+    client = TelegramClient(
+        SESSION_PATH, 
+        API_ID, 
+        API_HASH, 
+        proxy=proxy_param,
+        connection=connection_class,
+        connection_retries=TELEGRAM_CONNECTION_RETRIES,
+        retry_delay=TELEGRAM_RETRY_DELAY,
+        auto_reconnect=TELEGRAM_AUTO_RECONNECT,
+        timeout=TELEGRAM_TIMEOUT
+    )
+else:
+    client = TelegramClient(
+        SESSION_PATH, 
+        API_ID, 
+        API_HASH, 
+        proxy=proxy_param,
+        connection_retries=TELEGRAM_CONNECTION_RETRIES,
+        retry_delay=TELEGRAM_RETRY_DELAY,
+        auto_reconnect=TELEGRAM_AUTO_RECONNECT,
+        timeout=TELEGRAM_TIMEOUT
+    )
+
 ai_manager = GeminiManager(client, db)
 
 me = None
