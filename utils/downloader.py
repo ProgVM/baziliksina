@@ -293,19 +293,26 @@ async def download_and_cache_media(client, message, is_private: bool, mentioned:
         mime_type = "application/octet-stream"
         file_size = 0
 
+        media_id = None
+        orig_filename = None
+
         if t_media_name == "MessageMediaPhoto":
             mime_type = "image/jpeg"
+            media_id = getattr(target_media.photo, "id", None)
+            orig_filename = f"photo_{media_id}.jpg" if media_id else None
             if getattr(target_media.photo, "sizes", None):
                 file_size = target_media.photo.sizes[-1].size if hasattr(target_media.photo.sizes[-1], "size") else 1024 * 1024
         elif t_media_name == "MessageMediaDocument":
             doc = target_media.document
+            media_id = getattr(doc, "id", None)
             file_size = getattr(doc, "size", 0)
             mime_type = getattr(doc, "mime_type", "application/octet-stream") or "application/octet-stream"
 
             from utils import detect_mime_type
             for attr in getattr(doc, "attributes", []):
                 if type(attr).__name__ == "DocumentAttributeFilename" and getattr(attr, "file_name", None):
-                    detected = detect_mime_type(attr.file_name, fallback_mime=mime_type)
+                    orig_filename = attr.file_name
+                    detected = detect_mime_type(orig_filename, fallback_mime=mime_type)
                     if detected and detected != "application/octet-stream":
                         mime_type = detected
                     break
@@ -316,8 +323,24 @@ async def download_and_cache_media(client, message, is_private: bool, mentioned:
             logger.warning(f"Attachment {t_media_name} skipped: size exceeds max file size limit.")
             return
 
+        # Deduplication check: if a file with the same Telegram ID has already been downloaded, download it without re-downloading
+        local_cached_path = None
+        if media_id:
+            for existing in TEMP_MEDIA_DIR.glob(f"tg_{media_id}_*"):
+                if existing.is_file() and check_and_clean_corrupted_file(str(existing), mime_type):
+                    local_cached_path = str(existing.resolve())
+                    logger.info(f"Telegram media ID {media_id} found in cache: {existing.name}. Skipping re-download.")
+                    break
+
         try:
-            path = await client.download_media(target_media, file=str(TEMP_MEDIA_DIR))
+            if local_cached_path:
+                path = local_cached_path
+            else:
+                from utils import sanitize_filename
+                clean_name = sanitize_filename(orig_filename) if orig_filename else f"{media_id}.bin"
+                dest_file = str(TEMP_MEDIA_DIR / f"tg_{media_id}_{clean_name}") if media_id else str(TEMP_MEDIA_DIR)
+                path = await client.download_media(target_media, file=dest_file)
+
             if path and check_and_clean_corrupted_file(path, mime_type):
                 from utils import detect_mime_type
                 mime_type = detect_mime_type(path, fallback_mime=mime_type)

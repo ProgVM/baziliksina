@@ -111,40 +111,43 @@ async def upload_media_to_google_background(media_info_str):
         return
     try:
         media_data = json.loads(media_info_str)
-        m_path = media_data.get("path")
-        m_type = media_data.get("mime_type")
-        if m_path and os.path.exists(m_path):
-            from utils import detect_mime_type, is_gemini_supported_mime
-            m_type = detect_mime_type(m_path, fallback_mime=m_type)
-            if not is_gemini_supported_mime(m_type):
-                logger.debug(f"[Background Upload]: Skipping file '{m_path}' with unsupported MIME type '{m_type}'.")
-                return
+        items_list = media_data.get("items") if (isinstance(media_data, dict) and "items" in media_data) else [media_data]
+        for item in items_list:
+            if not isinstance(item, dict):
+                continue
+            m_path = item.get("path")
+            m_type = item.get("mime_type")
+            if m_path and os.path.exists(m_path):
+                from utils import detect_mime_type, is_gemini_supported_mime, get_file_content_hash
+                m_type = detect_mime_type(m_path, fallback_mime=m_type)
+                if not is_gemini_supported_mime(m_type):
+                    logger.debug(f"[Background Upload]: Skipping file '{m_path}' with unsupported MIME type '{m_type}'.")
+                    continue
 
-            if "webm" in m_type or m_path.endswith(".webm"):
-                return
-            
-            import hashlib
-            file_hash = hashlib.md5(m_path.encode('utf-8')).hexdigest()
-            cache_key = f"google_file_uri_{file_hash}"
-            
-            google_uri = await db.get_memory(cache_key)
-            if not google_uri:
-                logger.info(f"[Background Upload]: Uploading file '{m_path}' ({m_type}) to Google Files API...")
-                gemini_client = ai_manager.key_manager.get_client()
-                try:
-                    upload_cfg = types.UploadFileConfig(mime_type=m_type) if hasattr(types, "UploadFileConfig") else {"mime_type": m_type}
-                    uploaded_file = await gemini_client.aio.files.upload(file=m_path, config=upload_cfg)
-                except Exception:
-                    uploaded_file = await gemini_client.aio.files.upload(file=m_path)
-                google_uri = uploaded_file.uri
+                if "webm" in m_type or m_path.endswith(".webm"):
+                    continue
                 
-                from utils import wait_for_google_file_active
-                if await wait_for_google_file_active(gemini_client, uploaded_file.name):
-                    final_mime = uploaded_file.mime_type if is_gemini_supported_mime(uploaded_file.mime_type) else m_type
-                    if is_gemini_supported_mime(final_mime):
-                        await db.set_memory(cache_key, google_uri)
-                        await db.set_memory(google_uri, final_mime)
-                        logger.info(f"[Background Upload]: File successfully cached: {google_uri} (MIME: {final_mime})")
+                file_hash = get_file_content_hash(m_path)
+                cache_key = f"google_file_uri_{file_hash}"
+                
+                google_uri = await db.get_memory(cache_key)
+                if not google_uri:
+                    logger.info(f"[Background Upload]: Uploading file '{m_path}' ({m_type}) to Google Files API...")
+                    gemini_client = ai_manager.key_manager.get_client()
+                    try:
+                        upload_cfg = types.UploadFileConfig(mime_type=m_type) if hasattr(types, "UploadFileConfig") else {"mime_type": m_type}
+                        uploaded_file = await gemini_client.aio.files.upload(file=m_path, config=upload_cfg)
+                    except Exception:
+                        uploaded_file = await gemini_client.aio.files.upload(file=m_path)
+                    google_uri = uploaded_file.uri
+                    
+                    from utils import wait_for_google_file_active
+                    if await wait_for_google_file_active(gemini_client, uploaded_file.name):
+                        final_mime = uploaded_file.mime_type if is_gemini_supported_mime(uploaded_file.mime_type) else m_type
+                        if is_gemini_supported_mime(final_mime):
+                            await db.set_memory(cache_key, google_uri)
+                            await db.set_memory(google_uri, final_mime)
+                            logger.info(f"[Background Upload]: File successfully cached: {google_uri} (MIME: {final_mime})")
     except Exception as e:
         logger.error(f"Error in background media upload: {str(e)}")
 

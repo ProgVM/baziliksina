@@ -315,7 +315,7 @@ class AIToolKitSystem:
         if not file_path.exists() or not file_path.is_file():
             return {"status": "error", "message": f"File '{filename}' not found."}
         try:
-            from utils import detect_mime_type, is_gemini_supported_mime
+            from utils import detect_mime_type, is_gemini_supported_mime, get_file_content_hash
             detected_mime = detect_mime_type(str(file_path.resolve()))
             if not is_gemini_supported_mime(detected_mime):
                 return {
@@ -324,6 +324,21 @@ class AIToolKitSystem:
                     "mime_type": detected_mime,
                     "message": f"File '{filename}' has unsupported MIME type '{detected_mime}'. Gemini API direct ingestion only supports images, audio, video, PDF, text/code, and ZIP files."
                 }
+
+            file_hash = get_file_content_hash(str(file_path.resolve()))
+            cache_key = f"google_file_uri_{file_hash}"
+            if tools.db:
+                cached_uri = await tools.db.get_memory(cache_key)
+                if cached_uri:
+                    cached_mime = await tools.db.get_memory(cached_uri) or detected_mime
+                    logger.info(f"Reusing existing Google File URI from content cache: {cached_uri}")
+                    return {
+                        "status": "success",
+                        "filename": filename,
+                        "google_uri": cached_uri,
+                        "mime_type": cached_mime,
+                        "message": f"File {filename} successfully reused from cache. URI: {cached_uri} (MIME: {cached_mime})"
+                    }
 
             gemini_client = tools.key_manager.get_client()
             try:

@@ -11,7 +11,7 @@ from google.genai import types
 from google.genai.errors import APIError
 
 import config
-from utils import wait_for_google_file_active, matches_filter, is_gemini_supported_mime, detect_mime_type, GEMINI_SUPPORTED_MIME_TYPES
+from utils import wait_for_google_file_active, matches_filter, is_gemini_supported_mime, detect_mime_type, get_file_content_hash, GEMINI_SUPPORTED_MIME_TYPES
 
 logger = logging.getLogger("ContextManager")
 
@@ -71,7 +71,7 @@ class AIContextManager:
         """
         Generates a concise text description of a media file and caches it in shared_memory.
         """
-        file_hash = hashlib.md5(file_path.encode('utf-8')).hexdigest()
+        file_hash = get_file_content_hash(file_path)
         summary_key = f"media_summary_{file_hash}"
         
         cached_summary = await self.db.get_memory(summary_key)
@@ -332,84 +332,88 @@ class AIContextManager:
                             logger.error(f"Failed to substitute Part.from_uri for {uri}: {str(uri_err)}")
             content_obj.parts = new_parts
 
-            # Process Media Attachments according to FILE_CONTEXT_MODE and AUTO_ATTACH_FILES_TO_CONTEXT
+            # Process Media Attachments (Single Files & Multi-Item Albums)
             if media_info_str:
                 try:
                     media_data = json.loads(media_info_str)
-                    m_path = media_data.get("path")
-                    m_type = media_data.get("mime_type")
+                    items_list = media_data.get("items") if (isinstance(media_data, dict) and "items" in media_data) else [media_data]
+                    model_virtual_parts = []
 
-                    if m_path and os.path.exists(m_path):
-                        m_type = detect_mime_type(m_path, fallback_mime=m_type)
-                        m_type_norm = (m_type or "").lower().strip()
-
-                        whitelist = config.AI_ALLOWED_MIMES if config.AI_ALLOWED_MIMES and "all" not in [w.lower() for w in config.AI_ALLOWED_MIMES] else list(GEMINI_SUPPORTED_MIME_TYPES)
-                        if not matches_filter(m_type_norm, whitelist, config.AI_BLOCKED_MIMES) or not is_gemini_supported_mime(m_type_norm):
-                            content_obj.parts.append(
-                                types.Part.from_text(text=f"[Attached File Metadata: {os.path.basename(m_path)} ({m_type_norm}) - binary format not supported for direct vision]")
-                            )
-                            contents_raw.append(content_obj)
+                    for item in items_list:
+                        if not isinstance(item, dict):
                             continue
+                        m_path = item.get("path")
+                        m_type = item.get("mime_type")
 
-                        # Check if files should be automatically attached as binary parts
-                        if auto_attach and media_count < media_limit and file_mode != "none":
-                            file_part = None
-                            is_image = m_type_norm.startswith("image/")
-                            file_size = os.path.getsize(m_path)
-                            
-                            if is_image and file_size < 4 * 1024 * 1024:
-                                with open(m_path, "rb") as f:
-                                    file_bytes = f.read()
-                                file_part = types.Part.from_bytes(data=file_bytes, mime_type=m_type_norm)
-                            else:
-                                file_hash = hashlib.md5(m_path.encode('utf-8')).hexdigest()
-                                cache_key = f"google_file_uri_{file_hash}"
-                                google_uri = await self.db.get_memory(cache_key)
+                        if m_path and os.path.exists(m_path):
+                            m_type = detect_mime_type(m_path, fallback_mime=m_type)
+                            m_type_norm = (m_type or "").lower().strip()
+
+                            whitelist = config.AI_ALLOWED_MIMES if config.AI_ALLOWED_MIMES and "all" not in [w.lower() for w in config.AI_ALLOWED_MIMES] else list(GEMINI_SUPPORTED_MIME_TYPES)
+                            if not matches_filter(m_type_norm, whitelist, config.AI_BLOCKED_MIMES) or not is_gemini_supported_mime(m_type_norm):
+                                content_obj.parts.append(
+                                    types.Part.from_text(text=f"[Attached File Metadata: {os.path.basename(m_path)} ({m_type_norm}) - binary format not supported for direct vision]")
+                                )
+                                continue
+
+                            # Check if files should be automatically attached as binary parts
+                            if auto_attach and media_count < media_limit and file_mode != "none":
+                                file_part = None
+                                is_image = m_type_norm.startswith("image/")
+                                file_size = os.path.getsize(m_path)
                                 
-                                if not google_uri:
-                                    try:
-                                        upload_cfg = types.UploadFileConfig(mime_type=m_type_norm) if hasattr(types, "UploadFileConfig") else {"mime_type": m_type_norm}
+                                if is_image and file_size < 4 * 1024 * 1024:
+                                    with open(m_path, "rb") as f:
+                                        file_bytes = f.read()
+                                    file_part = types.Part.from_bytes(data=file_bytes, mime_type=m_type_norm)
+                                else:
+                                    file_hash = get_file_content_hash(m_path)
+                                    cache_key = f"google_file_uri_{file_hash}"
+                                    google_uri = await self.db.get_memory(cache_key)
+                                    
+                                    if not google_uri:
                                         try:
-                                            uploaded_file = await gemini_client.aio.files.upload(file=m_path, config=upload_cfg)
-                                        except Exception:
-                                            uploaded_file = await gemini_client.aio.files.upload(file=m_path)
-                                        if await wait_for_google_file_active(gemini_client, uploaded_file.name):
-                                            google_uri = uploaded_file.uri
-                                            saved_m = uploaded_file.mime_type if is_gemini_supported_mime(uploaded_file.mime_type) else m_type_norm
-                                            await self.db.set_memory(cache_key, google_uri)
-                                            await self.db.set_memory(google_uri, saved_m)
-                                    except Exception as upload_err:
-                                        logger.error(f"Google upload failed for {m_path}: {str(upload_err)}")
-                                        google_uri = None
+                                            upload_cfg = types.UploadFileConfig(mime_type=m_type_norm) if hasattr(types, "UploadFileConfig") else {"mime_type": m_type_norm}
+                                            try:
+                                                uploaded_file = await gemini_client.aio.files.upload(file=m_path, config=upload_cfg)
+                                            except Exception:
+                                                uploaded_file = await gemini_client.aio.files.upload(file=m_path)
+                                            if await wait_for_google_file_active(gemini_client, uploaded_file.name):
+                                                google_uri = uploaded_file.uri
+                                                saved_m = uploaded_file.mime_type if is_gemini_supported_mime(uploaded_file.mime_type) else m_type_norm
+                                                await self.db.set_memory(cache_key, google_uri)
+                                                await self.db.set_memory(google_uri, saved_m)
+                                        except Exception as upload_err:
+                                            logger.error(f"Google upload failed for {m_path}: {str(upload_err)}")
+                                            google_uri = None
 
-                                if google_uri:
-                                    actual_mime = await self.db.get_memory(google_uri) or m_type_norm
-                                    if is_gemini_supported_mime(actual_mime):
-                                        file_part = types.Part.from_uri(file_uri=google_uri, mime_type=actual_mime)
+                                    if google_uri:
+                                        actual_mime = await self.db.get_memory(google_uri) or m_type_norm
+                                        if is_gemini_supported_mime(actual_mime):
+                                            file_part = types.Part.from_uri(file_uri=google_uri, mime_type=actual_mime)
 
-                            if file_part:
-                                if content_obj.role == "user":
-                                    content_obj.parts.insert(0, file_part)
-                                    media_count += 1
-                                elif content_obj.role == "model":
-                                    virtual_content = types.Content(
-                                        role="user",
-                                        parts=[
-                                            types.Part.from_text(text="[System notification: You successfully attached and displayed this media file to the chat]"),
-                                            file_part
-                                        ]
-                                    )
-                                    contents_raw.append(content_obj)
-                                    contents_raw.append(virtual_content)
-                                    media_count += 1
-                                    continue
-                        elif file_mode == "summarize":
-                            summary_text = await self.generate_media_summary(gemini_client, m_path, m_type_norm)
-                            content_obj.parts.append(types.Part.from_text(text=summary_text))
-                        else:
-                            content_obj.parts.append(
-                                types.Part.from_text(text=f"[Attached File Metadata: {os.path.basename(m_path)} ({m_type_norm}) - Call tool to inspect if needed]")
-                            )
+                                if file_part:
+                                    if content_obj.role == "user":
+                                        content_obj.parts.insert(0, file_part)
+                                        media_count += 1
+                                    elif content_obj.role == "model":
+                                        model_virtual_parts.append(file_part)
+                                        media_count += 1
+                            elif file_mode == "summarize":
+                                summary_text = await self.generate_media_summary(gemini_client, m_path, m_type_norm)
+                                content_obj.parts.append(types.Part.from_text(text=summary_text))
+                            else:
+                                content_obj.parts.append(
+                                    types.Part.from_text(text=f"[Attached File Metadata: {os.path.basename(m_path)} ({m_type_norm}) - Call tool to inspect if needed]")
+                                )
+                    if model_virtual_parts:
+                        contents_raw.append(content_obj)
+                        virtual_content = types.Content(
+                            role="user",
+                            parts=[types.Part.from_text(text="[System notification: You successfully attached and displayed these media files to the chat]")] + model_virtual_parts
+                        )
+                        contents_raw.append(virtual_content)
+                        continue
                 except Exception as me_err:
                     logger.error(f"Error processing media context: {str(me_err)}")
 

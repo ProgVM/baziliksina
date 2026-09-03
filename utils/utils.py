@@ -27,6 +27,23 @@ GEMINI_SUPPORTED_MIME_TYPES = {
 }
 
 
+def get_file_content_hash(file_path: Union[str, Path]) -> str:
+    """Computes a SHA-256 hash based on the raw content of the file for precise deduplication."""
+    p = Path(file_path)
+    if not p.exists() or not p.is_file():
+        import hashlib
+        return hashlib.sha256(str(file_path).encode('utf-8')).hexdigest()
+    import hashlib
+    hasher = hashlib.sha256()
+    try:
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    except Exception:
+        return hashlib.sha256(str(file_path).encode('utf-8')).hexdigest()
+
+
 def is_gemini_supported_mime(mime_type: str) -> bool:
     """Checks whether the given MIME type is supported by Google Gemini for multimodal ingestion."""
     if not mime_type:
