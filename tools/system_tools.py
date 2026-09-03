@@ -315,19 +315,38 @@ class AIToolKitSystem:
         if not file_path.exists() or not file_path.is_file():
             return {"status": "error", "message": f"File '{filename}' not found."}
         try:
+            from utils import detect_mime_type, is_gemini_supported_mime
+            detected_mime = detect_mime_type(str(file_path.resolve()))
+            if not is_gemini_supported_mime(detected_mime):
+                return {
+                    "status": "error",
+                    "filename": filename,
+                    "mime_type": detected_mime,
+                    "message": f"File '{filename}' has unsupported MIME type '{detected_mime}'. Gemini API direct ingestion only supports images, audio, video, PDF, text/code, and ZIP files."
+                }
+
             gemini_client = tools.key_manager.get_client()
-            uploaded_file = await asyncio.wait_for(gemini_client.aio.files.upload(file=str(file_path.resolve())), timeout=timeout)
+            try:
+                from google.genai import types as genai_types
+                upload_cfg = genai_types.UploadFileConfig(mime_type=detected_mime) if hasattr(genai_types, "UploadFileConfig") else {"mime_type": detected_mime}
+                uploaded_file = await asyncio.wait_for(gemini_client.aio.files.upload(file=str(file_path.resolve()), config=upload_cfg), timeout=timeout)
+            except Exception:
+                uploaded_file = await asyncio.wait_for(gemini_client.aio.files.upload(file=str(file_path.resolve())), timeout=timeout)
+
             from utils import wait_for_google_file_active
             if not await wait_for_google_file_active(gemini_client, uploaded_file.name):
                 return {"status": "error", "message": "Google file processing timed out."}
+
+            final_mime = uploaded_file.mime_type if is_gemini_supported_mime(uploaded_file.mime_type) else detected_mime
             if tools.db:
-                await tools.db.set_memory(uploaded_file.uri, uploaded_file.mime_type)
+                await tools.db.set_memory(uploaded_file.uri, final_mime)
+
             return {
                 "status": "success",
                 "filename": filename,
                 "google_uri": uploaded_file.uri,
-                "mime_type": uploaded_file.mime_type,
-                "message": f"File {filename} successfully uploaded. URI: {uploaded_file.uri}"
+                "mime_type": final_mime,
+                "message": f"File {filename} successfully uploaded. URI: {uploaded_file.uri} (MIME: {final_mime})"
             }
         except Exception as e:
             return {"status": "error", "message": f"Error: {str(e)}"}

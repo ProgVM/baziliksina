@@ -301,6 +301,14 @@ async def download_and_cache_media(client, message, is_private: bool, mentioned:
             doc = target_media.document
             file_size = getattr(doc, "size", 0)
             mime_type = getattr(doc, "mime_type", "application/octet-stream") or "application/octet-stream"
+
+            from utils import detect_mime_type
+            for attr in getattr(doc, "attributes", []):
+                if type(attr).__name__ == "DocumentAttributeFilename" and getattr(attr, "file_name", None):
+                    detected = detect_mime_type(attr.file_name, fallback_mime=mime_type)
+                    if detected and detected != "application/octet-stream":
+                        mime_type = detected
+                    break
         else:
             return
 
@@ -311,6 +319,8 @@ async def download_and_cache_media(client, message, is_private: bool, mentioned:
         try:
             path = await client.download_media(target_media, file=str(TEMP_MEDIA_DIR))
             if path and check_and_clean_corrupted_file(path, mime_type):
+                from utils import detect_mime_type
+                mime_type = detect_mime_type(path, fallback_mime=mime_type)
                 if "webm" in mime_type or path.endswith(".webm"):
                     mp4_path = await convert_webm_to_mp4(path)
                     if mp4_path:
@@ -321,11 +331,6 @@ async def download_and_cache_media(client, message, is_private: bool, mentioned:
                     if mp3_path:
                         path = mp3_path
                         mime_type = "audio/mpeg"
-                elif "tgsticker" in mime_type or path.endswith(".tgs"):
-                    gif_path = await convert_tgs_to_gif(path)
-                    if gif_path:
-                        path = gif_path
-                        mime_type = "image/gif"
 
                 downloaded_items.append({"path": path, "mime_type": mime_type})
         except Exception as e:

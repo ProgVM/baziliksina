@@ -11,7 +11,7 @@ from google.genai import types
 from google.genai.errors import APIError
 
 import config
-from utils import wait_for_google_file_active, matches_filter
+from utils import wait_for_google_file_active, matches_filter, is_gemini_supported_mime, detect_mime_type, GEMINI_SUPPORTED_MIME_TYPES
 
 logger = logging.getLogger("ContextManager")
 
@@ -78,18 +78,29 @@ class AIContextManager:
         if cached_summary:
             return cached_summary
 
+        detected_mime = detect_mime_type(file_path, fallback_mime=mime_type)
+        if not is_gemini_supported_mime(detected_mime):
+            fallback_text = f"[Media Attachment: {os.path.basename(file_path)} ({detected_mime})]"
+            await self.db.set_memory(summary_key, fallback_text)
+            return fallback_text
+
         logger.info(f"Generating AI visual/audio summary for media file: {file_path}")
         try:
             file_size = os.path.getsize(file_path)
-            if file_size < 4 * 1024 * 1024 and mime_type.startswith("image/"):
+            if file_size < 4 * 1024 * 1024 and detected_mime.startswith("image/"):
                 with open(file_path, "rb") as f:
                     file_bytes = f.read()
-                file_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
+                file_part = types.Part.from_bytes(data=file_bytes, mime_type=detected_mime)
             else:
-                uploaded_file = await gemini_client.aio.files.upload(file=file_path)
+                try:
+                    upload_cfg = types.UploadFileConfig(mime_type=detected_mime) if hasattr(types, "UploadFileConfig") else {"mime_type": detected_mime}
+                    uploaded_file = await gemini_client.aio.files.upload(file=file_path, config=upload_cfg)
+                except Exception:
+                    uploaded_file = await gemini_client.aio.files.upload(file=file_path)
                 if not await wait_for_google_file_active(gemini_client, uploaded_file.name):
                     return "[Media summary unavailable: file processing timeout]"
-                file_part = types.Part.from_uri(file_uri=uploaded_file.uri, mime_type=uploaded_file.mime_type)
+                file_mime = uploaded_file.mime_type if is_gemini_supported_mime(uploaded_file.mime_type) else detected_mime
+                file_part = types.Part.from_uri(file_uri=uploaded_file.uri, mime_type=file_mime)
 
             prompt_content = types.Content(
                 role="user",
@@ -107,7 +118,83 @@ class AIContextManager:
             return summary_text
         except Exception as e:
             logger.error(f"Failed to generate media summary for {file_path}: {str(e)}")
-            return f"[Media Attachment: {os.path.basename(file_path)} ({mime_type})]"
+            return f"[Media Attachment: {os.path.basename(file_path)} ({detected_mime})]"
+
+    async def _heal_unsupported_mime(self, offending_mime: str, contents: list = None, chat_id: str = None):
+        """
+        Permanently sanitizes SQLite database and active session context 
+        to remove parts with unsupported MIME types (such as application/octet-stream).
+        """
+        target_mime = str(offending_mime or "application/octet-stream").strip()
+        logger.info(f"Sanitizing database and context from unsupported MIME type: '{target_mime}'...")
+        try:
+            # 1. Clean shared_memory
+            async with self.db.db.execute(
+                "SELECT key, value FROM shared_memory WHERE value = ? OR value LIKE ?", 
+                (target_mime, f"%{target_mime}%")
+            ) as cursor:
+                cache_rows = await cursor.fetchall()
+            for key, val in cache_rows:
+                await self.db.db.execute("DELETE FROM shared_memory WHERE key = ?", (key,))
+            
+            # 2. Clean messages table raw_content_json
+            query = "SELECT id, raw_content_json FROM messages WHERE raw_content_json LIKE ?"
+            params = [f"%{target_mime}%"]
+            if chat_id:
+                query += " AND chat_id = ?"
+                params.append(str(chat_id))
+                
+            async with self.db.db.execute(query, tuple(params)) as cursor:
+                db_rows = await cursor.fetchall()
+            
+            for r_id, db_raw_json in db_rows:
+                if not db_raw_json:
+                    continue
+                try:
+                    data_obj = json.loads(db_raw_json)
+                    if "parts" in data_obj and isinstance(data_obj["parts"], list):
+                        new_parts = []
+                        for p in data_obj["parts"]:
+                            is_offending = False
+                            if isinstance(p, dict):
+                                if p.get("file_data") and (target_mime in str(p.get("file_data")) or not is_gemini_supported_mime(p.get("file_data", {}).get("mime_type"))):
+                                    is_offending = True
+                                elif p.get("inline_data") and (target_mime in str(p.get("inline_data")) or not is_gemini_supported_mime(p.get("inline_data", {}).get("mime_type"))):
+                                    is_offending = True
+                            if is_offending:
+                                new_parts.append({"text": f"[System: File attachment with unsupported MIME '{target_mime}' omitted]"})
+                            else:
+                                new_parts.append(p)
+                        data_obj["parts"] = new_parts
+                        cleaned_json = json.dumps(data_obj)
+                        await self.db.db.execute("UPDATE messages SET raw_content_json = ? WHERE id = ?", (cleaned_json, r_id))
+                except Exception as json_err:
+                    logger.error(f"Failed to clean message #{r_id} JSON: {str(json_err)}")
+
+            await self.db.db.commit()
+            logger.info(f"Database successfully sanitized from unsupported MIME type '{target_mime}'.")
+        except Exception as db_err:
+            logger.error(f"Error sanitizing database for MIME type '{target_mime}': {str(db_err)}")
+
+        if contents:
+            for content in contents:
+                if content.parts:
+                    new_parts = []
+                    for part in content.parts:
+                        is_offending = False
+                        if hasattr(part, "file_data") and part.file_data:
+                            fd_m = getattr(part.file_data, "mime_type", "")
+                            if fd_m == target_mime or not is_gemini_supported_mime(fd_m):
+                                is_offending = True
+                        elif hasattr(part, "inline_data") and part.inline_data:
+                            id_m = getattr(part.inline_data, "mime_type", "")
+                            if id_m == target_mime or not is_gemini_supported_mime(id_m):
+                                is_offending = True
+                        if is_offending:
+                            new_parts.append(types.Part.from_text(text=f"[System: File attachment with unsupported MIME '{target_mime}' omitted]"))
+                        else:
+                            new_parts.append(part)
+                    content.parts = new_parts
 
     async def _heal_inaccessible_file(self, file_id: str, contents: list):
         """
@@ -236,9 +323,11 @@ class AIContextManager:
                     for uri in uris:
                         try:
                             mime_type = await self.db.get_memory(uri)
-                            if mime_type:
+                            if mime_type and is_gemini_supported_mime(mime_type):
                                 logger.info(f"Google URI detected: {uri}. Substituting native Part.from_uri...")
                                 new_parts.insert(0, types.Part.from_uri(file_uri=uri, mime_type=mime_type))
+                            else:
+                                logger.debug(f"Skipping Part.from_uri for URI {uri} (unsupported MIME: {mime_type})")
                         except Exception as uri_err:
                             logger.error(f"Failed to substitute Part.from_uri for {uri}: {str(uri_err)}")
             content_obj.parts = new_parts
@@ -249,40 +338,29 @@ class AIContextManager:
                     media_data = json.loads(media_info_str)
                     m_path = media_data.get("path")
                     m_type = media_data.get("mime_type")
-                    
-                    if m_type == "media" and m_path:
-                        import mimetypes
-                        guessed, _ = mimetypes.guess_type(m_path)
-                        m_type = guessed or "application/octet-stream"
 
-                    if m_path and os.path.exists(m_path) and m_type:
-                        m_type_norm = m_type.lower().strip()
-                        
-                        # Evaluate MIME filters
-                        gemini_supported = [
-                            "image/png", "image/jpeg", "image/webp", "image/heic", "image/heif",
-                            "video/mp4", "video/mpeg", "video/quicktime", "video/x-msvideo", 
-                            "video/x-flv", "video/webm", "video/x-ms-wmv", "video/3gpp",
-                            "audio/wav", "audio/mpeg", "audio/mp3", "audio/ogg", "audio/aac", 
-                            "audio/flac", "audio/x-m4a", "audio/mp4", "audio/amr",
-                            "text/plain", "text/html", "text/css", "text/javascript", 
-                            "text/rtf", "text/xml", "text/markdown", "application/pdf", 
-                            "application/json", "text/csv", "text/tsv"
-                        ]
-                        whitelist = config.AI_ALLOWED_MIMES if config.AI_ALLOWED_MIMES and "all" not in [w.lower() for w in config.AI_ALLOWED_MIMES] else gemini_supported
-                        if not matches_filter(m_type_norm, whitelist, config.AI_BLOCKED_MIMES):
+                    if m_path and os.path.exists(m_path):
+                        m_type = detect_mime_type(m_path, fallback_mime=m_type)
+                        m_type_norm = (m_type or "").lower().strip()
+
+                        whitelist = config.AI_ALLOWED_MIMES if config.AI_ALLOWED_MIMES and "all" not in [w.lower() for w in config.AI_ALLOWED_MIMES] else list(GEMINI_SUPPORTED_MIME_TYPES)
+                        if not matches_filter(m_type_norm, whitelist, config.AI_BLOCKED_MIMES) or not is_gemini_supported_mime(m_type_norm):
+                            content_obj.parts.append(
+                                types.Part.from_text(text=f"[Attached File Metadata: {os.path.basename(m_path)} ({m_type_norm}) - binary format not supported for direct vision]")
+                            )
+                            contents_raw.append(content_obj)
                             continue
 
                         # Check if files should be automatically attached as binary parts
                         if auto_attach and media_count < media_limit and file_mode != "none":
                             file_part = None
-                            is_image = m_type.startswith("image/")
+                            is_image = m_type_norm.startswith("image/")
                             file_size = os.path.getsize(m_path)
                             
                             if is_image and file_size < 4 * 1024 * 1024:
                                 with open(m_path, "rb") as f:
                                     file_bytes = f.read()
-                                file_part = types.Part.from_bytes(data=file_bytes, mime_type=m_type)
+                                file_part = types.Part.from_bytes(data=file_bytes, mime_type=m_type_norm)
                             else:
                                 file_hash = hashlib.md5(m_path.encode('utf-8')).hexdigest()
                                 cache_key = f"google_file_uri_{file_hash}"
@@ -290,18 +368,24 @@ class AIContextManager:
                                 
                                 if not google_uri:
                                     try:
-                                        uploaded_file = await gemini_client.aio.files.upload(file=m_path)
+                                        upload_cfg = types.UploadFileConfig(mime_type=m_type_norm) if hasattr(types, "UploadFileConfig") else {"mime_type": m_type_norm}
+                                        try:
+                                            uploaded_file = await gemini_client.aio.files.upload(file=m_path, config=upload_cfg)
+                                        except Exception:
+                                            uploaded_file = await gemini_client.aio.files.upload(file=m_path)
                                         if await wait_for_google_file_active(gemini_client, uploaded_file.name):
                                             google_uri = uploaded_file.uri
+                                            saved_m = uploaded_file.mime_type if is_gemini_supported_mime(uploaded_file.mime_type) else m_type_norm
                                             await self.db.set_memory(cache_key, google_uri)
-                                            await self.db.set_memory(google_uri, uploaded_file.mime_type)
+                                            await self.db.set_memory(google_uri, saved_m)
                                     except Exception as upload_err:
                                         logger.error(f"Google upload failed for {m_path}: {str(upload_err)}")
                                         google_uri = None
 
                                 if google_uri:
-                                    actual_mime = await self.db.get_memory(google_uri) or m_type
-                                    file_part = types.Part.from_uri(file_uri=google_uri, mime_type=actual_mime)
+                                    actual_mime = await self.db.get_memory(google_uri) or m_type_norm
+                                    if is_gemini_supported_mime(actual_mime):
+                                        file_part = types.Part.from_uri(file_uri=google_uri, mime_type=actual_mime)
 
                             if file_part:
                                 if content_obj.role == "user":
@@ -320,11 +404,11 @@ class AIContextManager:
                                     media_count += 1
                                     continue
                         elif file_mode == "summarize":
-                            summary_text = await self.generate_media_summary(gemini_client, m_path, m_type)
+                            summary_text = await self.generate_media_summary(gemini_client, m_path, m_type_norm)
                             content_obj.parts.append(types.Part.from_text(text=summary_text))
                         else:
                             content_obj.parts.append(
-                                types.Part.from_text(text=f"[Attached File Metadata: {os.path.basename(m_path)} ({m_type}) - Call tool to inspect if needed]")
+                                types.Part.from_text(text=f"[Attached File Metadata: {os.path.basename(m_path)} ({m_type_norm}) - Call tool to inspect if needed]")
                             )
                 except Exception as me_err:
                     logger.error(f"Error processing media context: {str(me_err)}")
@@ -342,11 +426,30 @@ class AIContextManager:
                     if curr_media > trim_count:
                         content.parts = [p for p in content.parts if not (hasattr(p, "file_data") or hasattr(p, "inline_data"))]
 
-        # Step 1: Clean out empty Part items and empty Content turns
+        # Step 1: Clean out empty Part items, unsupported MIME types, and empty Content turns
         valid_contents = []
+        needs_db_sanitize = False
         for c in contents_raw:
             valid_parts = []
             for p in (c.parts or []):
+                # Check for unsupported MIME type in file_data
+                if getattr(p, "file_data", None) is not None:
+                    p_mime = getattr(p.file_data, "mime_type", None)
+                    if not is_gemini_supported_mime(p_mime):
+                        logger.warning(f"Sanitizing Part with unsupported file_data MIME type '{p_mime}' in turn '{c.role}'.")
+                        needs_db_sanitize = True
+                        valid_parts.append(types.Part.from_text(text=f"[System: File attachment with unsupported MIME '{p_mime}' omitted]"))
+                        continue
+
+                # Check for unsupported MIME type in inline_data
+                if getattr(p, "inline_data", None) is not None:
+                    p_mime = getattr(p.inline_data, "mime_type", None)
+                    if not is_gemini_supported_mime(p_mime):
+                        logger.warning(f"Sanitizing Part with unsupported inline_data MIME type '{p_mime}' in turn '{c.role}'.")
+                        needs_db_sanitize = True
+                        valid_parts.append(types.Part.from_text(text=f"[System: Inline media with unsupported MIME '{p_mime}' omitted]"))
+                        continue
+
                 has_fc = getattr(p, "function_call", None) is not None
                 has_fr = getattr(p, "function_response", None) is not None
                 has_file = getattr(p, "file_data", None) is not None
@@ -359,6 +462,9 @@ class AIContextManager:
             if valid_parts:
                 c.parts = valid_parts
                 valid_contents.append(c)
+
+        if needs_db_sanitize:
+            asyncio.create_task(self._heal_unsupported_mime("application/octet-stream", valid_contents, chat_id=str(chat_id)))
 
         # Step 2: Ensure strict Function Call -> Function Response alignment
         paired_contents = []

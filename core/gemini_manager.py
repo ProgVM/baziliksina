@@ -268,7 +268,7 @@ class GeminiManager:
                         if p.kind == inspect.Parameter.VAR_KEYWORD:
                             continue
 
-                        clean_anno = sanitize_type_annotation(p.annotation, p.default)
+                        clean_anno = sanitize_type_annotation(p.default if p.annotation is inspect.Parameter.empty else p.annotation, p.default)
                         clean_params.append(inspect.Parameter(
                             name=p.name,
                             kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
@@ -353,11 +353,23 @@ class GeminiManager:
                             await asyncio.sleep(config.TIMEOUT_SLEEP)
                             continue
                     elif e.code == 400:
-                        logger.warning(f"Gemini API 400 error caught during token counting: {str(e)}. Sanitizing context...")
+                        err_str = str(e)
+                        logger.warning(f"Gemini API 400 error caught during token counting: {err_str}. Self-healing context...")
+                        mime_match = re.search(r"Unsupported MIME type:\s*([^\s'\"]+)", err_str, re.IGNORECASE)
+                        offending_mime = mime_match.group(1) if mime_match else "application/octet-stream"
+                        await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
                         for c in contents:
-                            c.parts = [types.Part.from_text(text=p.text or "[System: Content]") for p in c.parts if getattr(p, "text", None)]
-                            if not c.parts:
-                                c.parts = [types.Part.from_text(text="[System: Context restored]")]
+                            new_c_parts = []
+                            for p in (c.parts or []):
+                                if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
+                                    new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
+                                elif getattr(p, "text", None):
+                                    new_c_parts.append(p)
+                                else:
+                                    new_c_parts.append(p)
+                            c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
+                        await asyncio.sleep(config.TIMEOUT_SLEEP)
+                        continue
                     logger.error(f"Error counting tokens: {str(e)}")
                 except Exception as count_err:
                     logger.error(f"Error counting tokens: {str(count_err)}")
@@ -400,17 +412,23 @@ class GeminiManager:
                             continue
                         raise e
                     elif e.code == 400:
-                        logger.error(f"Gemini API 400 INVALID_ARGUMENT error: {str(e)}. Self-healing context and retrying...")
-                        try:
-                            async with self.db.db.execute("SELECT id, text, raw_content_json FROM messages WHERE raw_content_json IS NOT NULL ORDER BY id DESC LIMIT 20") as cursor:
-                                db_rows = await cursor.fetchall()
-                            for r_id, db_text, db_raw_json in db_rows:
-                                if db_raw_json and ("function_call" in db_raw_json or "function_response" in db_raw_json or "file_data" in db_raw_json):
-                                    await self.db.db.execute("UPDATE messages SET raw_content_json = NULL WHERE id = ?", (r_id,))
-                            await self.db.db.commit()
-                            logger.info("Successfully sanitized recent messages table raw JSON payloads.")
-                        except Exception as repair_err:
-                            logger.error(f"Database auto-repair error: {str(repair_err)}")
+                        err_str = str(e)
+                        logger.error(f"Gemini API 400 INVALID_ARGUMENT error: {err_str}. Self-healing context and retrying...")
+                        if "mime" in err_str.lower():
+                            mime_match = re.search(r"Unsupported MIME type:\s*([^\s'\"]+)", err_str, re.IGNORECASE)
+                            offending_mime = mime_match.group(1) if mime_match else "application/octet-stream"
+                            await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
+                        else:
+                            try:
+                                async with self.db.db.execute("SELECT id, text, raw_content_json FROM messages WHERE raw_content_json IS NOT NULL ORDER BY id DESC LIMIT 20") as cursor:
+                                    db_rows = await cursor.fetchall()
+                                for r_id, db_text, db_raw_json in db_rows:
+                                    if db_raw_json and ("function_call" in db_raw_json or "function_response" in db_raw_json or "file_data" in db_raw_json):
+                                        await self.db.db.execute("UPDATE messages SET raw_content_json = NULL WHERE id = ?", (r_id,))
+                                await self.db.commit()
+                                logger.info("Successfully sanitized recent messages table raw JSON payloads.")
+                            except Exception as repair_err:
+                                logger.error(f"Database auto-repair error: {str(repair_err)}")
                         await asyncio.sleep(config.TIMEOUT_SLEEP)
                         continue
                     elif e.code in [502, 503, 504]:
@@ -654,8 +672,11 @@ class GeminiManager:
                                 if fn_name == "upload_file_to_google" and isinstance(result, dict) and result.get("status") == "success":
                                     g_uri = result.get("google_uri")
                                     m_type = result.get("mime_type")
-                                    if g_uri and m_type:
+                                    from utils import is_gemini_supported_mime
+                                    if g_uri and m_type and is_gemini_supported_mime(m_type):
                                         additional_parts.append(types.Part.from_uri(file_uri=g_uri, mime_type=m_type))
+                                    else:
+                                        logger.warning(f"upload_file_to_google returned unsupported MIME '{m_type}'. Skipping Part.from_uri insertion.")
                             except Exception as fn_err:
                                 result = f"Error executing tool '{fn_name}': {str(fn_err)}"
                         else:
@@ -672,13 +693,16 @@ class GeminiManager:
                                 r"(https://generativelanguage\.googleapis\.com/(?:upload/)?v[0-9a-zA-Z_]+/files/[a-zA-Z0-9_-]+)",
                                 re.IGNORECASE
                             )
+                            from utils import is_gemini_supported_mime
                             uris = GOOGLE_FILE_URI_REGEX.findall(res_str)
                             for uri in uris:
                                 try:
                                     m_type = await self.db.get_memory(uri)
-                                    if m_type:
+                                    if m_type and is_gemini_supported_mime(m_type):
                                         logger.info(f"[Universal Tool Interceptor]: Detected Google URI in tool result: {uri}. Binding native Part.from_uri...")
                                         additional_parts.append(types.Part.from_uri(file_uri=uri, mime_type=m_type))
+                                    else:
+                                        logger.debug(f"Universal Tool Interceptor: Skipping URI {uri} (unsupported MIME: {m_type})")
                                 except Exception as uri_err:
                                     logger.error(f"Failed to bind universal tool part for {uri}: {str(uri_err)}")
                     

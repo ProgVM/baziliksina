@@ -112,7 +112,20 @@ class AIToolKitFiles:
                 if filename and len(valid_targets) == 1:
                     out_filename = filename
                 else:
-                    out_filename = f"{default_label}_{int(time.time())}_{idx}.bin"
+                    original_ext = None
+                    if hasattr(target_media, "document") and target_media.document:
+                        for attr in getattr(target_media.document, "attributes", []):
+                            if type(attr).__name__ == "DocumentAttributeFilename" and getattr(attr, "file_name", None):
+                                original_ext = os.path.splitext(attr.file_name)[1]
+                                break
+                        if not original_ext and getattr(target_media.document, "mime_type", None):
+                            import mimetypes
+                            original_ext = mimetypes.guess_extension(target_media.document.mime_type)
+                    elif hasattr(target_media, "photo"):
+                        original_ext = ".jpg"
+
+                    ext_to_use = original_ext if original_ext else ".bin"
+                    out_filename = f"{default_label}_{int(time.time())}_{idx}{ext_to_use}"
 
                 out_path = WORKSPACE_DIR / os.path.basename(out_filename)
                 saved_path = await tools.client.download_media(target_media, file=str(out_path))

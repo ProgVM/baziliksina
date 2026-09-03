@@ -2,10 +2,140 @@
 import json
 import logging
 import re
+import mimetypes
+import zipfile
 from datetime import datetime, date
 from pathlib import Path
+from typing import Union, Optional
 
 logger = logging.getLogger("Utils")
+
+GEMINI_SUPPORTED_MIME_TYPES = {
+    # Images
+    "image/png", "image/jpeg", "image/jpg", "image/webp", "image/heic", "image/heif",
+    # Audio
+    "audio/wav", "audio/mp3", "audio/mpeg", "audio/aiff", "audio/aac", "audio/ogg",
+    "audio/flac", "audio/m4a", "audio/x-m4a", "audio/mp4", "audio/amr",
+    # Video
+    "video/mp4", "video/mpeg", "video/quicktime", "video/mov", "video/x-msvideo",
+    "video/avi", "video/x-flv", "video/webm", "video/x-ms-wmv", "video/wmv", "video/3gpp",
+    # Documents, Code & Archives
+    "application/pdf", "application/zip", "application/x-zip-compressed", "application/x-zip",
+    "text/plain", "text/html", "text/css", "text/javascript",
+    "text/x-python", "application/x-python-code", "text/markdown", "text/csv",
+    "text/rtf", "text/xml", "text/tsv", "application/json", "text/x-c", "text/x-java"
+}
+
+
+def is_gemini_supported_mime(mime_type: str) -> bool:
+    """Checks whether the given MIME type is supported by Google Gemini for multimodal ingestion."""
+    if not mime_type:
+        return False
+    norm = str(mime_type).lower().strip()
+    if norm in ["application/octet-stream", "media", "binary", "none", "null"]:
+        return False
+    if norm in GEMINI_SUPPORTED_MIME_TYPES:
+        return True
+    if norm.startswith("text/"):
+        return True
+    if norm.startswith("image/") and norm not in ["image/vnd.dwg", "image/x-xcf"]:
+        return norm in GEMINI_SUPPORTED_MIME_TYPES
+    if norm.startswith("audio/"):
+        return norm in GEMINI_SUPPORTED_MIME_TYPES
+    if norm.startswith("video/"):
+        return norm in GEMINI_SUPPORTED_MIME_TYPES
+    return False
+
+
+def detect_mime_type(file_path: Union[str, Path], fallback_mime: str = None) -> str:
+    """
+    Robustly detects the MIME type of a file by examining extension,
+    ZIP validity, and file binary headers (magic bytes).
+    """
+    if not file_path:
+        return fallback_mime or "application/octet-stream"
+
+    p_str = str(file_path)
+
+    # 1. Check by extension
+    ext_mapping = {
+        ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+        ".webp": "image/webp", ".gif": "image/gif", ".heic": "image/heic",
+        ".heif": "image/heif", ".mp4": "video/mp4", ".webm": "video/webm",
+        ".mov": "video/quicktime", ".avi": "video/x-msvideo", ".mkv": "video/mp4",
+        ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".wav": "audio/wav",
+        ".m4a": "audio/x-m4a", ".flac": "audio/flac", ".aac": "audio/aac",
+        ".pdf": "application/pdf", ".zip": "application/zip",
+        ".txt": "text/plain", ".json": "application/json",
+        ".csv": "text/csv", ".tsv": "text/tsv", ".md": "text/markdown",
+        ".py": "text/x-python", ".html": "text/html", ".css": "text/css",
+        ".js": "text/javascript", ".xml": "text/xml"
+    }
+
+    ext = Path(p_str).suffix.lower()
+    if ext in ext_mapping:
+        return ext_mapping[ext]
+
+    # 2. Check if file is on disk and inspect magic bytes / zip validity
+    p = Path(p_str)
+    if p.exists() and p.is_file():
+        try:
+            if zipfile.is_zipfile(p):
+                return "application/zip"
+        except Exception:
+            pass
+
+        try:
+            with open(p, "rb") as f:
+                header = f.read(512)
+            if header:
+                if header.startswith(b"\xff\xd8\xff"):
+                    return "image/jpeg"
+                if header.startswith(b"\x89PNG\r\n\x1a\n"):
+                    return "image/png"
+                if header.startswith(b"GIF87a") or header.startswith(b"GIF89a"):
+                    return "image/gif"
+                if header.startswith(b"RIFF") and len(header) >= 12 and header[8:12] == b"WEBP":
+                    return "image/webp"
+                if header.startswith(b"%PDF-"):
+                    return "application/pdf"
+                if header.startswith(b"PK\x03\x04") or header.startswith(b"PK\x05\x06") or header.startswith(b"PK\x07\x08"):
+                    return "application/zip"
+                if header.startswith(b"ID3") or (len(header) >= 2 and header[0] == 0xff and (header[1] & 0xe0) == 0xe0):
+                    return "audio/mpeg"
+                if header.startswith(b"OggS"):
+                    return "audio/ogg"
+                if header.startswith(b"RIFF") and len(header) >= 12 and header[8:12] == b"WAVE":
+                    return "audio/wav"
+                if header.startswith(b"fLaC"):
+                    return "audio/flac"
+                if header.startswith(b"\x1aE\xdf\xa3"):
+                    return "video/webm"
+                if len(header) >= 8 and header[4:8] == b"ftyp":
+                    return "video/mp4"
+
+                # Check for readable text/json
+                try:
+                    text_sample = header.decode("utf-8")
+                    if chr(0) not in text_sample:
+                        st = text_sample.strip()
+                        if st.startswith("{") or st.startswith("["):
+                            return "application/json"
+                        return "text/plain"
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    guessed, _ = mimetypes.guess_type(p_str)
+    if guessed and guessed != "application/octet-stream":
+        return guessed
+
+    if fallback_mime and fallback_mime not in ["application/octet-stream", "media"]:
+        return fallback_mime
+
+    return fallback_mime or "application/octet-stream"
+
 
 def split_message_chunks(text: str, max_length: int = 4000) -> list:
     """
