@@ -452,7 +452,11 @@ async def on_new_message(event):
         cmd_output = await command_manager.execute_pipeline(raw_payload, event.sender_id, chat_id, event)
         if cmd_output:
             formatted = safe_telegram_html(cmd_output)
-            await send_message_safe(client, input_chat_entity, formatted, reply_to=msg_id, parse_mode="html")
+            sent_msgs = await send_message_safe(client, input_chat_entity, formatted, reply_to=msg_id, parse_mode="html")
+            for sm in (sent_msgs if isinstance(sent_msgs, list) else [sent_msgs]):
+                sm_id = getattr(sm, "id", None)
+                if sm_id:
+                    processed_msg_ids.add((chat_id, sm_id))
         
         if not getattr(config, "TRIGGER_ON_COMMANDS", False):
             return

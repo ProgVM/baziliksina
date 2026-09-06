@@ -368,9 +368,38 @@ class DBManager:
 
     async def update_message_text(self, chat_id: str, msg_id: int, new_text: str, new_media_info: str = None):
         chat_id = normalize_chat_id(chat_id)
+
+        async with self.db.execute(
+            "SELECT role, raw_content_json FROM messages WHERE chat_id = ? AND msg_id = ? LIMIT 1",
+            (str(chat_id), int(msg_id))
+        ) as cursor:
+            row = await cursor.fetchone()
+
+        new_raw_json = None
+        if row:
+            role, raw_json = row
+            if raw_json:
+                try:
+                    data = json.loads(raw_json)
+                    if "parts" in data and isinstance(data["parts"], list):
+                        updated = False
+                        for p in data["parts"]:
+                            if isinstance(p, dict) and "text" in p and p["text"] is not None:
+                                p["text"] = new_text
+                                updated = True
+                                break
+                        if not updated:
+                            data["parts"].insert(0, {"text": new_text})
+                        new_raw_json = json.dumps(data, ensure_ascii=False)
+                except Exception:
+                    pass
+            if not new_raw_json:
+                new_content = types.Content(role=role, parts=[types.Part.from_text(text=new_text)])
+                new_raw_json = json.dumps(content_to_dict(new_content), ensure_ascii=False)
+
         await self.db.execute(
-            "UPDATE messages SET text = ?, media_info = ? WHERE chat_id = ? AND msg_id = ?",
-            (new_text, new_media_info, str(chat_id), int(msg_id))
+            "UPDATE messages SET text = ?, raw_content_json = ?, media_info = ? WHERE chat_id = ? AND msg_id = ?",
+            (new_text, new_raw_json, new_media_info, str(chat_id), int(msg_id))
         )
         await self.db.commit()
 
