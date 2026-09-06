@@ -511,14 +511,42 @@ async def on_new_message(event):
     sender_role = "Member"
     custom_tag = "None"
     if event.is_group and sender:
-        try:
-            permissions = await client.get_permissions(event.chat_id, sender)
-            if getattr(permissions, 'is_creator', False): sender_role = "Owner/Creator"
-            elif getattr(permissions, 'is_admin', False): sender_role = "Admin"
-            from telethon.tl.functions.channels import GetParticipantRequest
-            res = await client(GetParticipantRequest(channel=event.chat_id, participant=sender))
-            custom_tag = getattr(res.participant, "rank", None) or "None"
-        except Exception: pass
+        is_anon_group = False
+        is_linked_chan = False
+        sender_id = getattr(sender, "id", None)
+        if sender_id is not None:
+            clean_s = str(sender_id).replace("-100", "").replace("-", "")
+            clean_c = str(event.chat_id).replace("-100", "").replace("-", "")
+            if clean_s == clean_c:
+                is_anon_group = True
+            else:
+                linked_id = None
+                try:
+                    meta = await db.get_chat_meta(str(event.chat_id))
+                    if meta and meta.get("linked_chat_id"):
+                        linked_id = meta["linked_chat_id"]
+                except Exception:
+                    pass
+                if linked_id:
+                    clean_l = str(linked_id).replace("-100", "").replace("-", "")
+                    if clean_s == clean_l:
+                        is_linked_chan = True
+
+        if is_anon_group:
+            sender_role = "Admin"
+            custom_tag = "Anonymous Admin"
+        elif is_linked_chan:
+            sender_role = "Admin"
+            custom_tag = "Linked Channel"
+        else:
+            try:
+                permissions = await client.get_permissions(event.chat_id, sender)
+                if getattr(permissions, 'is_creator', False): sender_role = "Owner/Creator"
+                elif getattr(permissions, 'is_admin', False): sender_role = "Admin"
+                from telethon.tl.functions.channels import GetParticipantRequest
+                res = await client(GetParticipantRequest(channel=event.chat_id, participant=sender))
+                custom_tag = getattr(res.participant, "rank", None) or "None"
+            except Exception: pass
     tag_info = f" | Member Tag: '{custom_tag}'" if custom_tag != "None" else ""
     sender_info = f"{parse_sender_info(sender, event.message)} | Group Role: {sender_role}{tag_info}"
 

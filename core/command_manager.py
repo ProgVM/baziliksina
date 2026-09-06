@@ -110,6 +110,7 @@ class CommandManager:
         self.ai_manager = ai_manager_instance
         self._active_tasks: Dict[int, Dict[str, Any]] = {}
         self._handlers: Dict[str, Callable] = {}
+        self._linked_chats_cache: Dict[str, Optional[int]] = {}
         self._register_builtin_handlers()
 
     def bind_core_references(self, db_manager, client_instance, ai_manager_instance):
@@ -129,7 +130,118 @@ class CommandManager:
         """Unregisters active AI generation task upon completion."""
         self._active_tasks.pop(int(chat_id), None)
 
-    async def cancel_generation(self, chat_id: int, user_id: int = None, purge: bool = False, force: bool = False) -> Tuple[bool, str]:
+    @staticmethod
+    def _ids_match(id1: Any, id2: Any) -> bool:
+        """Matches two Telegram entity IDs regardless of -100 prefix, string vs int type."""
+        if id1 is None or id2 is None:
+            return False
+        s1 = str(id1).strip()
+        s2 = str(id2).strip()
+        if not s1 or not s2:
+            return False
+        if s1 == s2:
+            return True
+        clean1 = s1
+        if clean1.startswith("-100"): clean1 = clean1[4:]
+        elif clean1.startswith("-"): clean1 = clean1[1:]
+
+        clean2 = s2
+        if clean2.startswith("-100"): clean2 = clean2[4:]
+        elif clean2.startswith("-"): clean2 = clean2[1:]
+
+        return clean1 == clean2 and clean1 != ""
+
+    async def get_linked_chat_id(self, chat_id: Union[int, str]) -> Optional[int]:
+        """Resolves linked discussion/broadcast channel ID for a chat."""
+        cid_str = str(chat_id).strip()
+        if cid_str in self._linked_chats_cache:
+            return self._linked_chats_cache[cid_str]
+
+        linked_id = None
+        if self.db:
+            try:
+                meta = await self.db.get_chat_meta(cid_str)
+                if meta and meta.get("linked_chat_id"):
+                    linked_id = meta["linked_chat_id"]
+            except Exception:
+                pass
+
+        if not linked_id and self.client:
+            try:
+                from telethon.tl.functions.channels import GetFullChannelRequest
+                target = int(cid_str) if cid_str.lstrip("-").isdigit() else cid_str
+                full = await self.client(GetFullChannelRequest(channel=target))
+                if full and hasattr(full, "full_chat"):
+                    linked_id = getattr(full.full_chat, "linked_chat_id", None)
+            except Exception:
+                pass
+
+        self._linked_chats_cache[cid_str] = linked_id
+        return linked_id
+
+    async def is_chat_admin(self, chat_id: Union[int, str], user_id: Union[int, str] = None, event: Any = None) -> bool:
+        """
+        Validates if user_id is an administrator in chat_id.
+        Accurately identifies anonymous administrators (posting on behalf of the group itself)
+        and messages from the linked channel.
+        """
+        if not chat_id:
+            return False
+
+        cid_str = str(chat_id).strip()
+        is_group_or_channel = (
+            cid_str.startswith("-") or
+            getattr(event, "is_group", False) or
+            getattr(event, "is_channel", False)
+        )
+
+        # 1. Anonymous admin posting on behalf of the group itself
+        if is_group_or_channel and user_id is not None and self._ids_match(user_id, chat_id):
+            return True
+
+        # Check event message from_id / sender
+        msg = getattr(event, "message", None) if event else None
+        if msg and is_group_or_channel:
+            from_id = getattr(msg, "from_id", None)
+            if from_id:
+                ch_id = getattr(from_id, "channel_id", None)
+                if ch_id is not None and self._ids_match(ch_id, chat_id):
+                    return True
+
+        # 2. Check if posting on behalf of the linked channel
+        if is_group_or_channel:
+            linked_id = await self.get_linked_chat_id(chat_id)
+            if linked_id:
+                if user_id is not None and self._ids_match(user_id, linked_id):
+                    return True
+                if msg:
+                    from_id = getattr(msg, "from_id", None)
+                    if from_id:
+                        ch_id = getattr(from_id, "channel_id", None)
+                        if ch_id is not None and self._ids_match(ch_id, linked_id):
+                            return True
+                    fwd = getattr(msg, "fwd_from", None)
+                    if fwd:
+                        fwd_peer = getattr(fwd, "from_id", None) or getattr(fwd, "saved_from_peer", None)
+                        if fwd_peer:
+                            fwd_ch = getattr(fwd_peer, "channel_id", None)
+                            if fwd_ch is not None and self._ids_match(fwd_ch, linked_id):
+                                return True
+
+        # 3. Regular user permission check via Telegram client
+        if self.client and user_id is not None:
+            try:
+                target = int(cid_str) if cid_str.lstrip("-").isdigit() else cid_str
+                user = int(str(user_id).strip()) if str(user_id).strip().lstrip("-").isdigit() else user_id
+                perm = await self.client.get_permissions(target, user)
+                if getattr(perm, "is_admin", False) or getattr(perm, "is_creator", False):
+                    return True
+            except Exception:
+                pass
+
+        return False
+
+    async def cancel_generation(self, chat_id: int, user_id: int = None, purge: bool = False, force: bool = False, event: Any = None) -> Tuple[bool, str]:
         """Cancels active AI generation task with granular ownership & permission checks."""
         cid = int(chat_id)
         task_data = self._active_tasks.get(cid)
@@ -139,16 +251,9 @@ class CommandManager:
         task_user_id = task_data.get("user_id")
         task = task_data.get("task")
 
-        if user_id and not force and task_user_id and int(user_id) != int(task_user_id):
+        if user_id and not force and task_user_id and not self._ids_match(user_id, task_user_id):
             is_bot_admin = await permission_manager.has_permission(user_id, required_rank=RankLevel.ADMIN)
-            is_chat_admin = False
-            try:
-                if self.client:
-                    perm = await self.client.get_permissions(cid, user_id)
-                    if getattr(perm, "is_admin", False) or getattr(perm, "is_creator", False):
-                        is_chat_admin = True
-            except Exception:
-                pass
+            is_chat_admin = await self.is_chat_admin(cid, user_id, event=event)
 
             if not is_bot_admin and not is_chat_admin:
                 return False, "Permission denied: You can only stop your own generation or must be a chat/bot admin."
@@ -310,7 +415,7 @@ class CommandManager:
     async def _cmd_stop(self, args: CLIArgs, user_id: int, chat_id: int, event) -> str:
         """Stop Generation command (/stop). Stops active AI generation task."""
         purge = args.has_flag("purge", "p")
-        success, msg = await self.cancel_generation(chat_id, user_id=user_id, purge=purge)
+        success, msg = await self.cancel_generation(chat_id, user_id=user_id, purge=purge, event=event)
         if success and purge:
             msg += " Uncommitted output purged."
         return msg
@@ -319,7 +424,7 @@ class CommandManager:
         """Instant Send command (/send). Cancels active generation and starts fresh query."""
         drop_previous = args.has_flag("drop-previous", "d")
         
-        success, msg = await self.cancel_generation(chat_id, user_id=user_id, purge=drop_previous)
+        success, msg = await self.cancel_generation(chat_id, user_id=user_id, purge=drop_previous, event=event)
         if not success and "Permission denied" in msg:
             return f"Error: {msg}"
 
@@ -342,14 +447,33 @@ class CommandManager:
 
         is_bot_admin = await permission_manager.has_permission(user_id, required_rank=RankLevel.ADMIN)
         
-        if target_chat != str(chat_id) and not is_bot_admin:
-            try:
-                if self.client:
-                    perm = await self.client.get_permissions(target_chat, user_id)
-                    if not getattr(perm, "participant", False) and not getattr(perm, "is_admin", False) and not getattr(perm, "is_creator", False):
-                        return f"Permission denied: You are not a participant in chat {target_chat}."
-            except Exception as e:
-                return f"Permission denied: Unable to verify membership in chat {target_chat}: {str(e)}"
+        is_target_different = not self._ids_match(target_chat, chat_id)
+        is_group_or_channel = (
+            str(target_chat).startswith("-") or
+            str(chat_id).startswith("-") or
+            getattr(event, "is_group", False) or
+            getattr(event, "is_channel", False)
+        )
+
+        if not is_bot_admin:
+            if is_target_different or is_group_or_channel:
+                is_chat_admin = await self.is_chat_admin(target_chat, user_id, event=event)
+                if not is_chat_admin:
+                    is_participant = False
+                    if self.client:
+                        try:
+                            perm = await self.client.get_permissions(target_chat, user_id)
+                            if getattr(perm, "is_admin", False) or getattr(perm, "is_creator", False):
+                                is_chat_admin = True
+                            elif not is_group_or_channel and getattr(perm, "participant", False):
+                                is_participant = True
+                        except Exception:
+                            pass
+
+                    if not is_chat_admin and not is_participant:
+                        if is_group_or_channel:
+                            return f"Permission denied: You must be a chat/bot admin to clear context history in group {target_chat}."
+                        return f"Permission denied: You are not a participant or admin in chat {target_chat}."
 
         if self.db:
             await self.db.clear_chat_history(target_chat)
@@ -397,24 +521,24 @@ class CommandManager:
             if msg_role == "user":
                 if msg_meta and msg_meta.get("raw_meta"):
                     sender_data = msg_meta["raw_meta"].get("to_dict_raw", {})
-                    from_id = str(sender_data.get("from_id", {}).get("user_id", "")) or str(sender_data.get("from_id", ""))
-                    if from_id == str(user_id):
+                    sender_from = sender_data.get("from_id")
+                    target_sender_id = None
+                    if isinstance(sender_from, dict):
+                        target_sender_id = sender_from.get("user_id") or sender_from.get("channel_id") or sender_from.get("chat_id")
+                    elif sender_from is not None:
+                        target_sender_id = str(sender_from)
+
+                    if target_sender_id is not None and self._ids_match(target_sender_id, user_id):
                         is_own_content = True
             elif msg_role == "model":
                 if msg_meta and msg_meta.get("meta_text"):
                     meta_text = msg_meta["meta_text"]
-                    if f"[ID: {user_id}]" in meta_text or f"user_id={user_id}" in meta_text:
+                    clean_u = str(user_id).replace("-100", "").replace("-", "")
+                    if f"[ID: {user_id}]" in meta_text or f"user_id={user_id}" in meta_text or (clean_u and (f"[ID: {clean_u}]" in meta_text or f"user_id={clean_u}" in meta_text)):
                         is_own_content = True
 
             if not is_own_content and not is_bot_admin:
-                is_chat_admin = False
-                try:
-                    if self.client:
-                        perm = await self.client.get_permissions(target_chat_id, user_id)
-                        if getattr(perm, "is_admin", False) or getattr(perm, "is_creator", False):
-                            is_chat_admin = True
-                except Exception:
-                    pass
+                is_chat_admin = await self.is_chat_admin(target_chat_id, user_id, event=event)
 
                 if not is_chat_admin:
                     return "Permission denied: You can only delete your own content or must be a chat/bot admin."
@@ -466,24 +590,24 @@ class CommandManager:
             if msg_role == "user":
                 if msg_meta and msg_meta.get("raw_meta"):
                     sender_data = msg_meta["raw_meta"].get("to_dict_raw", {})
-                    from_id = str(sender_data.get("from_id", {}).get("user_id", "")) or str(sender_data.get("from_id", ""))
-                    if from_id == str(user_id):
+                    sender_from = sender_data.get("from_id")
+                    target_sender_id = None
+                    if isinstance(sender_from, dict):
+                        target_sender_id = sender_from.get("user_id") or sender_from.get("channel_id") or sender_from.get("chat_id")
+                    elif sender_from is not None:
+                        target_sender_id = str(sender_from)
+
+                    if target_sender_id is not None and self._ids_match(target_sender_id, user_id):
                         is_own_content = True
             elif msg_role == "model":
                 if msg_meta and msg_meta.get("meta_text"):
                     meta_text = msg_meta["meta_text"]
-                    if f"[ID: {user_id}]" in meta_text or f"user_id={user_id}" in meta_text:
+                    clean_u = str(user_id).replace("-100", "").replace("-", "")
+                    if f"[ID: {user_id}]" in meta_text or f"user_id={user_id}" in meta_text or (clean_u and (f"[ID: {clean_u}]" in meta_text or f"user_id={clean_u}" in meta_text)):
                         is_own_content = True
 
             if not is_own_content and not is_bot_admin:
-                is_chat_admin = False
-                try:
-                    if self.client:
-                        perm = await self.client.get_permissions(target_chat_id, user_id)
-                        if getattr(perm, "is_admin", False) or getattr(perm, "is_creator", False):
-                            is_chat_admin = True
-                except Exception:
-                    pass
+                is_chat_admin = await self.is_chat_admin(target_chat_id, user_id, event=event)
 
                 if not is_chat_admin:
                     return "Permission denied: You can only edit your own content or must be a chat/bot admin."

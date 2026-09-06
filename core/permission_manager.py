@@ -30,25 +30,43 @@ class PermissionManager:
         """
         Resolves the exact rank level and explicit permissions list for a user.
         Checks immutable config ADMINS first, then DB user_ranks, then blacklists/whitelists.
+        Supports both user IDs and channel/group IDs (including anonymous admins).
         """
-        u_id = int(user_id) if str(user_id).isdigit() else user_id
+        try:
+            u_id = int(user_id)
+        except (ValueError, TypeError):
+            u_id = user_id
         u_id_str = str(u_id)
         u_name = f"@{username.lstrip('@').lower()}" if username else ""
+
+        # Формируем множество вариантов ID для сопоставления (учитывая префикс -100 и чистый ID канала)
+        candidates = {u_id, u_id_str}
+        clean_bare = u_id_str.lstrip("-")
+        if clean_bare.startswith("100") and len(clean_bare) > 5:
+            bare_str = clean_bare[3:]
+            candidates.add(bare_str)
+            candidates.add(f"-100{bare_str}")
+            try:
+                candidates.add(int(bare_str))
+                candidates.add(int(f"-100{bare_str}"))
+            except ValueError:
+                pass
 
         # 1. Check Creator / Config ADMINS (Immutable Base Ranks)
         admins_cfg = getattr(config, "ADMINS", {})
         if isinstance(admins_cfg, dict):
-            # Search by integer or string ID
-            if u_id in admins_cfg or u_id_str in admins_cfg:
-                cfg_data = admins_cfg.get(u_id) or admins_cfg.get(u_id_str)
-                if isinstance(cfg_data, dict):
-                    return {
-                        "rank": int(cfg_data.get("rank", RankLevel.ROOT_ADMIN)),
-                        "permissions": cfg_data.get("permissions", ["all"]),
-                        "source": "config_admins"
-                    }
-                elif isinstance(cfg_data, (int, float)):
-                    return {"rank": int(cfg_data), "permissions": ["all"], "source": "config_admins"}
+            # Search by integer or string ID (including channel formats)
+            for cand in candidates:
+                if cand in admins_cfg:
+                    cfg_data = admins_cfg[cand]
+                    if isinstance(cfg_data, dict):
+                        return {
+                            "rank": int(cfg_data.get("rank", RankLevel.ROOT_ADMIN)),
+                            "permissions": cfg_data.get("permissions", ["all"]),
+                            "source": "config_admins"
+                        }
+                    elif isinstance(cfg_data, (int, float)):
+                        return {"rank": int(cfg_data), "permissions": ["all"], "source": "config_admins"}
 
             # Search by @username
             if u_name:
@@ -60,13 +78,18 @@ class PermissionManager:
 
         # 2. Check Blacklists (Instant Block)
         user_blacklist = getattr(config, "USER_CACHE_BLACKLIST", [])
-        if u_id in user_blacklist or u_id_str in user_blacklist or (u_name and u_name in user_blacklist):
+        if any(c in user_blacklist for c in candidates) or (u_name and u_name in user_blacklist):
             return {"rank": RankLevel.BLOCKED, "permissions": [], "source": "blacklist"}
 
         # 3. Check SQLite DB Ranks (`user_ranks` table)
         if self.db:
             try:
-                db_rank_data = await self.db.get_user_rank(u_id_str)
+                db_rank_data = None
+                for cand in candidates:
+                    db_rank_data = await self.db.get_user_rank(str(cand))
+                    if db_rank_data:
+                        break
+
                 if not db_rank_data and u_name:
                     db_rank_data = await self.db.get_user_rank(u_name)
 
@@ -81,7 +104,7 @@ class PermissionManager:
 
         # 4. Check Whitelists / Priority
         user_whitelist = getattr(config, "USER_CACHE_WHITELIST", [])
-        if user_whitelist and (u_id in user_whitelist or u_id_str in user_whitelist or u_name in user_whitelist):
+        if user_whitelist and (any(c in user_whitelist for c in candidates) or (u_name and u_name in user_whitelist)):
             return {"rank": RankLevel.PRIORITY, "permissions": [], "source": "whitelist"}
 
         # 5. Default User Rank
