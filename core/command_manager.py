@@ -182,8 +182,8 @@ class CommandManager:
     async def is_chat_admin(self, chat_id: Union[int, str], user_id: Union[int, str] = None, event: Any = None) -> bool:
         """
         Validates if user_id is an administrator in chat_id.
-        Accurately identifies anonymous administrators (posting on behalf of the group itself)
-        and messages from the linked channel.
+        Accurately distinguishes true anonymous admins (who send as the group itself)
+        and linked channel admins from arbitrary users sending as their own channels.
         """
         if not chat_id:
             return False
@@ -195,20 +195,22 @@ class CommandManager:
             getattr(event, "is_channel", False)
         )
 
-        # 1. Anonymous admin posting on behalf of the group itself
-        if is_group_or_channel and user_id is not None and self._ids_match(user_id, chat_id):
-            return True
-
-        # Check event message from_id / sender
         msg = getattr(event, "message", None) if event else None
-        if msg and is_group_or_channel:
-            from_id = getattr(msg, "from_id", None)
-            if from_id:
+
+        # 1. Anonymous admin posting on behalf of the group itself
+        # Telegram servers strictly restrict posting as the group itself to admins with 'anonymous' right.
+        if is_group_or_channel:
+            if user_id is not None and self._ids_match(user_id, chat_id):
+                return True
+            if msg:
+                from_id = getattr(msg, "from_id", None)
+                if from_id is None:
+                    return True
                 ch_id = getattr(from_id, "channel_id", None)
                 if ch_id is not None and self._ids_match(ch_id, chat_id):
                     return True
 
-        # 2. Check if posting on behalf of the linked channel
+        # 2. Check if posting on behalf of the official linked channel
         if is_group_or_channel:
             linked_id = await self.get_linked_chat_id(chat_id)
             if linked_id:
