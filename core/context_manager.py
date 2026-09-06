@@ -128,23 +128,21 @@ class AIContextManager:
         target_mime = str(offending_mime or "application/octet-stream").strip()
         logger.info(f"Sanitizing database and context from unsupported MIME type: '{target_mime}'...")
         try:
-            # 1. Clean shared_memory
+            # 1. Clean shared_memory from URIs and cache keys
             async with self.db.db.execute(
-                "SELECT key, value FROM shared_memory WHERE value = ? OR value LIKE ?", 
-                (target_mime, f"%{target_mime}%")
+                "SELECT key, value FROM shared_memory WHERE value = ? OR value LIKE ? OR key LIKE ?", 
+                (target_mime, f"%{target_mime}%", f"%{target_mime}%")
             ) as cursor:
                 cache_rows = await cursor.fetchall()
             for key, val in cache_rows:
                 await self.db.db.execute("DELETE FROM shared_memory WHERE key = ?", (key,))
-            
-            # 2. Clean messages table raw_content_json
-            query = "SELECT id, raw_content_json FROM messages WHERE raw_content_json LIKE ?"
-            params = [f"%{target_mime}%"]
-            if chat_id:
-                query += " AND chat_id = ?"
-                params.append(str(chat_id))
-                
-            async with self.db.db.execute(query, tuple(params)) as cursor:
+                await self.db.db.execute("DELETE FROM shared_memory WHERE value = ?", (key,))
+
+            # 2. Clean messages table raw_content_json across ALL chats
+            async with self.db.db.execute(
+                "SELECT id, raw_content_json FROM messages WHERE raw_content_json LIKE ?", 
+                (f"%{target_mime}%",)
+            ) as cursor:
                 db_rows = await cursor.fetchall()
             
             for r_id, db_raw_json in db_rows:
@@ -166,10 +164,33 @@ class AIContextManager:
                             else:
                                 new_parts.append(p)
                         data_obj["parts"] = new_parts
-                        cleaned_json = json.dumps(data_obj)
+                        cleaned_json = json.dumps(data_obj, ensure_ascii=False)
                         await self.db.db.execute("UPDATE messages SET raw_content_json = ? WHERE id = ?", (cleaned_json, r_id))
                 except Exception as json_err:
                     logger.error(f"Failed to clean message #{r_id} JSON: {str(json_err)}")
+
+            # 3. Clean messages table media_info
+            async with self.db.db.execute(
+                "SELECT id, media_info FROM messages WHERE media_info LIKE ?", 
+                (f"%{target_mime}%",)
+            ) as cursor:
+                media_rows = await cursor.fetchall()
+
+            for m_id, m_info_str in media_rows:
+                if not m_info_str:
+                    continue
+                try:
+                    m_data = json.loads(m_info_str)
+                    if isinstance(m_data, dict) and "items" in m_data:
+                        m_data["items"] = [item for item in m_data["items"] if item.get("mime_type") != target_mime]
+                        cleaned_m_info = json.dumps(m_data, ensure_ascii=False) if m_data["items"] else None
+                    elif isinstance(m_data, dict) and m_data.get("mime_type") == target_mime:
+                        cleaned_m_info = None
+                    else:
+                        cleaned_m_info = m_info_str
+                    await self.db.db.execute("UPDATE messages SET media_info = ? WHERE id = ?", (cleaned_m_info, m_id))
+                except Exception as m_err:
+                    logger.error(f"Failed to clean media_info for #{m_id}: {str(m_err)}")
 
             await self.db.db.commit()
             logger.info(f"Database successfully sanitized from unsupported MIME type '{target_mime}'.")

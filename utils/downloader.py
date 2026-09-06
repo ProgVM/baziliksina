@@ -337,7 +337,25 @@ async def download_and_cache_media(client, message, is_private: bool, mentioned:
                 path = local_cached_path
             else:
                 from utils import sanitize_filename
-                clean_name = sanitize_filename(orig_filename) if orig_filename else f"{media_id}.bin"
+                if orig_filename:
+                    clean_name = sanitize_filename(orig_filename)
+                else:
+                    import mimetypes
+                    ext = mimetypes.guess_extension(mime_type)
+                    if not ext or ext in [".bin", ".oga"]:
+                        m_lower = (mime_type or "").lower()
+                        if "video" in m_lower or "mp4" in m_lower:
+                            ext = ".mp4"
+                        elif "audio" in m_lower or "voice" in m_lower:
+                            ext = ".ogg" if "ogg" in m_lower or "opus" in m_lower else ".mp3"
+                        elif "image" in m_lower:
+                            ext = ".png" if "png" in m_lower else ".jpg"
+                        elif "pdf" in m_lower:
+                            ext = ".pdf"
+                        else:
+                            ext = ".bin"
+                    clean_name = f"{media_id}{ext}"
+
                 dest_file = str(TEMP_MEDIA_DIR / f"tg_{media_id}_{clean_name}") if media_id else str(TEMP_MEDIA_DIR)
                 path = await client.download_media(target_media, file=dest_file)
 

@@ -358,6 +358,7 @@ class GeminiManager:
                         mime_match = re.search(r"Unsupported MIME type:\s*([^\s'\"]+)", err_str, re.IGNORECASE)
                         offending_mime = mime_match.group(1) if mime_match else "application/octet-stream"
                         await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
+                        
                         for c in contents:
                             new_c_parts = []
                             for p in (c.parts or []):
@@ -368,9 +369,16 @@ class GeminiManager:
                                 else:
                                     new_c_parts.append(p)
                             c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
-                        await asyncio.sleep(config.TIMEOUT_SLEEP)
-                        continue
-                    logger.error(f"Error counting tokens: {str(e)}")
+                        
+                        try:
+                            token_response = await gemini_client.aio.models.count_tokens(
+                                model=self.key_manager.get_model(),
+                                contents=contents
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        logger.error(f"Error counting tokens: {str(e)}")
                 except Exception as count_err:
                     logger.error(f"Error counting tokens: {str(count_err)}")
 
@@ -418,6 +426,16 @@ class GeminiManager:
                             mime_match = re.search(r"Unsupported MIME type:\s*([^\s'\"]+)", err_str, re.IGNORECASE)
                             offending_mime = mime_match.group(1) if mime_match else "application/octet-stream"
                             await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
+                            for c in contents:
+                                new_c_parts = []
+                                for p in (c.parts or []):
+                                    if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
+                                        new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
+                                    elif getattr(p, "text", None):
+                                        new_c_parts.append(p)
+                                    else:
+                                        new_c_parts.append(p)
+                                c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
                         else:
                             try:
                                 async with self.db.db.execute("SELECT id, text, raw_content_json FROM messages WHERE raw_content_json IS NOT NULL ORDER BY id DESC LIMIT 20") as cursor:
