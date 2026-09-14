@@ -443,7 +443,6 @@ def create_generic_tag_handler(tool_meta):
 
 def register_system_tags_blocks():
     """Registers all root tags, labels, and blocks into the global TagBlockRegistry."""
-    from registry import tag_block_registry
     from registry import registry as tool_registry
     
     for name, (type_str, func) in ROOT_TAGS_BLOCKS.items():

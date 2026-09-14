@@ -226,7 +226,7 @@ class AIToolKitSystem:
             entity = await tools.client.get_entity(entity_id)
             e_type = type(entity).__name__
             details = [
-                f"Entity Details:",
+                "Entity Details:",
                 f"- ID: {entity.id}",
                 f"- Type: {e_type}"
             ]

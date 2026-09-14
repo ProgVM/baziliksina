@@ -125,7 +125,10 @@ class AIContextManager:
         Permanently sanitizes SQLite database and active session context 
         to remove parts with unsupported MIME types (such as application/octet-stream).
         """
-        target_mime = str(offending_mime or "application/octet-stream").strip()
+        target_mime = str(offending_mime or "").strip()
+        if not target_mime or "/" not in target_mime or "location" in target_mime.lower() or "precondition" in target_mime.lower():
+            logger.warning(f"_heal_unsupported_mime called with invalid/non-MIME target '{target_mime}'. Skipping database sanitization.")
+            return
         logger.info(f"Sanitizing database and context from unsupported MIME type: '{target_mime}'...")
         try:
             # 1. Clean shared_memory from URIs and cache keys

@@ -21,6 +21,7 @@ for sub in ["config", "core", "database", "services", "utils", "tools"]:
 
 from telethon import TelegramClient, events
 from telethon.tl import types as tl_types
+from google.genai import types as genai_types
 
 from config import (
     API_ID, API_HASH, SESSION_PATH, WORKSPACE_DIR, BOOTSTRAP_DATABASE, DEBOUNCE_DELAY, 
@@ -135,7 +136,7 @@ async def upload_media_to_google_background(media_info_str):
                     logger.info(f"[Background Upload]: Uploading file '{m_path}' ({m_type}) to Google Files API...")
                     gemini_client = ai_manager.key_manager.get_client()
                     try:
-                        upload_cfg = types.UploadFileConfig(mime_type=m_type) if hasattr(types, "UploadFileConfig") else {"mime_type": m_type}
+                        upload_cfg = genai_types.UploadFileConfig(mime_type=m_type) if hasattr(genai_types, "UploadFileConfig") else {"mime_type": m_type}
                         uploaded_file = await gemini_client.aio.files.upload(file=m_path, config=upload_cfg)
                     except Exception:
                         uploaded_file = await gemini_client.aio.files.upload(file=m_path)

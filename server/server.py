@@ -1204,3 +1204,5 @@ async def stop_web_server():
             await active_runner.cleanup()
         except Exception as e:
             logger.error(f"Error shutting down Web Server: {str(e)}")
+        finally:
+            active_runner = None

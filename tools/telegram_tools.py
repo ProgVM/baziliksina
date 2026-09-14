@@ -472,7 +472,7 @@ class AIToolKitTelegram:
                     for r in input_reactions:
                         exists = False
                         for existing in merged:
-                            if type(r) == type(existing):
+                            if type(r) is type(existing):
                                 if isinstance(r, tl_types.ReactionEmoji) and r.emoticon == existing.emoticon:
                                     exists = True
                                 elif isinstance(r, tl_types.ReactionCustomEmoji) and r.document_id == existing.document_id:
@@ -485,7 +485,7 @@ class AIToolKitTelegram:
                     for existing in current_own:
                         to_remove = False
                         for r in input_reactions:
-                            if type(r) == type(existing):
+                            if type(r) is type(existing):
                                 if isinstance(r, tl_types.ReactionEmoji) and r.emoticon == existing.emoticon:
                                     to_remove = True
                                 elif isinstance(r, tl_types.ReactionCustomEmoji) and r.document_id == existing.document_id:
@@ -507,7 +507,7 @@ class AIToolKitTelegram:
         if not matches_filter(media_id, config.OUTGOING_FILE_WHITELIST, config.OUTGOING_FILE_BLACKLIST):
             return f"Error: Media ID '{media_id}' is blocked by configuration."
         if not matches_filter(file_reference_hex, config.OUTGOING_FILE_WHITELIST, config.OUTGOING_FILE_BLACKLIST):
-            return f"Error: Media reference is blocked by configuration."
+            return "Error: Media reference is blocked by configuration."
         if not tools.client:
             return "Error: Telethon client is not initialized."
         try:
@@ -731,7 +731,7 @@ class AIToolKitTelegram:
                 from telethon.tl.functions.channels import EditBannedRequest
                 from telethon.tl.types import ChatBannedRights
                 await tools.client(EditBannedRequest(channel=chat_id, participant=user_id, banned_rights=ChatBannedRights(until_date=0)))
-                return f"Success. Message restrictions removed."
+                return "Success. Message restrictions removed."
         except Exception as e:
             return f"Error removing restrictions: {str(e)}"
 
@@ -833,7 +833,7 @@ class AIToolKitTelegram:
         elif "joinchat/" in clean_input:
             is_private_invite = True
             invite_hash = clean_input.split("joinchat/")[-1].strip()
-        elif not clean_input.startswith("@") and not "/" in clean_input and len(clean_input) >= 10 and clean_input.isalnum():
+        elif not clean_input.startswith("@") and "/" not in clean_input and len(clean_input) >= 10 and clean_input.isalnum():
             is_private_invite = True
             invite_hash = clean_input
         try:

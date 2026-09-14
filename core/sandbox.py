@@ -110,12 +110,11 @@ class AsyncSandbox:
         if not matches_filter(code_string, whitelist, blacklist):
             return "Security error: This Python code is blocked by the sandbox policy."
 
-        import asyncio
         import telethon
         
         if self.me is None and self.client:
             try:
-                self.me = await client.get_me()
+                self.me = await self.client.get_me()
             except Exception:
                 pass
 

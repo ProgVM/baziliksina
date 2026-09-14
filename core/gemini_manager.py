@@ -24,6 +24,24 @@ import tools
 
 logger = logging.getLogger("GeminiManager")
 
+def is_network_or_connection_error(e: Exception) -> bool:
+    err_str = str(e).lower()
+    net_keywords = [
+        "cannot connect to host", "connection refused", "clientconnectorerror",
+        "serverdisconnectederror", "clientoserror", "timeouterror", "timed out",
+        "network is unreachable", "failed to connect", "ssl: sslcontext",
+        "connection reset", "connection error", "proxy error", "socks",
+        "getaddrinfo failed", "nameresolutionerror", "gaierror"
+    ]
+    return any(k in err_str for k in net_keywords) or isinstance(e, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError))
+
+
+def is_location_unsupported_error(e: Exception) -> bool:
+    err_str = str(e).lower()
+    return "user location is not supported" in err_str or ("location" in err_str and "not supported" in err_str)
+
+
+
 
 def sanitize_type_annotation(anno: Any, default_val: Any = inspect.Parameter.empty) -> Any:
     """Sanitizes Python type annotations so that google-genai produces 100% valid OpenAPI schemas."""
@@ -316,6 +334,9 @@ class GeminiManager:
 
         max_turns = config.MAX_TURNS
         should_ignore = False
+        context_repair_attempts = 0
+        timeout_retries = 0
+        max_timeout_retries = 3
 
         try:
             for turn in range(max_turns):
@@ -332,6 +353,7 @@ class GeminiManager:
                         )
                         break
 
+                can_proceed = True
                 try:
                     token_response = await gemini_client.aio.models.count_tokens(
                         model=self.key_manager.get_model(),
@@ -343,44 +365,67 @@ class GeminiManager:
                     if total_tokens > self.key_manager.input_token_limit:
                         await self.context_mgr.summarize_chat_context(gemini_client, chat_id=str(chat_id))
                         continue
-                except APIError as e:
-                    if e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
-                        logger.warning("Gemini API 403 error caught during token counting. Healing context...")
-                        file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
-                        if file_match:
-                            file_id = file_match.group(1)
-                            await self.context_mgr._heal_inaccessible_file(file_id, contents)
+                except Exception as count_err:
+                    if is_location_unsupported_error(count_err):
+                        logger.critical("Gemini API Geo-blocked during token counting: User location is not supported. Configure a non-restricted proxy in GEMINI_PROXIES or ALL_PROXY. Aborting generation.")
+                        can_proceed = False
+                        break
+                    elif is_network_or_connection_error(count_err):
+                        logger.error(f"Connection error to Gemini API during pre-check: {count_err}. Attempting proxy rotation...")
+                        rotated = await self.key_manager.rotate_proxy_async()
+                        if rotated:
+                            gemini_client = self.key_manager.get_client()
                             await asyncio.sleep(config.TIMEOUT_SLEEP)
                             continue
-                    elif e.code == 400:
-                        err_str = str(e)
-                        logger.warning(f"Gemini API 400 error caught during token counting: {err_str}. Self-healing context...")
-                        mime_match = re.search(r"Unsupported MIME type:\s*([^\s'\"]+)", err_str, re.IGNORECASE)
-                        offending_mime = mime_match.group(1) if mime_match else "application/octet-stream"
-                        await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
-                        
-                        for c in contents:
-                            new_c_parts = []
-                            for p in (c.parts or []):
-                                if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
-                                    new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
-                                elif getattr(p, "text", None):
-                                    new_c_parts.append(p)
-                                else:
-                                    new_c_parts.append(p)
-                            c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
-                        
-                        try:
-                            token_response = await gemini_client.aio.models.count_tokens(
-                                model=self.key_manager.get_model(),
-                                contents=contents
-                            )
-                        except Exception:
-                            pass
+                        logger.error("Gemini API host is unreachable and no alternative proxy is available. Aborting generation.")
+                        can_proceed = False
+                        break
+                    elif isinstance(count_err, APIError):
+                        if count_err.code == 429:
+                            logger.warning("Rate limit 429 caught during token counting. Rotating key...")
+                            await self.key_manager.handle_error_exhausted(str(count_err))
+                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
+                            continue
+                        elif count_err.code == 401 or "unauthenticated" in str(count_err).lower():
+                            logger.warning("Invalid API key during token counting. Rotating key...")
+                            await self.key_manager.mark_key_exhausted(str(count_err))
+                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
+                            continue
+                        elif count_err.code == 403 and ("permission" in str(count_err).lower() or "exist" in str(count_err).lower() or "access" in str(count_err).lower()):
+                            logger.warning("Gemini API 403 error caught during token counting. Healing context...")
+                            file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(count_err), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(count_err), re.IGNORECASE)
+                            if file_match:
+                                file_id = file_match.group(1)
+                                await self.context_mgr._heal_inaccessible_file(file_id, contents)
+                                await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                continue
+                        elif count_err.code == 400:
+                            err_str = str(count_err)
+                            mime_match = re.search(r"Unsupported MIME type:\s*(\S+)", err_str, re.IGNORECASE)
+                            if mime_match:
+                                offending_mime = mime_match.group(1).strip("'").strip('"')
+                                logger.warning(f"Unsupported MIME type '{offending_mime}' found during token counting. Sanitizing context...")
+                                await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
+                                for c in contents:
+                                    new_c_parts = []
+                                    for p in (c.parts or []):
+                                        if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
+                                            new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
+                                        elif getattr(p, "text", None):
+                                            new_c_parts.append(p)
+                                        else:
+                                            new_c_parts.append(p)
+                                    c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
+                                continue
+                            else:
+                                logger.error(f"Gemini API 400 error during token counting: {err_str}")
+                                can_proceed = False
+                                break
                     else:
-                        logger.error(f"Error counting tokens: {str(e)}")
-                except Exception as count_err:
-                    logger.error(f"Error counting tokens: {str(count_err)}")
+                        logger.error(f"Error counting tokens: {str(count_err)}")
+
+                if not can_proceed:
+                    break
 
                 logger.info(f"Requesting generation from Gemini API (Turn {turn + 1}/{max_turns})...")
                 try:
@@ -393,66 +438,97 @@ class GeminiManager:
                         timeout=config.GEMINI_TIMEOUT
                     )
                 except asyncio.TimeoutError:
-                    logger.warning("Model response timeout. Retrying...")
+                    timeout_retries += 1
+                    logger.warning(f"Model response timeout ({timeout_retries}/{max_timeout_retries}). Retrying...")
+                    if timeout_retries >= max_timeout_retries:
+                        logger.error("Maximum response timeouts exceeded. Aborting query.")
+                        break
                     await asyncio.sleep(config.TIMEOUT_SLEEP)
                     continue
-                except APIError as e:
-                    if e.code == 429:
-                        active_key = self.key_manager.keys[self.key_manager.current_key_index]
-                        logger.warning(f"Gemini API 429 encountered on key: '{active_key[:10]}...'. Rotating pools...")
-                        await asyncio.sleep(config.RATE_LIMIT_SLEEP)
-                        await self.key_manager.handle_error_exhausted(str(e))
-                        gemini_client = await self.key_manager.rotate_key_async(str(e))
-                        continue
-                    elif e.code == 401 or "unauthenticated" in str(e).lower() or "credentials" in str(e).lower():
-                        active_key = self.key_manager.keys[self.key_manager.current_key_index]
-                        logger.error(f"Gemini API 401 Invalid Credentials on key: '{active_key[:10]}...'. Rotating pools...")
-                        await self.key_manager.mark_key_exhausted(str(e))
-                        gemini_client = await self.key_manager.rotate_key_async(str(e))
-                        continue
-                    elif e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
-                        logger.warning("Gemini API 403 error caught during generation. Healing context...")
-                        file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
-                        if file_match:
-                            file_id = file_match.group(1)
-                            await self.context_mgr._heal_inaccessible_file(file_id, contents)
+                except Exception as e:
+                    if is_location_unsupported_error(e):
+                        logger.critical("Gemini API Geo-blocked: User location is not supported. Check proxy settings. Aborting generation.")
+                        rotated = await self.key_manager.rotate_proxy_async()
+                        if rotated:
+                            gemini_client = self.key_manager.get_client()
                             await asyncio.sleep(config.TIMEOUT_SLEEP)
                             continue
-                        raise e
-                    elif e.code == 400:
-                        err_str = str(e)
-                        logger.error(f"Gemini API 400 INVALID_ARGUMENT error: {err_str}. Self-healing context and retrying...")
-                        if "mime" in err_str.lower():
-                            mime_match = re.search(r"Unsupported MIME type:\s*([^\s'\"]+)", err_str, re.IGNORECASE)
-                            offending_mime = mime_match.group(1) if mime_match else "application/octet-stream"
-                            await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
-                            for c in contents:
-                                new_c_parts = []
-                                for p in (c.parts or []):
-                                    if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
-                                        new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
-                                    elif getattr(p, "text", None):
-                                        new_c_parts.append(p)
-                                    else:
-                                        new_c_parts.append(p)
-                                c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
+                        break
+                    elif is_network_or_connection_error(e):
+                        logger.error(f"Network/Connection error during generation: {e}. Attempting proxy rotation...")
+                        rotated = await self.key_manager.rotate_proxy_async()
+                        if rotated:
+                            gemini_client = self.key_manager.get_client()
+                            await asyncio.sleep(config.TIMEOUT_SLEEP)
+                            continue
+                        logger.error("Gemini API host is unreachable and no alternative proxy is available. Aborting generation.")
+                        break
+                    elif isinstance(e, APIError):
+                        if e.code == 429:
+                            active_key = self.key_manager.keys[self.key_manager.current_key_index] if self.key_manager.keys else "unknown"
+                            logger.warning(f"Gemini API 429 encountered on key: '{active_key[:10]}...'. Rotating pools...")
+                            await asyncio.sleep(config.RATE_LIMIT_SLEEP)
+                            await self.key_manager.handle_error_exhausted(str(e))
+                            gemini_client = await self.key_manager.rotate_key_async(str(e))
+                            continue
+                        elif e.code == 401 or "unauthenticated" in str(e).lower() or "credentials" in str(e).lower():
+                            active_key = self.key_manager.keys[self.key_manager.current_key_index] if self.key_manager.keys else "unknown"
+                            logger.error(f"Gemini API 401 Invalid Credentials on key: '{active_key[:10]}...'. Rotating pools...")
+                            await self.key_manager.mark_key_exhausted(str(e))
+                            gemini_client = await self.key_manager.rotate_key_async(str(e))
+                            continue
+                        elif e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
+                            logger.warning("Gemini API 403 error caught during generation. Healing context...")
+                            file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
+                            if file_match:
+                                file_id = file_match.group(1)
+                                await self.context_mgr._heal_inaccessible_file(file_id, contents)
+                                await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                continue
+                            raise e
+                        elif e.code == 400:
+                            err_str = str(e)
+                            mime_match = re.search(r"Unsupported MIME type:\s*(\S+)", err_str, re.IGNORECASE)
+                            if mime_match:
+                                offending_mime = mime_match.group(1).strip("'").strip('"')
+                                logger.error(f"Gemini API 400 Unsupported MIME '{offending_mime}': Self-healing context and retrying...")
+                                await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
+                                for c in contents:
+                                    new_c_parts = []
+                                    for p in (c.parts or []):
+                                        if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
+                                            new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
+                                        elif getattr(p, "text", None):
+                                            new_c_parts.append(p)
+                                        else:
+                                            new_c_parts.append(p)
+                                    c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
+                                await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                continue
+                            else:
+                                logger.error(f"Gemini API 400 INVALID_ARGUMENT error: {err_str}. Sanitizing recent messages...")
+                                context_repair_attempts += 1
+                                if context_repair_attempts > 2:
+                                    logger.error("Max context repair attempts exceeded (2). Aborting turn to prevent infinite loop.")
+                                    break
+                                try:
+                                    async with self.db.db.execute("SELECT id, text, raw_content_json FROM messages WHERE raw_content_json IS NOT NULL ORDER BY id DESC LIMIT 20") as cursor:
+                                        db_rows = await cursor.fetchall()
+                                    for r_id, db_text, db_raw_json in db_rows:
+                                        if db_raw_json and ("function_call" in db_raw_json or "function_response" in db_raw_json or "file_data" in db_raw_json):
+                                            await self.db.db.execute("UPDATE messages SET raw_content_json = NULL WHERE id = ?", (r_id,))
+                                    await self.db.db.commit()
+                                    logger.info("Successfully sanitized recent messages table raw JSON payloads.")
+                                except Exception as repair_err:
+                                    logger.error(f"Database auto-repair error: {str(repair_err)}")
+                                await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                continue
+                        elif e.code in [502, 503, 504]:
+                            logger.warning(f"Gemini API transient error {e.code} received. Retrying in {config.API_ERROR_SLEEP}s...")
+                            await asyncio.sleep(config.API_ERROR_SLEEP)
+                            continue
                         else:
-                            try:
-                                async with self.db.db.execute("SELECT id, text, raw_content_json FROM messages WHERE raw_content_json IS NOT NULL ORDER BY id DESC LIMIT 20") as cursor:
-                                    db_rows = await cursor.fetchall()
-                                for r_id, db_text, db_raw_json in db_rows:
-                                    if db_raw_json and ("function_call" in db_raw_json or "function_response" in db_raw_json or "file_data" in db_raw_json):
-                                        await self.db.db.execute("UPDATE messages SET raw_content_json = NULL WHERE id = ?", (r_id,))
-                                await self.db.commit()
-                                logger.info("Successfully sanitized recent messages table raw JSON payloads.")
-                            except Exception as repair_err:
-                                logger.error(f"Database auto-repair error: {str(repair_err)}")
-                        await asyncio.sleep(config.TIMEOUT_SLEEP)
-                        continue
-                    elif e.code in [502, 503, 504]:
-                        logger.warning(f"Gemini API transient error {e.code} received. Retrying in {config.API_ERROR_SLEEP}s...")
-                        await asyncio.sleep(config.API_ERROR_SLEEP)
-                        continue
+                            raise e
                     else:
                         raise e
 

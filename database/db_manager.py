@@ -995,6 +995,11 @@ class DBManager:
         await self.db.commit()
         return True
 
+    async def commit(self):
+        """Commits the current transaction on the active aiosqlite connection."""
+        if self.db:
+            await self.db.commit()
+
     async def close(self):
         if self.db:
             await self.db.close()

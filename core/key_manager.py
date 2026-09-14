@@ -167,8 +167,18 @@ class GeminiKeyManager:
             except Exception as e:
                 e_str = str(e).lower()
                 is_invalid = "unauthenticated" in e_str or "credentials" in e_str or "401" in e_str or "api_key_invalid" in e_str
+                is_location = "user location is not supported" in e_str or ("location" in e_str and "not supported" in e_str)
+                is_net = any(k in e_str for k in [
+                    "cannot connect", "connection refused", "clientconnectorerror",
+                    "serverdisconnectederror", "clientoserror", "timeouterror", "timed out",
+                    "ssl", "network is unreachable", "proxy", "socks", "getaddrinfo"
+                ]) or isinstance(e, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError))
                 if is_invalid:
                     return {"key": key, "index": idx, "status": "invalid", "error": str(e)}
+                elif is_location:
+                    return {"key": key, "index": idx, "status": "location_blocked", "error": str(e)}
+                elif is_net:
+                    return {"key": key, "index": idx, "status": "network_error", "error": str(e)}
                 else:
                     cooldown = parse_gemini_error_cooldown(str(e))
                     return {"key": key, "index": idx, "status": "exhausted_live", "error": str(e), "cooldown": cooldown}
@@ -177,6 +187,8 @@ class GeminiKeyManager:
         tasks = [validate_single_key(key, idx) for idx, key in enumerate(self.keys)]
         results = await asyncio.gather(*tasks)
         valid_keys = {}
+        location_blocked_count = 0
+        network_error_count = 0
         for res in results:
             key = res["key"]
             status = res["status"]
@@ -194,6 +206,10 @@ class GeminiKeyManager:
                 if self.db:
                     exhaust_info = {"error": res["error"], "cooldown_duration": res["cooldown"]}
                     await self.db.save_key_meta(key, "gemini", status="exhausted", exhausted_at=now, raw_info_json=json.dumps(exhaust_info))
+            elif status == "location_blocked":
+                location_blocked_count += 1
+            elif status == "network_error":
+                network_error_count += 1
 
         selected_res = None
         for i in range(len(self.keys)):
@@ -209,19 +225,40 @@ class GeminiKeyManager:
             if self.db:
                 await self.db.save_key_meta(selected_res["key"], "gemini", last_used_at=now)
         else:
-            logger.warning("No working Gemini keys found in the pool. Defaulting to the first key.")
+            if location_blocked_count > 0:
+                logger.error(f"{location_blocked_count} Gemini key(s) rejected by Google due to unsupported location (Geo-blocked). Check GEMINI_PROXIES or ALL_PROXY.")
+            elif network_error_count > 0:
+                logger.error(f"{network_error_count} Gemini key(s) failed verification due to network/proxy connection errors. Check network reachability.")
+            else:
+                logger.warning("No working Gemini keys found in the pool. Defaulting to the first key.")
             self.current_key_index = 0
             self._client = genai.Client(api_key=self.keys[0], http_options=http_opts)
             self.input_token_limit = 1000000
             self.output_token_limit = 8192
+
+    async def rotate_proxy_async(self) -> bool:
+        """Rotates the active Gemini proxy to the next available one and re-initializes client."""
+        next_proxy = proxy_rotator.rotate_proxy("gemini")
+        if next_proxy:
+            logger.info(f"Gemini proxy rotated to: {next_proxy}. Re-initializing client...")
+            await self._init_client()
+            return True
+        return False
 
     def get_client(self):
         return self._client
 
     async def handle_error_exhausted(self, error_msg: str):
         """Marks the current key as exhausted with dynamic Pacific midnight cooldown."""
+        err_lower = str(error_msg).lower()
+        if "user location is not supported" in err_lower or ("location" in err_lower and "not supported" in err_lower):
+            logger.warning("handle_error_exhausted skipped: error is location geo-block, not key exhaustion.")
+            return
+        if any(k in err_lower for k in ["cannot connect", "connection refused", "clientconnectorerror", "ssl", "proxy"]):
+            logger.warning("handle_error_exhausted skipped: error is network/proxy failure, not key exhaustion.")
+            return
         cooldown_duration = parse_gemini_error_cooldown(error_msg)
-        if self.db:
+        if self.db and self.keys:
             active_key = self.keys[self.current_key_index]
             raw_info = {"cooldown_duration": cooldown_duration}
             await self.db.save_key_meta(active_key, "gemini", status="exhausted", exhausted_at=int(time.time()), raw_info_json=json.dumps(raw_info))

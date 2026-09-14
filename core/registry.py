@@ -132,7 +132,6 @@ def compile_custom_tool(name: str, code_str: str, namespace: dict = None) -> cal
     """
     import tools
     import ast
-    import inspect
     import types as py_types
     import config
 

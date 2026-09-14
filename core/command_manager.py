@@ -276,7 +276,7 @@ class CommandManager:
                 async with self.db.db.execute(
                     "DELETE FROM messages WHERE chat_id = ? AND role = 'model' ORDER BY id DESC LIMIT 1",
                     (str(cid),)
-                ) as cursor:
+                ) :
                     pass
                 await self.db.db.commit()
             except Exception as e:
@@ -412,7 +412,7 @@ class CommandManager:
         if self.db and not no_save:
             await self.db.save_message(str(chat_id), "user", msg_text, msg_id=getattr(event.message, "id", None) if event else None)
 
-        return f"Quiet message recorded (No AI trigger fired)."
+        return "Quiet message recorded (No AI trigger fired)."
 
     async def _cmd_stop(self, args: CLIArgs, user_id: int, chat_id: int, event) -> str:
         """Stop Generation command (/stop). Stops active AI generation task."""
@@ -1126,7 +1126,7 @@ class CommandManager:
             desc = args.positional[3]
             code = args.positional[4] if len(args.positional) > 4 else None
             await self.db.add_trigger(str(chat_id), t_type, t_val, desc, code)
-            return f"Success. Trigger added."
+            return "Success. Trigger added."
         elif subcmd == "delete" and len(args.positional) > 1 and self.db:
             t_id = int(args.positional[1])
             await self.db.delete_trigger(t_id)

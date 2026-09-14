@@ -397,6 +397,9 @@ if GEMINI_PROXIES:
     os.environ["HTTP_PROXY"] = GEMINI_PROXIES[0]
     os.environ["HTTPS_PROXY"] = GEMINI_PROXIES[0]
     os.environ["ALL_PROXY"] = GEMINI_PROXIES[0]
+elif ALL_PROXY:
+    os.environ["HTTP_PROXY"] = ALL_PROXY
+    os.environ["HTTPS_PROXY"] = ALL_PROXY
 
 
 # =====================================================================

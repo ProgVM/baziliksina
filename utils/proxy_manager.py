@@ -168,6 +168,18 @@ class ProxyRotationManager:
             logger.debug(f"Socket connection check failed for {proxy_url_str}: {str(e)}")
             return False
 
+    def rotate_proxy(self, category: str) -> Optional[str]:
+        """Explicitly advances to the next proxy in the category pool and returns it."""
+        self.reload_proxies()
+        proxies = self.categories.get(category, [])
+        if not proxies or len(proxies) <= 1:
+            return None
+        current_idx = self.indexes.get(category, 0)
+        self.indexes[category] = (current_idx + 1) % len(proxies)
+        next_proxy = proxies[self.indexes[category]]
+        logger.info(f"Rotated proxy for category '{category}' to index {self.indexes[category]}: {next_proxy}")
+        return next_proxy
+
     def get_proxy(self, category: str) -> Optional[str]:
         """Returns the active reachable proxy for the specified subsystem category."""
         self.reload_proxies()

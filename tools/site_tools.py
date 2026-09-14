@@ -5,6 +5,7 @@ import logging
 import time
 import shutil
 import asyncio
+import inspect
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 
@@ -17,7 +18,6 @@ logger = logging.getLogger("Tools.Sites")
 
 def check_site_command_allowed(command: str) -> bool:
     import re
-    from utils import matches_filter
     if config.SITE_COMMAND_REGEX_BLACKLIST:
         pattern_black = re.compile(config.SITE_COMMAND_REGEX_BLACKLIST, re.IGNORECASE)
         if pattern_black.search(command):
@@ -84,8 +84,7 @@ class AIToolKitSites:
         for glob in allowed_globals:
             if glob in ["os", "sys", "subprocess", "shutil", "builtins"]:
                 return f"Security Policy Violation: Exposing global '{glob}' is strictly forbidden."
-                
-        from utils import matches_filter
+
         if isinstance(allowed_imports, list):
             for imp in allowed_imports:
                 if imp not in ["all", "any", "*"] and not matches_filter(imp, config.SANDBOX_PYTHON_WHITELIST, config.SANDBOX_PYTHON_BLACKLIST):
@@ -200,7 +199,7 @@ class AIToolKitSites:
                         await entrypoint(mock_local_vars["request"])
                     else:
                         entrypoint(mock_local_vars["request"])
-            except Exception as test_err:
+            except Exception:
                 if site_dir.exists():
                     shutil.rmtree(site_dir)
                 if has_backup and backup_dir.exists():
@@ -269,7 +268,6 @@ class AIToolKitSites:
         for s in sites:
             name = s["name"]
             status = s["status"]
-            created_at = s["created_at"]
             expires_at = s["expires_at"]
             
             site_dir = config.WORKSPACE_DIR / "sites" / name
@@ -331,7 +329,7 @@ class AIToolKitSites:
             lines.append(f"- Registered Modules ({len(modules)}):")
             for mod in modules:
                 lines.append(f"  * Path: '{mod.get('path')}' | Desc: {mod.get('description', 'none')}")
-                lines.append(f"    Code:")
+                lines.append("    Code:")
                 lines.append("    ```python")
                 code_lines = mod.get('code', '').splitlines()
                 lines.append("\n".join(f"    {l}" for l in code_lines[:30]))
@@ -395,8 +393,7 @@ class AIToolKitSites:
         site_data = await tools.db.get_dynamic_site(clean_name)
         if not site_data:
             return f"Error: Site '{clean_name}' does not exist on the server."
-            
-        from utils import matches_filter
+
         allowed_site_py = [i.strip() for i in config.SITE_PYTHON_WHITELIST.split(",") if i.strip()] if isinstance(config.SITE_PYTHON_WHITELIST, str) else config.SITE_PYTHON_WHITELIST
         blocked_site_py = [b.strip() for b in config.SITE_PYTHON_BLACKLIST.split(",") if b.strip()] if isinstance(config.SITE_PYTHON_BLACKLIST, str) else config.SITE_PYTHON_BLACKLIST
         

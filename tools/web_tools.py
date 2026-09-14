@@ -74,7 +74,7 @@ class AIToolKitWeb:
                     vqd_match = re.search(r'vqd=([\d-]+)', main_resp.text) or re.search(r'vqd\s*=\s*[\'"]([^\'"]+)[\'"]', main_resp.text)
                     if vqd_match:
                         vqd = vqd_match.group(1)
-                        api_url = f"https://duckduckgo.com/i.js"
+                        api_url = "https://duckduckgo.com/i.js"
                         params = {"q": search_query, "o": "json", "vqd": vqd, "f": ",,,", "p": "1"}
                         headers_api = headers.copy()
                         headers_api["Referer"] = "https://duckduckgo.com/"
@@ -252,7 +252,7 @@ class AIToolKitWeb:
                                 else:
                                     output_msg += f"\n[Auto-Upload]: Failed to upload '{f_name}' to Google File API."
                     else:
-                        output_msg += f"\n\n[Auto-Download]: All search results failed to deliver valid files."
+                        output_msg += "\n\n[Auto-Download]: All search results failed to deliver valid files."
             return output_msg
         except Exception as e:
             logger.error(f"Error searching for media: {str(e)}")
