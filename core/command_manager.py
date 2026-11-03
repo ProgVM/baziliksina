@@ -656,7 +656,7 @@ class CommandManager:
 
         admin_cmds = [
             "/admin [set/reset/info] [user_id/@username] [rank] — Manage user ranks & permissions",
-            "/config [get/set/list] [key] [value] — Inspect or update configuration",
+            "/config [get/set/list/keys/reset_keys] [key] [value] — Inspect/update configuration or key pool",
             "/prompt [filename] [replace/insert_after/insert_before/delete] [pattern] [text] — Edit prompt files",
             "/message [text_with_xml_tags] — Execute XML action tags and deliver text",
             "/shell [command] — Execute bash/shell command in sandbox",
@@ -745,9 +745,31 @@ class CommandManager:
             return "Error: Permission denied."
 
         if not args.positional:
-            return "Usage: /config [get/set/list] [key] [value]"
+            return "Usage: /config [get/set/list/keys/reset_keys] [key] [value]"
 
         action = args.positional[0].lower()
+        if action in ["keys", "pool"]:
+            if self.ai_manager and hasattr(self.ai_manager, "key_manager"):
+                st = self.ai_manager.key_manager.get_pool_status()
+                lines = [
+                    "=== Gemini Key Pool Status ===",
+                    f"- Total Keys: {st['total_keys']}",
+                    f"- Active Ready: {st['active_ready_keys']}",
+                    f"- On Cooldown: {st['cooldown_keys']}",
+                    f"- Current Key: #{st['current_key_index']} (Acc #{st['current_account_index']}, Proj #{st['current_project_index']})",
+                    f"- Current Model: {st['current_model']}",
+                    f"- Rolling 60s Tokens (TPM): {st['current_key_60s_tokens']}",
+                    f"- Rolling 60s Requests (RPM): {st['current_key_60s_requests']}",
+                    f"- Valid Models: {', '.join(st['valid_models'])}",
+                    f"- Consecutive 429: {st['consecutive_429']}"
+                ]
+                return "\n".join(lines)
+            return "Error: AI Manager / Key Manager not bound."
+        elif action in ["reset_keys", "reset_cooldowns"]:
+            if self.ai_manager and hasattr(self.ai_manager, "key_manager"):
+                cnt = self.ai_manager.key_manager.reset_all_cooldowns()
+                return f"Success. Reset all {cnt} key/model cooldowns in pool."
+            return "Error: AI Manager / Key Manager not bound."
         if action == "get" and len(args.positional) > 1:
             key = args.positional[1].upper()
             val = getattr(config, key, "Not Found")
