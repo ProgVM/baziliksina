@@ -24,6 +24,7 @@ import tools
 
 logger = logging.getLogger("GeminiManager")
 
+
 def is_network_or_connection_error(e: Exception) -> bool:
     err_str = str(e).lower()
     net_keywords = [
@@ -39,8 +40,6 @@ def is_network_or_connection_error(e: Exception) -> bool:
 def is_location_unsupported_error(e: Exception) -> bool:
     err_str = str(e).lower()
     return "user location is not supported" in err_str or ("location" in err_str and "not supported" in err_str)
-
-
 
 
 def sanitize_type_annotation(anno: Any, default_val: Any = inspect.Parameter.empty) -> Any:
@@ -361,6 +360,8 @@ class GeminiManager:
                     )
                     total_tokens = token_response.total_tokens
                     logger.info(f"Chat context {chat_id}: {total_tokens} tokens.")
+                    if hasattr(self.key_manager, "record_request_tokens"):
+                        self.key_manager.record_request_tokens(self.key_manager.current_key_index, total_tokens)
                     
                     if total_tokens > self.key_manager.input_token_limit:
                         await self.context_mgr.summarize_chat_context(gemini_client, chat_id=str(chat_id))
@@ -382,13 +383,19 @@ class GeminiManager:
                         break
                     elif isinstance(count_err, APIError):
                         if count_err.code == 429:
-                            logger.warning("Rate limit 429 caught during token counting. Rotating key...")
-                            await self.key_manager.handle_error_exhausted(str(count_err))
+                            logger.warning("Rate limit 429 caught during token counting. Fast key failover...")
                             gemini_client = await self.key_manager.rotate_key_async(str(count_err))
                             continue
                         elif count_err.code == 401 or "unauthenticated" in str(count_err).lower():
-                            logger.warning("Invalid API key during token counting. Rotating key...")
-                            await self.key_manager.mark_key_exhausted(str(count_err))
+                            logger.warning("Invalid API key during token counting. Quarantining key...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
+                            continue
+                        elif count_err.code in [500, 502, 503, 504]:
+                            logger.warning(f"Server error {count_err.code} during token counting. Cascading model/key...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
+                            continue
+                        elif count_err.code == 404:
+                            logger.warning(f"Model {self.key_manager.get_model()} not found (404) during token counting. Cascading model...")
                             gemini_client = await self.key_manager.rotate_key_async(str(count_err))
                             continue
                         elif count_err.code == 403 and ("permission" in str(count_err).lower() or "exist" in str(count_err).lower() or "access" in str(count_err).lower()):
@@ -466,15 +473,12 @@ class GeminiManager:
                     elif isinstance(e, APIError):
                         if e.code == 429:
                             active_key = self.key_manager.keys[self.key_manager.current_key_index] if self.key_manager.keys else "unknown"
-                            logger.warning(f"Gemini API 429 encountered on key: '{active_key[:10]}...'. Rotating pools...")
-                            await asyncio.sleep(config.RATE_LIMIT_SLEEP)
-                            await self.key_manager.handle_error_exhausted(str(e))
+                            logger.warning(f"Gemini API 429 encountered on key: '{active_key[:10]}...'. Fast non-blocking failover...")
                             gemini_client = await self.key_manager.rotate_key_async(str(e))
                             continue
                         elif e.code == 401 or "unauthenticated" in str(e).lower() or "credentials" in str(e).lower():
                             active_key = self.key_manager.keys[self.key_manager.current_key_index] if self.key_manager.keys else "unknown"
-                            logger.error(f"Gemini API 401 Invalid Credentials on key: '{active_key[:10]}...'. Rotating pools...")
-                            await self.key_manager.mark_key_exhausted(str(e))
+                            logger.error(f"Gemini API 401 Invalid Credentials on key: '{active_key[:10]}...'. Quarantining and rotating...")
                             gemini_client = await self.key_manager.rotate_key_async(str(e))
                             continue
                         elif e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
@@ -523,14 +527,24 @@ class GeminiManager:
                                     logger.error(f"Database auto-repair error: {str(repair_err)}")
                                 await asyncio.sleep(config.TIMEOUT_SLEEP)
                                 continue
-                        elif e.code in [502, 503, 504]:
-                            logger.warning(f"Gemini API transient error {e.code} received. Retrying in {config.API_ERROR_SLEEP}s...")
-                            await asyncio.sleep(config.API_ERROR_SLEEP)
+                        elif e.code in [500, 502, 503, 504]:
+                            logger.warning(f"Gemini API transient/server error {e.code} received. Immediate model cascade...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(e))
+                            continue
+                        elif e.code == 404:
+                            logger.warning("Gemini API 404 (Model not found). Cascading to next model...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(e))
                             continue
                         else:
                             raise e
                     else:
                         raise e
+
+                # Record actual response token usage in sliding windows telemetry
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    out_tok = getattr(response.usage_metadata, "total_token_count", None) or getattr(response.usage_metadata, "candidates_token_count", 0)
+                    if hasattr(self.key_manager, "record_request_tokens") and out_tok:
+                        self.key_manager.record_request_tokens(self.key_manager.current_key_index, out_tok)
 
                 function_calls_to_execute = []
                 if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
