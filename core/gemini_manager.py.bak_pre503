@@ -1,0 +1,852 @@
+# core/gemini_manager.py
+import json
+import os
+import asyncio
+import logging
+import hashlib
+import inspect
+import re
+import time
+from typing import List, Dict, Any, Optional, Union
+import config
+from google.genai import types
+from google.genai.errors import APIError
+
+from key_manager import GeminiKeyManager, PollinationsKeyManager
+from db_manager import DBManager
+from registry import registry
+from prompt_interpolator import get_interpolated_prompt
+from context_manager import AIContextManager
+from response_executor import AIResponseExecutor
+from permission_manager import permission_manager
+from command_manager import command_manager
+import tools
+
+logger = logging.getLogger("GeminiManager")
+
+
+def is_network_or_connection_error(e: Exception) -> bool:
+    err_str = str(e).lower()
+    net_keywords = [
+        "cannot connect to host", "connection refused", "clientconnectorerror",
+        "serverdisconnectederror", "clientoserror", "timeouterror", "timed out",
+        "network is unreachable", "failed to connect", "ssl: sslcontext",
+        "connection reset", "connection error", "proxy error", "socks",
+        "getaddrinfo failed", "nameresolutionerror", "gaierror"
+    ]
+    return any(k in err_str for k in net_keywords) or isinstance(e, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError))
+
+
+def is_location_unsupported_error(e: Exception) -> bool:
+    err_str = str(e).lower()
+    return "user location is not supported" in err_str or ("location" in err_str and "not supported" in err_str)
+
+
+def sanitize_type_annotation(anno: Any, default_val: Any = inspect.Parameter.empty) -> Any:
+    """Sanitizes Python type annotations so that google-genai produces 100% valid OpenAPI schemas."""
+    if anno is inspect.Parameter.empty or anno is Any or anno is object:
+        if isinstance(default_val, int) and not isinstance(default_val, bool):
+            return int
+        elif isinstance(default_val, float):
+            return float
+        elif isinstance(default_val, bool):
+            return bool
+        elif isinstance(default_val, list):
+            return List[str]
+        return str
+    if anno in (list, List):
+        return List[str]
+    if anno in (dict, Dict):
+        return str
+    if hasattr(anno, "__origin__"):
+        if anno.__origin__ is Union:
+            args = [a for a in anno.__args__ if a is not type(None)]
+            if len(args) == 1:
+                return Optional[sanitize_type_annotation(args[0], default_val)]
+            return str
+        elif anno.__origin__ in (list, List):
+            inner_args = getattr(anno, "__args__", ())
+            if not inner_args or inner_args[0] in (Any, object, dict, Dict):
+                return List[str]
+            return List[sanitize_type_annotation(inner_args[0])]
+        elif anno.__origin__ in (dict, Dict):
+            return str
+    return anno
+
+
+class GeminiManager:
+    """
+    Orchestrates dialogue turns, API quota rotation, tool function calls,
+    active task registration for instant cancellation, and response execution.
+    """
+    def __init__(self, telegram_client, db_manager):
+        self.client = telegram_client
+        self.db = db_manager
+        self.key_manager = GeminiKeyManager(db_manager)
+        self.pollinations_key_manager = PollinationsKeyManager(db_manager)
+        self.context_mgr = AIContextManager(db_manager, self.key_manager)
+        self.executor = AIResponseExecutor(telegram_client, db_manager)
+        self._last_system_prompt_hash = None
+
+    @property
+    def tool_pattern(self):
+        """Dynamically constructs a regular expression containing all active tool names."""
+        tool_names = [t.name for t in registry.get_all_tools()]
+        if not tool_names:
+            return re.compile(r"(?!)")
+        return re.compile(
+            r"(?:tools\.)?(" + "|".join(re.escape(name) for name in tool_names) + r")\s*\((.*?)\)",
+            re.DOTALL | re.IGNORECASE
+        )
+
+    async def handle_query(self, chat_id: str, chat_entity=None, trigger_msg_id: int = None):
+        """Orchestrates dialogue turns, token limits, and segment actions across decoupled sub-modules."""
+        cid_int = int(chat_id)
+        current_task = asyncio.current_task()
+        if current_task:
+            command_manager.register_generation_task(cid_int, current_task)
+
+        reply_to_id = trigger_msg_id
+        
+        if not reply_to_id:
+            try:
+                async with self.db.db.execute(
+                    "SELECT msg_id FROM messages WHERE chat_id = ? AND role = 'user' AND msg_id IS NOT NULL ORDER BY id DESC LIMIT 1",
+                    (str(chat_id),)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if row:
+                        reply_to_id = row[0]
+            except Exception as db_err:
+                logger.error(f"Failed to capture message ID for reply: {str(db_err)}")
+
+        # Configure dynamic context variables
+        tools.current_chat_id.set(cid_int)
+        tools.current_reply_to_id.set(reply_to_id)
+        
+        # Load system instructions dynamically via PromptInterpolator
+        system_prompt = await get_interpolated_prompt(self.client, config.CHARACTER_FILE, use_system_prompt=config.USE_SYSTEM_PROMPT)
+        logger.info(f"Loaded system prompt from disk: {len(system_prompt)} characters.")
+
+        try:
+            chat_title = getattr(chat_entity, "title", None) or "Private Chat"
+            chat_username = getattr(chat_entity, "username", None) or "no"
+        except Exception:
+            chat_title, chat_username = "Chat", "no"
+
+        # Load environment context dynamically from env_prompt.txt
+        env_path = config.BASE_DIR / "config" / "env_prompt.txt"
+        if env_path.exists():
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    env_template = f.read().strip()
+            except Exception as e:
+                logger.error(f"Error reading env_prompt.txt: {str(e)}")
+                env_template = "You are in chat {chat_id}."
+        else:
+            env_template = "You are in chat {chat_id}."
+            
+        is_admin = False
+        admin_details = []
+        custom_title_status = "None"
+        if chat_entity and not isinstance(chat_entity, (int, str)):
+            is_group = getattr(chat_entity, "megagroup", False) or getattr(chat_entity, "broadcast", False) or type(chat_entity).__name__ == "Chat"
+            if is_group:
+                try:
+                    participant = await self.client.get_permissions(chat_entity, "me")
+                    is_admin = getattr(participant, "is_admin", False) or getattr(participant, "is_creator", False)
+                    from telethon.tl.functions.channels import GetParticipantRequest
+                    res = await self.client(GetParticipantRequest(channel=chat_entity, participant="me"))
+                    raw_participant = res.participant
+                    custom_title = getattr(raw_participant, "rank", None)
+                    if custom_title:
+                        custom_title_status = f"'{custom_title}'"
+                    if is_admin:
+                        admin_details.append("Admin/Owner (You have administrative powers!)")
+                        rights = []
+                        if getattr(participant, "delete_messages", False): rights.append("delete messages")
+                        if getattr(participant, "ban_users", False): rights.append("ban/restrict users")
+                        if getattr(participant, "pin_messages", False): rights.append("pin messages")
+                        if getattr(participant, "invite_users", False): rights.append("invite users")
+                        if getattr(participant, "change_info", False): rights.append("change group info")
+                        if getattr(participant, "anonymous", False): rights.append("post anonymously")
+                        if rights:
+                            admin_details.append(f"  * Your permissions: can {', '.join(rights)}.")
+                    else:
+                        admin_details.append("Regular member (No administrative powers)")
+                except Exception as e:
+                    logger.debug(f"Failed to check admin rights: {str(e)}")
+        admin_status = "\n".join(admin_details) if admin_details else "Regular member / Private Chat partner"
+
+        env_prompt = env_template.replace("{chat_id}", str(chat_id)).replace("{chat_title}", chat_title).replace("{chat_username}", chat_username)
+        env_prompt = f"{env_prompt}\nYour administrative privileges in this chat: {admin_status}\nYour custom Member Tag / Custom Title in this chat: {custom_title_status}"
+        dynamic_prompt = f"{system_prompt}\n\n{env_prompt}"
+        logger.info(f"Full dynamic system_instruction passed to Gemini: {len(dynamic_prompt)} characters.")
+        
+        if not chat_entity or isinstance(chat_entity, (int, str)):
+            chat_entity = tools.entity_cache.get(cid_int)
+
+        if not chat_entity:
+            try:
+                chat_entity = await self.client.get_input_entity(cid_int)
+            except Exception:
+                try:
+                    chat_entity = await self.client.get_entity(cid_int)
+                except Exception as e:
+                    logger.error(f"Failed to get entity: {str(e)}")
+                    chat_entity = cid_int
+
+        gemini_client = self.key_manager.get_client()
+
+        def get_safety_threshold(threshold_str: str) -> types.HarmBlockThreshold:
+            mapping = {
+                "block_none": types.HarmBlockThreshold.BLOCK_NONE,
+                "block_low_and_above": types.HarmBlockThreshold.BLOCK_LOW_AND_ABOVE,
+                "block_medium_and_above": types.HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
+                "block_only_high": types.HarmBlockThreshold.BLOCK_ONLY_HIGH,
+                "unspecified": types.HarmBlockThreshold.HARM_BLOCK_THRESHOLD_UNSPECIFIED
+            }
+            return mapping.get(str(threshold_str).strip().lower(), types.HarmBlockThreshold.BLOCK_NONE)
+
+        safety_settings = [
+            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold=get_safety_threshold(config.SAFETY_HATE_SPEECH)),
+            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_HARASSMENT, threshold=get_safety_threshold(config.SAFETY_HARASSMENT)),
+            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold=get_safety_threshold(config.SAFETY_SEXUALLY_EXPLICIT)),
+            types.SafetySetting(category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold=get_safety_threshold(config.SAFETY_DANGEROUS_CONTENT)),
+        ]
+
+        # Filter allowed tools based on config matrix and Granular Permission Manager
+        allowed_callables = []
+        seen_function_names = set()
+
+        for tool in registry.get_all_tools():
+            is_blocked = False
+            
+            tool_category_elem = "TOOLS"
+            if "Category 3" in tool.category or "Telegram" in tool.category:
+                tool_category_elem = "COMMANDS"
+            elif "Category 4" in tool.category or "Category 5" in tool.category:
+                tool_category_elem = "CRON" if "cron" in tool.name else "SERVICES"
+            elif "Category 8" in tool.category:
+                tool_category_elem = "SITES"
+
+            if not permission_manager.can_ai_perform(tool_category_elem, "INVOKE"):
+                is_blocked = True
+
+            if not tool.is_custom:
+                if config.AI_BLOCKED_ROOT_TOOLS and tool.name in config.AI_BLOCKED_ROOT_TOOLS:
+                    is_blocked = True
+                if config.AI_ALLOWED_ROOT_TOOLS and "all" not in config.AI_ALLOWED_ROOT_TOOLS and tool.name not in config.AI_ALLOWED_ROOT_TOOLS:
+                    is_blocked = True
+            else:
+                if config.AI_BLOCKED_CUSTOM_TOOLS and tool.name in config.AI_BLOCKED_CUSTOM_TOOLS:
+                    is_blocked = True
+                if config.AI_ALLOWED_CUSTOM_TOOLS and "all" not in config.AI_ALLOWED_CUSTOM_TOOLS and tool.name not in config.AI_ALLOWED_CUSTOM_TOOLS:
+                    is_blocked = True
+
+            if not is_blocked:
+                func = tool.callable
+                
+                # Ensure unique function name for Gemini SDK declaration
+                func_name = getattr(func, "__name__", tool.name)
+                if func_name != tool.name:
+                    import functools
+                    if inspect.iscoroutinefunction(func):
+                        @functools.wraps(func)
+                        async def wrapped_async(*a, _fn=func, **kw):
+                            return await _fn(*a, **kw)
+                        wrapped_async.__name__ = tool.name
+                        func = wrapped_async
+                    else:
+                        @functools.wraps(func)
+                        def wrapped_sync(*a, _fn=func, **kw):
+                            return _fn(*a, **kw)
+                        wrapped_sync.__name__ = tool.name
+                        func = wrapped_sync
+
+                # Prevent duplicate function declarations in Gemini API payload
+                if func.__name__ in seen_function_names:
+                    continue
+                seen_function_names.add(func.__name__)
+
+                # Clean signature without breaking OpenAPI schemas (arrays have concrete item types, no raw *args/**kwargs)
+                try:
+                    sig = inspect.signature(func)
+                    clean_params = []
+                    system_params = {'self', 'cls', 'client', 'db', 'ai_manager', 'permission_manager', 'service_manager', 'command_manager', 'logger', 'event', 'msg', 'message'}
+                    
+                    has_var_pos = False
+                    for p in sig.parameters.values():
+                        if p.name in system_params:
+                            continue
+                        if p.kind == inspect.Parameter.VAR_POSITIONAL:
+                            has_var_pos = True
+                            continue
+                        if p.kind == inspect.Parameter.VAR_KEYWORD:
+                            continue
+
+                        clean_anno = sanitize_type_annotation(p.default if p.annotation is inspect.Parameter.empty else p.annotation, p.default)
+                        clean_params.append(inspect.Parameter(
+                            name=p.name,
+                            kind=inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            default=p.default,
+                            annotation=clean_anno
+                        ))
+
+                    # If function had *args, declare args: List[str] with valid OpenAPI items schema
+                    if has_var_pos and not any(p.name == "args" for p in clean_params):
+                        clean_params.append(inspect.Parameter(
+                            name="args",
+                            kind=inspect.Parameter.KEYWORD_ONLY,
+                            default=None,
+                            annotation=List[str]
+                        ))
+
+                    func.__signature__ = sig.replace(parameters=clean_params)
+                    if tool.description:
+                        func.__doc__ = tool.description
+                except Exception as sig_err:
+                    logger.debug(f"Signature sanitization warning for tool '{tool.name}': {str(sig_err)}")
+
+                allowed_callables.append(func)
+
+        config_obj = types.GenerateContentConfig(
+            system_instruction=dynamic_prompt if config.USE_SYSTEM_PROMPT else None,
+            tools=allowed_callables,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+            safety_settings=safety_settings,
+            temperature=config.TEMPERATURE,
+            top_p=config.TOP_P,
+            stop_sequences=config.STOP_SEQUENCES if config.STOP_SEQUENCES else None,
+            max_output_tokens=self.key_manager.output_token_limit,
+        )
+
+        async def send_typing_loop():
+            try:
+                async with self.client.action(chat_entity, 'typing'):
+                    while True:
+                        await asyncio.sleep(config.TYPING_INTERVAL)
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        typing_task = asyncio.create_task(send_typing_loop())
+
+        max_turns = config.MAX_TURNS
+        should_ignore = False
+        context_repair_attempts = 0
+        timeout_retries = 0
+        max_timeout_retries = 3
+
+        try:
+            for turn in range(max_turns):
+                contents = await self.context_mgr.get_aligned_history(chat_id, gemini_client)
+
+                for content in contents:
+                    if content.parts and content.parts[0].text and "[System notification: Active conversation thread" in content.parts[0].text:
+                        reply_to_id_str = str(reply_to_id) if reply_to_id else "unknown"
+                        content.parts[0].text = (
+                            f"{content.parts[0].text}\n"
+                            f"- Your custom Member Tag in this active chat: {custom_title_status}\n"
+                            f"- Your administrative privileges: {admin_status}\n"
+                            f"- Current active triggering Message ID: {reply_to_id_str} (All your plain conversational replies and default <reply> tags MUST target this Message ID unless you explicitly reply to another ID)"
+                        )
+                        break
+
+                can_proceed = True
+                try:
+                    token_response = await gemini_client.aio.models.count_tokens(
+                        model=self.key_manager.get_model(),
+                        contents=contents
+                    )
+                    total_tokens = token_response.total_tokens
+                    logger.info(f"Chat context {chat_id}: {total_tokens} tokens.")
+                    if hasattr(self.key_manager, "record_request_tokens"):
+                        self.key_manager.record_request_tokens(self.key_manager.current_key_index, total_tokens)
+                    
+                    if total_tokens > self.key_manager.input_token_limit:
+                        await self.context_mgr.summarize_chat_context(gemini_client, chat_id=str(chat_id))
+                        continue
+                except Exception as count_err:
+                    if is_location_unsupported_error(count_err):
+                        logger.critical("Gemini API Geo-blocked during token counting: User location is not supported. Configure a non-restricted proxy in GEMINI_PROXIES or ALL_PROXY. Aborting generation.")
+                        can_proceed = False
+                        break
+                    elif is_network_or_connection_error(count_err):
+                        logger.error(f"Connection error to Gemini API during pre-check: {count_err}. Attempting proxy rotation...")
+                        rotated = await self.key_manager.rotate_proxy_async()
+                        if rotated:
+                            gemini_client = self.key_manager.get_client()
+                            await asyncio.sleep(config.TIMEOUT_SLEEP)
+                            continue
+                        logger.error("Gemini API host is unreachable and no alternative proxy is available. Aborting generation.")
+                        can_proceed = False
+                        break
+                    elif isinstance(count_err, APIError):
+                        if count_err.code == 429:
+                            logger.warning("Rate limit 429 caught during token counting. Fast key failover...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
+                            continue
+                        elif count_err.code == 401 or "unauthenticated" in str(count_err).lower():
+                            logger.warning("Invalid API key during token counting. Quarantining key...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
+                            continue
+                        elif count_err.code in [500, 502, 503, 504]:
+                            logger.warning(f"Server error {count_err.code} during token counting. Cascading model/key...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
+                            continue
+                        elif count_err.code == 404:
+                            logger.warning(f"Model {self.key_manager.get_model()} not found (404) during token counting. Cascading model...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
+                            continue
+                        elif count_err.code == 403 and ("permission" in str(count_err).lower() or "exist" in str(count_err).lower() or "access" in str(count_err).lower()):
+                            logger.warning("Gemini API 403 error caught during token counting. Healing context...")
+                            file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(count_err), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(count_err), re.IGNORECASE)
+                            if file_match:
+                                file_id = file_match.group(1)
+                                await self.context_mgr._heal_inaccessible_file(file_id, contents)
+                                await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                continue
+                        elif count_err.code == 400:
+                            err_str = str(count_err)
+                            mime_match = re.search(r"Unsupported MIME type:\s*(\S+)", err_str, re.IGNORECASE)
+                            if mime_match:
+                                offending_mime = mime_match.group(1).strip("'").strip('"')
+                                logger.warning(f"Unsupported MIME type '{offending_mime}' found during token counting. Sanitizing context...")
+                                await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
+                                for c in contents:
+                                    new_c_parts = []
+                                    for p in (c.parts or []):
+                                        if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
+                                            new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
+                                        elif getattr(p, "text", None):
+                                            new_c_parts.append(p)
+                                        else:
+                                            new_c_parts.append(p)
+                                    c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
+                                continue
+                            else:
+                                logger.error(f"Gemini API 400 error during token counting: {err_str}")
+                                can_proceed = False
+                                break
+                    else:
+                        logger.error(f"Error counting tokens: {str(count_err)}")
+
+                if not can_proceed:
+                    break
+
+                logger.info(f"Requesting generation from Gemini API (Turn {turn + 1}/{max_turns})...")
+                try:
+                    response = await asyncio.wait_for(
+                        gemini_client.aio.models.generate_content(
+                            model=self.key_manager.get_model(),
+                            contents=contents,
+                            config=config_obj
+                        ),
+                        timeout=config.GEMINI_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    timeout_retries += 1
+                    logger.warning(f"Model response timeout ({timeout_retries}/{max_timeout_retries}). Retrying...")
+                    if timeout_retries >= max_timeout_retries:
+                        logger.error("Maximum response timeouts exceeded. Aborting query.")
+                        break
+                    await asyncio.sleep(config.TIMEOUT_SLEEP)
+                    continue
+                except Exception as e:
+                    if is_location_unsupported_error(e):
+                        logger.critical("Gemini API Geo-blocked: User location is not supported. Check proxy settings. Aborting generation.")
+                        rotated = await self.key_manager.rotate_proxy_async()
+                        if rotated:
+                            gemini_client = self.key_manager.get_client()
+                            await asyncio.sleep(config.TIMEOUT_SLEEP)
+                            continue
+                        break
+                    elif is_network_or_connection_error(e):
+                        logger.error(f"Network/Connection error during generation: {e}. Attempting proxy rotation...")
+                        rotated = await self.key_manager.rotate_proxy_async()
+                        if rotated:
+                            gemini_client = self.key_manager.get_client()
+                            await asyncio.sleep(config.TIMEOUT_SLEEP)
+                            continue
+                        logger.error("Gemini API host is unreachable and no alternative proxy is available. Aborting generation.")
+                        break
+                    elif isinstance(e, APIError):
+                        if e.code == 429:
+                            active_key = self.key_manager.keys[self.key_manager.current_key_index] if self.key_manager.keys else "unknown"
+                            logger.warning(f"Gemini API 429 encountered on key: '{active_key[:10]}...'. Fast non-blocking failover...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(e))
+                            continue
+                        elif e.code == 401 or "unauthenticated" in str(e).lower() or "credentials" in str(e).lower():
+                            active_key = self.key_manager.keys[self.key_manager.current_key_index] if self.key_manager.keys else "unknown"
+                            logger.error(f"Gemini API 401 Invalid Credentials on key: '{active_key[:10]}...'. Quarantining and rotating...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(e))
+                            continue
+                        elif e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
+                            logger.warning("Gemini API 403 error caught during generation. Healing context...")
+                            file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
+                            if file_match:
+                                file_id = file_match.group(1)
+                                await self.context_mgr._heal_inaccessible_file(file_id, contents)
+                                await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                continue
+                            raise e
+                        elif e.code == 400:
+                            err_str = str(e)
+                            mime_match = re.search(r"Unsupported MIME type:\s*(\S+)", err_str, re.IGNORECASE)
+                            if mime_match:
+                                offending_mime = mime_match.group(1).strip("'").strip('"')
+                                logger.error(f"Gemini API 400 Unsupported MIME '{offending_mime}': Self-healing context and retrying...")
+                                await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
+                                for c in contents:
+                                    new_c_parts = []
+                                    for p in (c.parts or []):
+                                        if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
+                                            new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
+                                        elif getattr(p, "text", None):
+                                            new_c_parts.append(p)
+                                        else:
+                                            new_c_parts.append(p)
+                                    c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
+                                await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                continue
+                            else:
+                                logger.error(f"Gemini API 400 INVALID_ARGUMENT error: {err_str}. Sanitizing recent messages...")
+                                context_repair_attempts += 1
+                                if context_repair_attempts > 2:
+                                    logger.error("Max context repair attempts exceeded (2). Aborting turn to prevent infinite loop.")
+                                    break
+                                try:
+                                    async with self.db.db.execute("SELECT id, text, raw_content_json FROM messages WHERE raw_content_json IS NOT NULL ORDER BY id DESC LIMIT 20") as cursor:
+                                        db_rows = await cursor.fetchall()
+                                    for r_id, db_text, db_raw_json in db_rows:
+                                        if db_raw_json and ("function_call" in db_raw_json or "function_response" in db_raw_json or "file_data" in db_raw_json):
+                                            await self.db.db.execute("UPDATE messages SET raw_content_json = NULL WHERE id = ?", (r_id,))
+                                    await self.db.db.commit()
+                                    logger.info("Successfully sanitized recent messages table raw JSON payloads.")
+                                except Exception as repair_err:
+                                    logger.error(f"Database auto-repair error: {str(repair_err)}")
+                                await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                continue
+                        elif e.code in [500, 502, 503, 504]:
+                            logger.warning(f"Gemini API transient/server error {e.code} received. Immediate model cascade...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(e))
+                            continue
+                        elif e.code == 404:
+                            logger.warning("Gemini API 404 (Model not found). Cascading to next model...")
+                            gemini_client = await self.key_manager.rotate_key_async(str(e))
+                            continue
+                        else:
+                            raise e
+                    else:
+                        raise e
+
+                # Record actual response token usage in sliding windows telemetry
+                if hasattr(response, "usage_metadata") and response.usage_metadata:
+                    out_tok = getattr(response.usage_metadata, "total_token_count", None) or getattr(response.usage_metadata, "candidates_token_count", 0)
+                    if hasattr(self.key_manager, "record_request_tokens") and out_tok:
+                        self.key_manager.record_request_tokens(self.key_manager.current_key_index, out_tok)
+
+                function_calls_to_execute = []
+                if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+                    for part in response.candidates[0].content.parts:
+                        if part.function_call:
+                            function_calls_to_execute.append(part.function_call)
+
+                try:
+                    resp_text = response.text
+                except Exception:
+                    resp_text = None
+
+                if resp_text:
+                    import ast
+                    healed_calls = []
+                    
+                    json_blocks = re.findall(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', resp_text)
+                    if not json_blocks:
+                        bracket_count = 0
+                        start_idx = -1
+                        for idx, char in enumerate(resp_text):
+                            if char == '{':
+                                if bracket_count == 0:
+                                    start_idx = idx
+                                bracket_count += 1
+                            elif char == '}':
+                                bracket_count -= 1
+                                if bracket_count == 0 and start_idx != -1:
+                                    candidate = resp_text[start_idx:idx+1]
+                                    try:
+                                        parsed = json.loads(candidate)
+                                        if isinstance(parsed, dict):
+                                            json_blocks.append(candidate)
+                                    except Exception:
+                                        pass
+                                    start_idx = -1
+
+                    for block_str in json_blocks:
+                        try:
+                            data = json.loads(block_str)
+                            if not isinstance(data, dict):
+                                continue
+                                
+                            if "action" in data and data["action"] == "execute_telegram_action":
+                                method_name = data.get("method_name")
+                                params = data.get("parameters") or data.get("args") or {}
+                                healed_calls.append({
+                                    "name": "execute_telegram_action",
+                                    "args": {"method_name": method_name, "args_json": json.dumps(params, ensure_ascii=False)}
+                                })
+                            elif "action" in data and data["action"] != "execute_telegram_action":
+                                fn_name = data["action"]
+                                active_tools = [t.name for t in registry.get_all_tools()]
+                                if fn_name in active_tools:
+                                    if "action_input" in data or "args" in data or "parameters" in data:
+                                        action_input = data.get("action_input") or data.get("args") or data.get("parameters") or {}
+                                        args = {}
+                                        if isinstance(action_input, dict):
+                                            args = action_input
+                                        elif isinstance(action_input, str):
+                                            try: args = json.loads(action_input)
+                                            except Exception:
+                                                try: args = ast.literal_eval(action_input)
+                                                except Exception: args = action_input
+
+                                            while isinstance(args, str):
+                                                try:
+                                                    parsed_args = json.loads(args)
+                                                    if isinstance(parsed_args, (dict, list)):
+                                                        args = parsed_args
+                                                        break
+                                                except Exception: pass
+                                                try:
+                                                    parsed_args = ast.literal_eval(args)
+                                                    if isinstance(parsed_args, (dict, list)):
+                                                        args = parsed_args
+                                                        break
+                                                except Exception: pass
+                                                break
+
+                                            if isinstance(args, str):
+                                                tool_meta = registry.get(fn_name)
+                                                if tool_meta:
+                                                    sig = inspect.signature(tool_meta.callable)
+                                                    param_names = [p.name for p in sig.parameters.values() if p.name not in ['self', 'kwargs', 'args']]
+                                                    if param_names: args = {param_names[0]: args}
+                                                    else: args = {"text": args}
+                                                else: args = {"text": args}
+                                    else:
+                                        args = {k: v for k, v in data.items() if k not in ["action", "parameters_schema"]}
+                                    healed_calls.append({"name": fn_name, "args": args})
+                            elif "name" in data and ("args" in data or "parameters" in data or "arguments" in data):
+                                healed_calls.append({"name": data["name"], "args": data.get("args") or data.get("parameters") or data.get("arguments") or {}})
+                            elif "function" in data and ("parameters" in data or "args" in data or "arguments" in data):
+                                healed_calls.append({"name": data["function"], "args": data.get("parameters") or data.get("args") or data.get("arguments") or {}})
+                            elif "tool_calls" in data and isinstance(data["tool_calls"], list):
+                                for tc in data["tool_calls"]:
+                                    if isinstance(tc, dict) and "name" in tc:
+                                        fn_name = tc["name"]
+                                        args = tc.get("arguments") or tc.get("args") or {}
+                                        if isinstance(args, str):
+                                            try: args = json.loads(args)
+                                            except Exception:
+                                                try: args = ast.literal_eval(args)
+                                                except Exception: pass
+                                        healed_calls.append({"name": fn_name, "args": args})
+                            else:
+                                active_tools = [t.name for t in registry.get_all_tools()]
+                                for key, val in data.items():
+                                    if key in active_tools and isinstance(val, dict):
+                                        healed_calls.append({"name": key, "args": val})
+                        except Exception:
+                            pass
+
+                    if not healed_calls:
+                        tool_matches = self.tool_pattern.findall(resp_text)
+                        for fn_name, args_str in tool_matches:
+                            kwargs_dict = {}
+                            try:
+                                tree = ast.parse(f"f({args_str})")
+                                for kw in tree.body[0].value.keywords:
+                                    kwargs_dict[kw.arg] = ast.literal_eval(kw.value)
+                            except Exception:
+                                pairs = re.findall(r"([a-zA-Z0-9_-]+)\s*=\s*(['\"].*?['\"]|\d+(?:\.\d+)?)", args_str)
+                                for k, v in pairs:
+                                    kwargs_dict[k] = v.strip("'\"")
+                                    if kwargs_dict[k].isdigit():
+                                        kwargs_dict[k] = int(kwargs_dict[k])
+                                    else:
+                                        try: kwargs_dict[k] = float(kwargs_dict[k])
+                                        except ValueError: pass
+                            healed_calls.append({"name": fn_name, "args": kwargs_dict})
+
+                    if healed_calls:
+                        if response.candidates and response.candidates[0].content:
+                            content_obj = response.candidates[0].content
+                            
+                            orig_thought_sig = None
+                            if content_obj.parts:
+                                for p in content_obj.parts:
+                                    if hasattr(p, "thought_signature") and p.thought_signature:
+                                        orig_thought_sig = p.thought_signature
+                                        break
+                                    elif hasattr(p, "thoughtSignature") and p.thoughtSignature:
+                                        orig_thought_sig = p.thoughtSignature
+                                        break
+
+                            if not orig_thought_sig:
+                                orig_thought_sig = b"skip_thought_signature_validator"
+
+                            if content_obj.parts is None:
+                                content_obj.parts = []
+                            content_obj.parts = [p for p in content_obj.parts if not p.text]
+                            
+                            for call in healed_calls:
+                                healed_part = types.Part(
+                                    function_call=types.FunctionCall(
+                                        id=f"heal_{call['name'][:4]}_{int(time.time())}",
+                                        name=call["name"],
+                                        args=call["args"] if isinstance(call["args"], dict) else {}
+                                    ),
+                                    thought_signature=orig_thought_sig
+                                )
+                                content_obj.parts.append(healed_part)
+                                if call["name"] in ["no_op_ignore", "ignore_this_eblan", "idi_nahuy", "noop"]:
+                                    should_ignore = True
+                            
+                            logger.info(f"Auto-Heal Interceptor: successfully healed {len(healed_calls)} call(s) from text.")
+                            function_calls_to_execute = []
+                            for part in response.candidates[0].content.parts:
+                                if part.function_call:
+                                    function_calls_to_execute.append(part.function_call)
+
+                if resp_text and not function_calls_to_execute and not should_ignore:
+                    typing_task.cancel()
+                    should_ignore, should_continue = await self.executor.execute_response(resp_text, chat_entity, reply_to_id, chat_id)
+                    if should_continue:
+                        continue
+
+                if function_calls_to_execute:
+                    logger.info(f"Received {len(function_calls_to_execute)} tool call(s) from Gemini...")
+                    model_tool_call_content = types.Content(role="model", parts=response.candidates[0].content.parts)
+                    contents.append(model_tool_call_content)
+                    await self.db.save_message(chat_id, "model", content_obj=model_tool_call_content)
+                    
+                    tool_responses = []
+                    additional_parts = []
+                    
+                    for call in function_calls_to_execute:
+                        fn_name = call.name
+                        args = call.args if isinstance(call.args, dict) else {}
+                        result = None
+                        
+                        tool_meta = registry.get(fn_name)
+                        if tool_meta:
+                            try:
+                                logger.info(f"Tool call '{fn_name}' from registry...")
+                                call_args = args.copy() if isinstance(args, dict) else {}
+                                extra_args = call_args.pop("args", []) or []
+                                if "kwargs" in call_args and isinstance(call_args["kwargs"], dict):
+                                    extra = call_args.pop("kwargs")
+                                    call_args.update(extra)
+                                    
+                                if not isinstance(extra_args, list):
+                                    extra_args = [extra_args]
+                                    
+                                sig = inspect.signature(tool_meta.callable)
+                                positional_params = []
+                                has_var_positional = False
+                                for p in sig.parameters.values():
+                                    if p.kind in [inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD]:
+                                        positional_params.append(p.name)
+                                    elif p.kind == inspect.Parameter.VAR_POSITIONAL:
+                                        has_var_positional = True
+                                        
+                                pos_args = []
+                                kw_args = {}
+                                for name in positional_params:
+                                    if name in call_args:
+                                        pos_args.append(call_args[name])
+                                if has_var_positional:
+                                    pos_args.extend(extra_args)
+                                    
+                                for k, v in call_args.items():
+                                    if k not in positional_params:
+                                        kw_args[k] = v
+                                        
+                                if inspect.iscoroutinefunction(tool_meta.callable):
+                                    result = await tool_meta.callable(*pos_args, **kw_args)
+                                else:
+                                    result = tool_meta.callable(*pos_args, **kw_args)
+                                    
+                                if fn_name == "upload_file_to_google" and isinstance(result, dict) and result.get("status") == "success":
+                                    g_uri = result.get("google_uri")
+                                    m_type = result.get("mime_type")
+                                    from utils import is_gemini_supported_mime
+                                    if g_uri and m_type and is_gemini_supported_mime(m_type):
+                                        additional_parts.append(types.Part.from_uri(file_uri=g_uri, mime_type=m_type))
+                                    else:
+                                        logger.warning(f"upload_file_to_google returned unsupported MIME '{m_type}'. Skipping Part.from_uri insertion.")
+                            except Exception as fn_err:
+                                result = f"Error executing tool '{fn_name}': {str(fn_err)}"
+                        else:
+                            result = f"Error: Function '{fn_name}' is not registered."
+
+                        tool_responses.append(types.Part.from_function_response(
+                            name=fn_name,
+                            response={"result": result if result is not None else "Execution completed"}
+                        ))
+                        
+                        if result:
+                            res_str = str(result)
+                            GOOGLE_FILE_URI_REGEX = re.compile(
+                                r"(https://generativelanguage\.googleapis\.com/(?:upload/)?v[0-9a-zA-Z_]+/files/[a-zA-Z0-9_-]+)",
+                                re.IGNORECASE
+                            )
+                            from utils import is_gemini_supported_mime
+                            uris = GOOGLE_FILE_URI_REGEX.findall(res_str)
+                            for uri in uris:
+                                try:
+                                    m_type = await self.db.get_memory(uri)
+                                    if m_type and is_gemini_supported_mime(m_type):
+                                        logger.info(f"[Universal Tool Interceptor]: Detected Google URI in tool result: {uri}. Binding native Part.from_uri...")
+                                        additional_parts.append(types.Part.from_uri(file_uri=uri, mime_type=m_type))
+                                    else:
+                                        logger.debug(f"Universal Tool Interceptor: Skipping URI {uri} (unsupported MIME: {m_type})")
+                                except Exception as uri_err:
+                                    logger.error(f"Failed to bind universal tool part for {uri}: {str(uri_err)}")
+                    
+                    user_tool_resp_content = types.Content(role="user", parts=tool_responses)
+                    contents.append(user_tool_resp_content)
+                    await self.db.save_message(chat_id, "user", content_obj=user_tool_resp_content)
+                    
+                    if additional_parts:
+                        user_media_content = types.Content(
+                            role="user",
+                            parts=[types.Part.from_text(text="[System notification: Visual files found by search or generation tools]")] + additional_parts
+                        )
+                        contents.append(user_media_content)
+                        await self.db.save_message(chat_id, "user", content_obj=user_media_content)
+                    
+                    if should_ignore:
+                        typing_task.cancel()
+                        break
+                    continue
+                else:
+                    break
+                    
+        except Exception as e:
+            logger.error(f"Critical Gemini error in GeminiManager: {str(e)}")
+        finally:
+            typing_task.cancel()
+            command_manager.unregister_generation_task(cid_int)
+            try:
+                async with self.db.db.execute(
+                    "SELECT MAX(msg_id) FROM messages WHERE chat_id = ? AND role = 'user'", (str(chat_id),)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    if row and row[0] is not None:
+                        tools.last_processed_user_msg_id[str(chat_id)] = int(row[0])
+            except Exception as e_track:
+                logger.error(f"Failed to update last processed user message ID: {str(e_track)}")
+
+
+entity_cache = {}

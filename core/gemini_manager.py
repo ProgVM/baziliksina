@@ -1,3 +1,4 @@
+# PATCH_503_RETRY_SAME_KEY_V1
 # core/gemini_manager.py
 import json
 import os
@@ -87,6 +88,26 @@ class GeminiManager:
         self.context_mgr = AIContextManager(db_manager, self.key_manager)
         self.executor = AIResponseExecutor(telegram_client, db_manager)
         self._last_system_prompt_hash = None
+
+    def _is_503_error(self, err: Any) -> bool:
+        if hasattr(self.key_manager, "is_503_error"):
+            return self.key_manager.is_503_error(err)
+        code = getattr(err, "code", None)
+        if code is not None:
+            try:
+                c_int = int(code)
+                if c_int == 503:
+                    return True
+                if c_int in (400, 401, 403, 404, 429, 500, 502, 504):
+                    return False
+            except (TypeError, ValueError):
+                pass
+        err_lower = str(err).lower()
+        if re.search(r"\b503\b", err_lower):
+            return True
+        if any(w in err_lower for w in ["resource_exhausted", "rate limit", "quota", "429", "404", "401", "403", "400", "500", "502", "504"]):
+            return False
+        return any(w in err_lower for w in ["overloaded", "high demand", "unavailable"])
 
     @property
     def tool_pattern(self):
@@ -353,198 +374,270 @@ class GeminiManager:
                         break
 
                 can_proceed = True
-                try:
-                    token_response = await gemini_client.aio.models.count_tokens(
-                        model=self.key_manager.get_model(),
-                        contents=contents
-                    )
-                    total_tokens = token_response.total_tokens
-                    logger.info(f"Chat context {chat_id}: {total_tokens} tokens.")
-                    if hasattr(self.key_manager, "record_request_tokens"):
-                        self.key_manager.record_request_tokens(self.key_manager.current_key_index, total_tokens)
-                    
-                    if total_tokens > self.key_manager.input_token_limit:
-                        await self.context_mgr.summarize_chat_context(gemini_client, chat_id=str(chat_id))
-                        continue
-                except Exception as count_err:
-                    if is_location_unsupported_error(count_err):
-                        logger.critical("Gemini API Geo-blocked during token counting: User location is not supported. Configure a non-restricted proxy in GEMINI_PROXIES or ALL_PROXY. Aborting generation.")
-                        can_proceed = False
+                need_outer_continue = False
+                total_tokens = 0
+                count_503_attempt = 0
+                while True:
+                    try:
+                        token_response = await gemini_client.aio.models.count_tokens(
+                            model=self.key_manager.get_model(),
+                            contents=contents
+                        )
+                        total_tokens = token_response.total_tokens
+                        logger.info(f"Chat context {chat_id}: {total_tokens} tokens.")
+
+                        if total_tokens > self.key_manager.input_token_limit:
+                            await self.context_mgr.summarize_chat_context(gemini_client, chat_id=str(chat_id))
+                            need_outer_continue = True
                         break
-                    elif is_network_or_connection_error(count_err):
-                        logger.error(f"Connection error to Gemini API during pre-check: {count_err}. Attempting proxy rotation...")
-                        rotated = await self.key_manager.rotate_proxy_async()
-                        if rotated:
-                            gemini_client = self.key_manager.get_client()
-                            await asyncio.sleep(config.TIMEOUT_SLEEP)
-                            continue
-                        logger.error("Gemini API host is unreachable and no alternative proxy is available. Aborting generation.")
-                        can_proceed = False
-                        break
-                    elif isinstance(count_err, APIError):
-                        if count_err.code == 429:
-                            logger.warning("Rate limit 429 caught during token counting. Fast key failover...")
-                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
-                            continue
-                        elif count_err.code == 401 or "unauthenticated" in str(count_err).lower():
-                            logger.warning("Invalid API key during token counting. Quarantining key...")
-                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
-                            continue
-                        elif count_err.code in [500, 502, 503, 504]:
-                            logger.warning(f"Server error {count_err.code} during token counting. Cascading model/key...")
-                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
-                            continue
-                        elif count_err.code == 404:
-                            logger.warning(f"Model {self.key_manager.get_model()} not found (404) during token counting. Cascading model...")
-                            gemini_client = await self.key_manager.rotate_key_async(str(count_err))
-                            continue
-                        elif count_err.code == 403 and ("permission" in str(count_err).lower() or "exist" in str(count_err).lower() or "access" in str(count_err).lower()):
-                            logger.warning("Gemini API 403 error caught during token counting. Healing context...")
-                            file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(count_err), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(count_err), re.IGNORECASE)
-                            if file_match:
-                                file_id = file_match.group(1)
-                                await self.context_mgr._heal_inaccessible_file(file_id, contents)
-                                await asyncio.sleep(config.TIMEOUT_SLEEP)
-                                continue
-                        elif count_err.code == 400:
-                            err_str = str(count_err)
-                            mime_match = re.search(r"Unsupported MIME type:\s*(\S+)", err_str, re.IGNORECASE)
-                            if mime_match:
-                                offending_mime = mime_match.group(1).strip("'").strip('"')
-                                logger.warning(f"Unsupported MIME type '{offending_mime}' found during token counting. Sanitizing context...")
-                                await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
-                                for c in contents:
-                                    new_c_parts = []
-                                    for p in (c.parts or []):
-                                        if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
-                                            new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
-                                        elif getattr(p, "text", None):
-                                            new_c_parts.append(p)
-                                        else:
-                                            new_c_parts.append(p)
-                                    c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
-                                continue
+                    except Exception as count_err:
+                        if self._is_503_error(count_err):
+                            count_503_attempt += 1
+                            logger.warning(
+                                f"Server error 503 during token counting (attempt #{count_503_attempt}). "
+                                f"Keeping Key #{self.key_manager.current_key_index + 1} and retrying..."
+                            )
+                            if hasattr(self.key_manager, "wait_for_503_retry"):
+                                await self.key_manager.wait_for_503_retry(count_err, attempt=count_503_attempt)
                             else:
-                                logger.error(f"Gemini API 400 error during token counting: {err_str}")
-                                can_proceed = False
+                                gemini_client = await self.key_manager.rotate_key_async(count_err)
+                            continue
+                        if is_location_unsupported_error(count_err):
+                            logger.critical("Gemini API Geo-blocked during token counting: User location is not supported. Configure a non-restricted proxy in GEMINI_PROXIES or ALL_PROXY. Aborting generation.")
+                            can_proceed = False
+                            break
+                        elif is_network_or_connection_error(count_err):
+                            logger.error(f"Connection error to Gemini API during pre-check: {count_err}. Attempting proxy rotation...")
+                            rotated = await self.key_manager.rotate_proxy_async()
+                            if rotated:
+                                gemini_client = self.key_manager.get_client()
+                                await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                need_outer_continue = True
                                 break
-                    else:
-                        logger.error(f"Error counting tokens: {str(count_err)}")
+                            logger.error("Gemini API host is unreachable and no alternative proxy is available. Aborting generation.")
+                            can_proceed = False
+                            break
+                        elif isinstance(count_err, APIError):
+                            if count_err.code == 429:
+                                logger.warning("Rate limit 429 caught during token counting. Fast key failover...")
+                                gemini_client = await self.key_manager.rotate_key_async(count_err)
+                                need_outer_continue = True
+                                break
+                            elif count_err.code == 401 or "unauthenticated" in str(count_err).lower():
+                                logger.warning("Invalid API key during token counting. Quarantining key...")
+                                gemini_client = await self.key_manager.rotate_key_async(count_err)
+                                need_outer_continue = True
+                                break
+                            elif count_err.code in [500, 502, 504]:
+                                logger.warning(f"Server error {count_err.code} during token counting. Cascading model/key...")
+                                gemini_client = await self.key_manager.rotate_key_async(count_err)
+                                need_outer_continue = True
+                                break
+                            elif count_err.code == 404:
+                                logger.warning(f"Model {self.key_manager.get_model()} not found (404) during token counting. Cascading model...")
+                                gemini_client = await self.key_manager.rotate_key_async(count_err)
+                                need_outer_continue = True
+                                break
+                            elif count_err.code == 403 and ("permission" in str(count_err).lower() or "exist" in str(count_err).lower() or "access" in str(count_err).lower()):
+                                logger.warning("Gemini API 403 error caught during token counting. Healing context...")
+                                file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(count_err), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(count_err), re.IGNORECASE)
+                                if file_match:
+                                    file_id = file_match.group(1)
+                                    await self.context_mgr._heal_inaccessible_file(file_id, contents)
+                                    await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                    need_outer_continue = True
+                                    break
+                                logger.error(f"Error counting tokens (403): {str(count_err)}")
+                                break
+                            elif count_err.code == 400:
+                                err_str = str(count_err)
+                                mime_match = re.search(r"Unsupported MIME type:\s*(\S+)", err_str, re.IGNORECASE)
+                                if mime_match:
+                                    offending_mime = mime_match.group(1).strip("'").strip('"')
+                                    logger.warning(f"Unsupported MIME type '{offending_mime}' found during token counting. Sanitizing context...")
+                                    await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
+                                    for c in contents:
+                                        new_c_parts = []
+                                        for p in (c.parts or []):
+                                            if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
+                                                new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
+                                            elif getattr(p, "text", None):
+                                                new_c_parts.append(p)
+                                            else:
+                                                new_c_parts.append(p)
+                                        c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
+                                    need_outer_continue = True
+                                    break
+                                else:
+                                    logger.error(f"Gemini API 400 error during token counting: {err_str}")
+                                    can_proceed = False
+                                    break
+                            else:
+                                logger.error(f"Error counting tokens: {str(count_err)}")
+                                break
+                        else:
+                            logger.error(f"Error counting tokens: {str(count_err)}")
+                            break
 
                 if not can_proceed:
                     break
-
-                logger.info(f"Requesting generation from Gemini API (Turn {turn + 1}/{max_turns})...")
-                try:
-                    response = await asyncio.wait_for(
-                        gemini_client.aio.models.generate_content(
-                            model=self.key_manager.get_model(),
-                            contents=contents,
-                            config=config_obj
-                        ),
-                        timeout=config.GEMINI_TIMEOUT
-                    )
-                except asyncio.TimeoutError:
-                    timeout_retries += 1
-                    logger.warning(f"Model response timeout ({timeout_retries}/{max_timeout_retries}). Retrying...")
-                    if timeout_retries >= max_timeout_retries:
-                        logger.error("Maximum response timeouts exceeded. Aborting query.")
-                        break
-                    await asyncio.sleep(config.TIMEOUT_SLEEP)
+                if need_outer_continue:
                     continue
-                except Exception as e:
-                    if is_location_unsupported_error(e):
-                        logger.critical("Gemini API Geo-blocked: User location is not supported. Check proxy settings. Aborting generation.")
-                        rotated = await self.key_manager.rotate_proxy_async()
-                        if rotated:
-                            gemini_client = self.key_manager.get_client()
-                            await asyncio.sleep(config.TIMEOUT_SLEEP)
-                            continue
+
+                response = None
+                outer_action = None
+                gen_503_attempt = 0
+                active_model = self.key_manager.get_model()
+
+                while True:
+                    logger.info(f"Requesting generation from Gemini API (Turn {turn + 1}/{max_turns})...")
+                    try:
+                        response = await asyncio.wait_for(
+                            gemini_client.aio.models.generate_content(
+                                model=active_model,
+                                contents=contents,
+                                config=config_obj
+                            ),
+                            timeout=config.GEMINI_TIMEOUT
+                        )
+                        if hasattr(self.key_manager, "clear_503_state"):
+                            self.key_manager.clear_503_state()
                         break
-                    elif is_network_or_connection_error(e):
-                        logger.error(f"Network/Connection error during generation: {e}. Attempting proxy rotation...")
-                        rotated = await self.key_manager.rotate_proxy_async()
-                        if rotated:
-                            gemini_client = self.key_manager.get_client()
-                            await asyncio.sleep(config.TIMEOUT_SLEEP)
-                            continue
-                        logger.error("Gemini API host is unreachable and no alternative proxy is available. Aborting generation.")
+                    except asyncio.TimeoutError:
+                        timeout_retries += 1
+                        logger.warning(f"Model response timeout ({timeout_retries}/{max_timeout_retries}). Retrying...")
+                        if timeout_retries >= max_timeout_retries:
+                            logger.error("Maximum response timeouts exceeded. Aborting query.")
+                            outer_action = "break"
+                            break
+                        await asyncio.sleep(config.TIMEOUT_SLEEP)
+                        outer_action = "continue"
                         break
-                    elif isinstance(e, APIError):
-                        if e.code == 429:
+                    except Exception as e:
+                        if self._is_503_error(e):
+                            gen_503_attempt += 1
                             active_key = self.key_manager.keys[self.key_manager.current_key_index] if self.key_manager.keys else "unknown"
-                            logger.warning(f"Gemini API 429 encountered on key: '{active_key[:10]}...'. Fast non-blocking failover...")
-                            gemini_client = await self.key_manager.rotate_key_async(str(e))
-                            continue
-                        elif e.code == 401 or "unauthenticated" in str(e).lower() or "credentials" in str(e).lower():
-                            active_key = self.key_manager.keys[self.key_manager.current_key_index] if self.key_manager.keys else "unknown"
-                            logger.error(f"Gemini API 401 Invalid Credentials on key: '{active_key[:10]}...'. Quarantining and rotating...")
-                            gemini_client = await self.key_manager.rotate_key_async(str(e))
-                            continue
-                        elif e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
-                            logger.warning("Gemini API 403 error caught during generation. Healing context...")
-                            file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
-                            if file_match:
-                                file_id = file_match.group(1)
-                                await self.context_mgr._heal_inaccessible_file(file_id, contents)
-                                await asyncio.sleep(config.TIMEOUT_SLEEP)
-                                continue
-                            raise e
-                        elif e.code == 400:
-                            err_str = str(e)
-                            mime_match = re.search(r"Unsupported MIME type:\s*(\S+)", err_str, re.IGNORECASE)
-                            if mime_match:
-                                offending_mime = mime_match.group(1).strip("'").strip('"')
-                                logger.error(f"Gemini API 400 Unsupported MIME '{offending_mime}': Self-healing context and retrying...")
-                                await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
-                                for c in contents:
-                                    new_c_parts = []
-                                    for p in (c.parts or []):
-                                        if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
-                                            new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
-                                        elif getattr(p, "text", None):
-                                            new_c_parts.append(p)
-                                        else:
-                                            new_c_parts.append(p)
-                                    c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
-                                await asyncio.sleep(config.TIMEOUT_SLEEP)
-                                continue
+                            logger.warning(
+                                f"Gemini API 503 Service Unavailable on key '{active_key[:10]}...' "
+                                f"(model '{active_model}', attempt #{gen_503_attempt}). Keeping same key and retrying..."
+                            )
+                            if hasattr(self.key_manager, "wait_for_503_retry"):
+                                await self.key_manager.wait_for_503_retry(e, attempt=gen_503_attempt)
                             else:
-                                logger.error(f"Gemini API 400 INVALID_ARGUMENT error: {err_str}. Sanitizing recent messages...")
-                                context_repair_attempts += 1
-                                if context_repair_attempts > 2:
-                                    logger.error("Max context repair attempts exceeded (2). Aborting turn to prevent infinite loop.")
-                                    break
-                                try:
-                                    async with self.db.db.execute("SELECT id, text, raw_content_json FROM messages WHERE raw_content_json IS NOT NULL ORDER BY id DESC LIMIT 20") as cursor:
-                                        db_rows = await cursor.fetchall()
-                                    for r_id, db_text, db_raw_json in db_rows:
-                                        if db_raw_json and ("function_call" in db_raw_json or "function_response" in db_raw_json or "file_data" in db_raw_json):
-                                            await self.db.db.execute("UPDATE messages SET raw_content_json = NULL WHERE id = ?", (r_id,))
-                                    await self.db.db.commit()
-                                    logger.info("Successfully sanitized recent messages table raw JSON payloads.")
-                                except Exception as repair_err:
-                                    logger.error(f"Database auto-repair error: {str(repair_err)}")
+                                gemini_client = await self.key_manager.rotate_key_async(e)
+                            continue
+                        if is_location_unsupported_error(e):
+                            logger.critical("Gemini API Geo-blocked: User location is not supported. Check proxy settings. Aborting generation.")
+                            rotated = await self.key_manager.rotate_proxy_async()
+                            if rotated:
+                                gemini_client = self.key_manager.get_client()
                                 await asyncio.sleep(config.TIMEOUT_SLEEP)
-                                continue
-                        elif e.code in [500, 502, 503, 504]:
-                            logger.warning(f"Gemini API transient/server error {e.code} received. Immediate model cascade...")
-                            gemini_client = await self.key_manager.rotate_key_async(str(e))
-                            continue
-                        elif e.code == 404:
-                            logger.warning("Gemini API 404 (Model not found). Cascading to next model...")
-                            gemini_client = await self.key_manager.rotate_key_async(str(e))
-                            continue
+                                outer_action = "continue"
+                                break
+                            outer_action = "break"
+                            break
+                        elif is_network_or_connection_error(e):
+                            logger.error(f"Network/Connection error during generation: {e}. Attempting proxy rotation...")
+                            rotated = await self.key_manager.rotate_proxy_async()
+                            if rotated:
+                                gemini_client = self.key_manager.get_client()
+                                await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                outer_action = "continue"
+                                break
+                            logger.error("Gemini API host is unreachable and no alternative proxy is available. Aborting generation.")
+                            outer_action = "break"
+                            break
+                        elif isinstance(e, APIError):
+                            if e.code == 429:
+                                active_key = self.key_manager.keys[self.key_manager.current_key_index] if self.key_manager.keys else "unknown"
+                                logger.warning(f"Gemini API 429 encountered on key: '{active_key[:10]}...'. Fast non-blocking failover...")
+                                gemini_client = await self.key_manager.rotate_key_async(e)
+                                outer_action = "continue"
+                                break
+                            elif e.code == 401 or "unauthenticated" in str(e).lower() or "credentials" in str(e).lower():
+                                active_key = self.key_manager.keys[self.key_manager.current_key_index] if self.key_manager.keys else "unknown"
+                                logger.error(f"Gemini API 401 Invalid Credentials on key: '{active_key[:10]}...'. Quarantining and rotating...")
+                                gemini_client = await self.key_manager.rotate_key_async(e)
+                                outer_action = "continue"
+                                break
+                            elif e.code == 403 and ("permission" in str(e).lower() or "exist" in str(e).lower() or "access" in str(e).lower()):
+                                logger.warning("Gemini API 403 error caught during generation. Healing context...")
+                                file_match = re.search(r"File\s+([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE) or re.search(r"files/([a-zA-Z0-9_-]+)", str(e), re.IGNORECASE)
+                                if file_match:
+                                    file_id = file_match.group(1)
+                                    await self.context_mgr._heal_inaccessible_file(file_id, contents)
+                                    await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                    outer_action = "continue"
+                                    break
+                                raise e
+                            elif e.code == 400:
+                                err_str = str(e)
+                                mime_match = re.search(r"Unsupported MIME type:\s*(\S+)", err_str, re.IGNORECASE)
+                                if mime_match:
+                                    offending_mime = mime_match.group(1).strip("'").strip('"')
+                                    logger.error(f"Gemini API 400 Unsupported MIME '{offending_mime}': Self-healing context and retrying...")
+                                    await self.context_mgr._heal_unsupported_mime(offending_mime, contents, chat_id=str(chat_id))
+                                    for c in contents:
+                                        new_c_parts = []
+                                        for p in (c.parts or []):
+                                            if getattr(p, "file_data", None) or getattr(p, "inline_data", None):
+                                                new_c_parts.append(types.Part.from_text(text="[System: File attachment omitted]"))
+                                            elif getattr(p, "text", None):
+                                                new_c_parts.append(p)
+                                            else:
+                                                new_c_parts.append(p)
+                                        c.parts = new_c_parts or [types.Part.from_text(text="[System: Context restored]")]
+                                    await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                    outer_action = "continue"
+                                    break
+                                else:
+                                    logger.error(f"Gemini API 400 INVALID_ARGUMENT error: {err_str}. Sanitizing recent messages...")
+                                    context_repair_attempts += 1
+                                    if context_repair_attempts > 2:
+                                        logger.error("Max context repair attempts exceeded (2). Aborting turn to prevent infinite loop.")
+                                        outer_action = "break"
+                                        break
+                                    try:
+                                        async with self.db.db.execute("SELECT id, text, raw_content_json FROM messages WHERE raw_content_json IS NOT NULL ORDER BY id DESC LIMIT 20") as cursor:
+                                            db_rows = await cursor.fetchall()
+                                        for r_id, db_text, db_raw_json in db_rows:
+                                            if db_raw_json and ("function_call" in db_raw_json or "function_response" in db_raw_json or "file_data" in db_raw_json):
+                                                await self.db.db.execute("UPDATE messages SET raw_content_json = NULL WHERE id = ?", (r_id,))
+                                        await self.db.db.commit()
+                                        logger.info("Successfully sanitized recent messages table raw JSON payloads.")
+                                    except Exception as repair_err:
+                                        logger.error(f"Database auto-repair error: {str(repair_err)}")
+                                    await asyncio.sleep(config.TIMEOUT_SLEEP)
+                                    outer_action = "continue"
+                                    break
+                            elif e.code in [500, 502, 504]:
+                                logger.warning(f"Gemini API transient/server error {e.code} received. Immediate model cascade...")
+                                gemini_client = await self.key_manager.rotate_key_async(e)
+                                outer_action = "continue"
+                                break
+                            elif e.code == 404:
+                                logger.warning("Gemini API 404 (Model not found). Cascading to next model...")
+                                gemini_client = await self.key_manager.rotate_key_async(e)
+                                outer_action = "continue"
+                                break
+                            else:
+                                raise e
                         else:
                             raise e
-                    else:
-                        raise e
+
+                if outer_action == "break":
+                    break
+                if outer_action == "continue":
+                    continue
 
                 # Record actual response token usage in sliding windows telemetry
+                out_tok = 0
                 if hasattr(response, "usage_metadata") and response.usage_metadata:
-                    out_tok = getattr(response.usage_metadata, "total_token_count", None) or getattr(response.usage_metadata, "candidates_token_count", 0)
-                    if hasattr(self.key_manager, "record_request_tokens") and out_tok:
-                        self.key_manager.record_request_tokens(self.key_manager.current_key_index, out_tok)
+                    out_tok = getattr(response.usage_metadata, "total_token_count", None) or getattr(response.usage_metadata, "candidates_token_count", 0) or 0
+                if not out_tok:
+                    out_tok = total_tokens
+                if hasattr(self.key_manager, "record_request_tokens") and out_tok:
+                    self.key_manager.record_request_tokens(self.key_manager.current_key_index, out_tok)
 
                 function_calls_to_execute = []
                 if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:

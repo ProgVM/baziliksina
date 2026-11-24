@@ -1,3 +1,4 @@
+# PATCH_503_RETRY_SAME_KEY_V1
 # core/key_manager.py
 """
 ===============================================================================
@@ -22,6 +23,7 @@ import re
 import asyncio
 import datetime
 import logging
+import inspect
 from collections import deque
 from typing import Optional, Dict, Any, List, Tuple, Set
 
@@ -220,6 +222,29 @@ def parse_gemini_error_cooldown(ex_or_str: Any) -> Tuple[float, bool, Dict[str, 
     return cooldown, False, quota_meta
 
 
+
+def is_503_error(error_msg_or_ex: Any) -> bool:
+    code = getattr(error_msg_or_ex, "code", None)
+    if code is not None:
+        try:
+            code_int = int(code)
+            if code_int == 503:
+                return True
+            if code_int in (400, 401, 403, 404, 429, 500, 502, 504):
+                return False
+        except (TypeError, ValueError):
+            pass
+    err_lower = str(error_msg_or_ex).lower()
+    if re.search(r"\b503\b", err_lower):
+        return True
+    if any(w in err_lower for w in [
+        "resource_exhausted", "rate limit", "quota",
+        "429", "404", "401", "403", "400", "500", "502", "504"
+    ]):
+        return False
+    return any(w in err_lower for w in ["overloaded", "high demand", "unavailable"])
+
+
 class GeminiKeyManager:
     """
     Ultra-Fast Non-Blocking Dynamic Key Pool Coordinator and Multi-Tier Model Cascading Engine.
@@ -268,6 +293,9 @@ class GeminiKeyManager:
         self.consecutive_429_count = 0
         self.consecutive_503_count = 0
         self.last_429_timestamp = 0.0
+        self._pinned_503_key_index: Optional[int] = None
+        self._pinned_503_model: Optional[str] = None
+        self._pinned_503_until: float = 0.0
         self.consecutive_geo_blocked_count = 0
         self.discovered_model_limits: Dict[str, Dict[str, Any]] = {}
 
@@ -444,6 +472,10 @@ class GeminiKeyManager:
     def get_client(self) -> genai.Client:
         """Returns active client, automatically switching away from any key currently on cooldown."""
         now = time.time()
+        if self._pinned_503_key_index is not None and now <= self._pinned_503_until and self.keys:
+            self.current_key_index = self._pinned_503_key_index % len(self.keys)
+            self._client = self._get_client_for_key(self.current_key_index)
+            return self._client
         self._prune_sliding_windows(now)
         curr_m = self.get_model()
         if self._client is None or now < self.exhausted_keys.get((self.current_key_index, curr_m), 0.0):
@@ -457,6 +489,8 @@ class GeminiKeyManager:
     def get_model(self) -> str:
         """Returns the currently active model from cascade list, skipping invalid/congested ones."""
         now = time.time()
+        if self._pinned_503_model and now <= self._pinned_503_until and self._pinned_503_model not in self.invalid_models:
+            return self._pinned_503_model
         self._prune_sliding_windows(now)
         valid_models = [
             m for m in self.models
@@ -472,6 +506,11 @@ class GeminiKeyManager:
                 if not valid_models:
                     self.invalid_models.clear()
                     valid_models = self.models
+
+        if self.models:
+            selected = self.models[self.current_model_index % len(self.models)]
+            if selected in valid_models:
+                return selected
 
         self.current_model_index = self.current_model_index % len(valid_models)
         return valid_models[self.current_model_index]
@@ -517,6 +556,14 @@ class GeminiKeyManager:
         Iterates over models in cascade order, picking the first ready key with lowest rolling TPM load.
         """
         now = time.time()
+        if self._pinned_503_key_index is not None and now <= self._pinned_503_until and self.keys:
+            pinned_idx = self._pinned_503_key_index % len(self.keys)
+            pinned_m = (
+                self._pinned_503_model
+                if (self._pinned_503_model and self._pinned_503_model not in self.invalid_models)
+                else self.get_model()
+            )
+            return pinned_idx, pinned_m
         self._prune_sliding_windows(now)
 
         tpm_limit = getattr(config, "FREE_TIER_TPM_LIMIT", 250000)
@@ -594,7 +641,7 @@ class GeminiKeyManager:
         """Records token and request telemetry to accurately enforce sliding window TPM/RPM limits."""
         now = time.time()
         self.consecutive_429_count = 0
-        self.consecutive_503_count = 0
+        self.clear_503_state()
         self.consecutive_geo_blocked_count = 0
 
         curr_day = datetime.datetime.now(datetime.timezone.utc).day
@@ -705,10 +752,69 @@ class GeminiKeyManager:
             if i in self.token_history:
                 self.token_history[i].clear()
         self.consecutive_429_count = 0
-        self.consecutive_503_count = 0
+        self.clear_503_state()
         self.consecutive_geo_blocked_count = 0
         logger.info("Resilient key pool cooldowns 100% reset and cleared.")
         return count
+
+    @staticmethod
+    def is_503_error(error_msg_or_ex: Any) -> bool:
+        return is_503_error(error_msg_or_ex)
+
+    def clear_503_state(self):
+        self.consecutive_503_count = 0
+        self._pinned_503_key_index = None
+        self._pinned_503_model = None
+        self._pinned_503_until = 0.0
+
+    async def wait_for_503_retry(
+        self,
+        error_msg_or_ex: Any = None,
+        event_callback=None,
+        attempt: Optional[int] = None
+    ) -> float:
+        now = time.time()
+        if attempt is not None:
+            self.consecutive_503_count = max(self.consecutive_503_count + 1, int(attempt))
+        else:
+            self.consecutive_503_count += 1
+
+        pinned_key_idx = (
+            self._pinned_503_key_index
+            if (self._pinned_503_key_index is not None and now <= self._pinned_503_until)
+            else self.current_key_index
+        ) % len(self.keys)
+
+        pinned_model = (
+            self._pinned_503_model
+            if (self._pinned_503_model and now <= self._pinned_503_until and self._pinned_503_model not in self.invalid_models)
+            else self.get_model()
+        )
+
+        self.current_key_index = pinned_key_idx
+        if pinned_model in self.models:
+            self.current_model_index = self.models.index(pinned_model)
+        self._pinned_503_key_index = pinned_key_idx
+        self._pinned_503_model = pinned_model
+
+        eff_attempt = int(attempt) if attempt is not None else self.consecutive_503_count
+        base_delay = float(getattr(config, "GEMINI_503_BASE_DELAY", 2.0))
+        max_delay = float(getattr(config, "GEMINI_503_MAX_DELAY", 15.0))
+        retry_delay = min(max_delay, base_delay * (1.5 ** min(max(eff_attempt - 1, 0), 8)))
+        self._pinned_503_until = now + retry_delay + 60.0
+
+        warn_msg = (
+            f"⏳ Google 503 Server Overload on '{pinned_model}' (attempt #{eff_attempt}). "
+            f"Keeping Key #{pinned_key_idx + 1} (no key switch). Retrying in {retry_delay:.1f}s..."
+        )
+        logger.warning(warn_msg)
+        if event_callback:
+            cb_res = event_callback("info", warn_msg)
+            if inspect.isawaitable(cb_res):
+                await cb_res
+
+        await asyncio.sleep(retry_delay)
+        return retry_delay
 
     async def get_ready_client_for_request(
         self,
@@ -717,6 +823,15 @@ class GeminiKeyManager:
         agent=None
     ) -> genai.Client:
         """Resolves the best ready client and model for the upcoming request."""
+        now = time.time()
+        if self._pinned_503_key_index is not None and now <= self._pinned_503_until and self.keys:
+            self.current_key_index = self._pinned_503_key_index % len(self.keys)
+            if self._pinned_503_model and self._pinned_503_model in self.models and self._pinned_503_model not in self.invalid_models:
+                self.current_model_index = self.models.index(self._pinned_503_model)
+            self._client = self._get_client_for_key(self.current_key_index)
+            return self._client
+
+        self.clear_503_state()
         best_idx, best_model = self.select_best_key_and_model(estimated_tokens=estimated_tokens)
         if best_model in self.models:
             self.current_model_index = self.models.index(best_model)
@@ -738,6 +853,9 @@ class GeminiKeyManager:
         now = time.time()
         err_str = str(error_msg_or_ex)
         err_lower = err_str.lower()
+        is_503 = is_503_error(error_msg_or_ex)
+        if not is_503:
+            self.clear_503_state()
 
         # 1. Model Not Found (404)
         if any(w in err_lower for w in ["404", "not found", "unsupported model"]):
@@ -785,12 +903,22 @@ class GeminiKeyManager:
                     self._client = self._get_client_for_key(self.current_key_index)
                     return self._client
 
-        # 2. Server Overload (500/502/503/504) -> Instant Model Outage Penalty, ZERO Sleep Loops
-        if any(w in err_lower for w in ["503", "overloaded", "high demand", "unavailable", "500", "502", "504"]):
-            self.consecutive_503_count += 1
-            prev_model = self.get_model()
+        # 2. Server Overload (503) -> Do NOT change key or model; wait with backoff and retry with same key
+        if is_503:
+            locked_key_idx = (
+                self._pinned_503_key_index
+                if (self._pinned_503_key_index is not None and now <= self._pinned_503_until)
+                else self.current_key_index
+            ) % len(self.keys)
+            await self.wait_for_503_retry(error_msg_or_ex=error_msg_or_ex, event_callback=event_callback)
+            self.current_key_index = locked_key_idx
+            self._client = self._get_client_for_key(locked_key_idx)
+            return self._client
 
-            quarantine_time = min(60.0, 15.0 * (1.3 ** min(self.consecutive_503_count - 1, 4)))
+        # 2.1 Other Server Errors (500/502/504) -> Model Outage Penalty & failover
+        if any(w in err_lower for w in ["500", "502", "504"]):
+            prev_model = self.get_model()
+            quarantine_time = 20.0
             self.model_congestion[prev_model] = now + quarantine_time
 
             best_idx, new_model = self.select_best_key_and_model(estimated_tokens=estimated_tokens)
@@ -799,8 +927,8 @@ class GeminiKeyManager:
                 self.current_model_index = self.models.index(new_model)
 
             warn_msg = (
-                f"⚡ Google 503 Server Capacity Outage on '{prev_model}'. "
-                f"Model penalized {quarantine_time:.0f}s. Instant failover -> '{new_model}' (Key #{best_idx + 1})."
+                f"⚡ Google 50x Server Error on '{prev_model}'. "
+                f"Model penalized {quarantine_time:.0f}s. Failover -> '{new_model}' (Key #{best_idx + 1})."
             )
             logger.warning(warn_msg)
             self._client = self._get_client_for_key(self.current_key_index)
@@ -889,6 +1017,9 @@ class GeminiKeyManager:
         if any(k in err_lower for k in ["cannot connect", "connection refused", "clientconnectorerror", "ssl", "proxy"]):
             logger.warning("handle_error_exhausted skipped: error is network/proxy failure, not key exhaustion.")
             return
+        if is_503_error(error_msg):
+            logger.warning("handle_error_exhausted skipped: error is 503 server overload, key remains active.")
+            return
 
         cooldown_sec, is_daily, quota_meta = parse_gemini_error_cooldown(error_msg)
         now = time.time()
@@ -911,11 +1042,12 @@ class GeminiKeyManager:
             raw_info = {"error": error_msg, "cooldown_duration": int(cooldown)} if error_msg else None
             await self.db.save_key_meta(active_key, "gemini", status="exhausted", exhausted_at=int(now), raw_info_json=json.dumps(raw_info) if raw_info else None)
 
-    async def rotate_key_async(self, error_msg: str = None) -> genai.Client:
-        """Cascades model/key pool dynamically and non-blockingly."""
-        if error_msg:
+    async def rotate_key_async(self, error_msg: Any = None) -> genai.Client:
+        """Cascades model/key pool dynamically and non-blockingly (or retries 503 on same key)."""
+        if error_msg is not None:
             return await self.handle_quota_exhausted(error_msg)
 
+        self.clear_503_state()
         if len(self.keys) > 1:
             self.current_key_index = (self.current_key_index + 1) % len(self.keys)
         elif len(self.models) > 1:

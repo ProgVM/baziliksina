@@ -1,3 +1,4 @@
+# PATCH_503_RETRY_SAME_KEY_V1
 # core/context_manager.py
 import os
 import json
@@ -56,10 +57,25 @@ class AIContextManager:
         contents.append(types.Content(role="user", parts=[types.Part.from_text(text=prompt)]))
         
         try:
-            response = await gemini_client.aio.models.generate_content(
-                model=self.key_manager.get_model(),
-                contents=contents
-            )
+            attempt_503 = 0
+            while True:
+                try:
+                    response = await gemini_client.aio.models.generate_content(
+                        model=self.key_manager.get_model(),
+                        contents=contents
+                    )
+                    if hasattr(self.key_manager, "clear_503_state"):
+                        self.key_manager.clear_503_state()
+                    break
+                except Exception as e503:
+                    if hasattr(self.key_manager, "is_503_error") and self.key_manager.is_503_error(e503):
+                        attempt_503 += 1
+                        if hasattr(self.key_manager, "wait_for_503_retry"):
+                            await self.key_manager.wait_for_503_retry(e503, attempt=attempt_503)
+                        else:
+                            await asyncio.sleep(min(15.0, 2.0 * attempt_503))
+                        continue
+                    raise
             summary_text = response.text
             await self.db.update_summary(chat_id, summary_text)
             await self.db.clear_history_for_summarization(chat_id, keep_last_n=config.SUMMARIZATION_KEEP_LIMIT)
@@ -109,10 +125,25 @@ class AIContextManager:
                     types.Part.from_text(text="Provide a concise 1-2 sentence description of this media attachment for chat context history.")
                 ]
             )
-            response = await gemini_client.aio.models.generate_content(
-                model=self.key_manager.get_model(),
-                contents=[prompt_content]
-            )
+            attempt_503 = 0
+            while True:
+                try:
+                    response = await gemini_client.aio.models.generate_content(
+                        model=self.key_manager.get_model(),
+                        contents=[prompt_content]
+                    )
+                    if hasattr(self.key_manager, "clear_503_state"):
+                        self.key_manager.clear_503_state()
+                    break
+                except Exception as e503:
+                    if hasattr(self.key_manager, "is_503_error") and self.key_manager.is_503_error(e503):
+                        attempt_503 += 1
+                        if hasattr(self.key_manager, "wait_for_503_retry"):
+                            await self.key_manager.wait_for_503_retry(e503, attempt=attempt_503)
+                        else:
+                            await asyncio.sleep(min(15.0, 2.0 * attempt_503))
+                        continue
+                    raise
             summary_text = f"[Media Summary: {response.text.strip()}]" if response.text else "[Media Summary: File attached]"
             await self.db.set_memory(summary_key, summary_text)
             return summary_text
